@@ -22,14 +22,6 @@ import base64
 import requests
 import tempfile
 from io import BytesIO
-import asyncio
-
-try:
-    import fastapi_poe as fp
-    HAS_POE = True
-except ImportError:
-    logger.warning("fastapi_poe not installed. Poe API will be unavailable.")
-    HAS_POE = False
 
 # Set Gradio file upload limits
 os.environ['GRADIO_TEMP_DIR'] = '/tmp/gradio'
@@ -61,7 +53,7 @@ logger.setLevel(logging.DEBUG)
 # 🗄️ DATABASE SETUP
 # ==========================================
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Boolean, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -79,22 +71,21 @@ Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     email = Column(String, unique=True, index=True)
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     chat_history = relationship("ChatHistory", back_populates="user", cascade="all, delete-orphan")
     transcriptions = relationship("Transcription", back_populates="user", cascade="all, delete-orphan")
     vision_results = relationship("VisionResult", back_populates="user", cascade="all, delete-orphan")
     generated_images = relationship("GeneratedImage", back_populates="user", cascade="all, delete-orphan")
     custom_prompts = relationship("CustomPrompt", back_populates="user", cascade="all, delete-orphan")
-    model_preferences = relationship("UserModelPreference", back_populates="user", cascade="all, delete-orphan")
-    
+
 class ChatHistory(Base):
     __tablename__ = "chat_history"
 
@@ -164,26 +155,6 @@ class CustomPrompt(Base):
 
     user = relationship("User", back_populates="custom_prompts")
 
-class UserModelPreference(Base):
-    __tablename__ = "user_model_preferences"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    provider = Column(String, nullable=False)
-    model_id = Column(String, nullable=False)  # The actual model ID used by API
-    display_name = Column(String)  # Human-readable name
-    display_order = Column(Integer, default=0)  # Lower = higher priority
-    is_visible = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationship
-    user = relationship("User", back_populates="model_preferences")
-    
-    # Unique constraint: one entry per user+provider+model
-    __table_args__ = (
-        UniqueConstraint('user_id', 'provider', 'model_id', name='_user_provider_model_uc'),
-    )
-    
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -507,401 +478,6 @@ def get_user_generated_images(user_id: int, limit: int = 50):
 create_default_users()
 
 # ==========================================
-# 👥 USER MANAGEMENT FUNCTIONS
-# ==========================================
-
-def create_user(username, password, email, is_admin=False):
-    """Create a new user"""
-    db = SessionLocal()
-    try:
-        # Check if username already exists
-        existing_user = db.query(User).filter(User.username == username).first()
-        if existing_user:
-            return False, "❌ Benutzername existiert bereits"
-        
-        # Check if email already exists
-        if email:
-            existing_email = db.query(User).filter(User.email == email).first()
-            if existing_email:
-                return False, "❌ E-Mail wird bereits verwendet"
-        
-        # Create new user
-        new_user = User(
-            username=username,
-            password_hash=hash_password(password),
-            email=email,
-            is_admin=is_admin
-        )
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-        
-        logger.info(f"User created: {username} (Admin: {is_admin})")
-        return True, f"✅ Benutzer '{username}' erfolgreich erstellt"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error creating user: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def delete_user(user_id, current_user_id):
-    """Delete a user (cannot delete self)"""
-    db = SessionLocal()
-    try:
-        # Prevent self-deletion
-        if user_id == current_user_id:
-            return False, "❌ Du kannst dich nicht selbst löschen"
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return False, "❌ Benutzer nicht gefunden"
-        
-        username = user.username
-        
-        # Delete user (cascades will handle related data)
-        db.delete(user)
-        db.commit()
-        
-        logger.info(f"User deleted: {username} (ID: {user_id})")
-        return True, f"✅ Benutzer '{username}' gelöscht"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error deleting user: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def rename_user(user_id, new_username):
-    """Rename a user"""
-    db = SessionLocal()
-    try:
-        # Check if new username already exists
-        existing = db.query(User).filter(User.username == new_username).first()
-        if existing and existing.id != user_id:
-            return False, "❌ Benutzername existiert bereits"
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return False, "❌ Benutzer nicht gefunden"
-        
-        old_username = user.username
-        user.username = new_username
-        db.commit()
-        
-        logger.info(f"User renamed: {old_username} → {new_username}")
-        return True, f"✅ Benutzer umbenannt: '{old_username}' → '{new_username}'"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error renaming user: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def reset_user_password(user_id, new_password):
-    """Reset a user's password"""
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return False, "❌ Benutzer nicht gefunden"
-        
-        user.password_hash = hash_password(new_password)
-        db.commit()
-        
-        logger.info(f"Password reset for user: {user.username}")
-        return True, f"✅ Passwort für '{user.username}' zurückgesetzt"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error resetting password: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def toggle_admin_status(user_id, current_user_id):
-    """Toggle admin status for a user (cannot change own status)"""
-    db = SessionLocal()
-    try:
-        # Prevent changing own admin status
-        if user_id == current_user_id:
-            return False, "❌ Du kannst deinen eigenen Admin-Status nicht ändern"
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return False, "❌ Benutzer nicht gefunden"
-        
-        # Toggle admin status
-        user.is_admin = not user.is_admin
-        db.commit()
-        
-        status = "Admin" if user.is_admin else "Normaler Benutzer"
-        logger.info(f"Admin status changed for {user.username}: {status}")
-        return True, f"✅ '{user.username}' ist jetzt: {status}"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error toggling admin status: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def get_all_users():
-    """Get all users for admin panel"""
-    db = SessionLocal()
-    try:
-        users = db.query(User).order_by(User.created_at.desc()).all()
-        data = []
-        for u in users:
-            data.append([
-                u.id,
-                u.username,
-                u.email or "—",
-                "✅ Admin" if u.is_admin else "👤 User",
-                u.created_at.strftime("%Y-%m-%d %H:%M")
-            ])
-        return data
-    except Exception as e:
-        logger.exception(f"Error getting users: {str(e)}")
-        return []
-    finally:
-        db.close()
-
-def update_user_email(user_id, new_email):
-    """Update user's email address"""
-    db = SessionLocal()
-    try:
-        # Check if email already exists
-        if new_email:
-            existing = db.query(User).filter(User.email == new_email).first()
-            if existing and existing.id != user_id:
-                return False, "❌ E-Mail wird bereits verwendet"
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return False, "❌ Benutzer nicht gefunden"
-        
-        user.email = new_email
-        db.commit()
-        
-        logger.info(f"Email updated for user: {user.username}")
-        return True, f"✅ E-Mail für '{user.username}' aktualisiert"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error updating email: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-
-# ==========================================
-# 🎯 MODEL PREFERENCES MANAGEMENT
-# ==========================================
-
-def fetch_available_models(provider, api_key=None):
-    """Fetch available models from provider API"""
-    try:
-        if provider == "Scaleway":
-            # Scaleway uses OpenAI-compatible API
-            api_key = api_key or API_KEYS.get("SCALEWAY")
-            if not api_key:
-                return None, "API Key erforderlich"
-            
-            try:
-                client = openai.OpenAI(base_url="https://api.scaleway.ai/v1", api_key=api_key)
-                models = client.models.list()
-                model_list = []
-                for model in models.data:
-                    model_list.append({
-                        "id": model.id,
-                        "name": model.id,
-                        "owned_by": getattr(model, 'owned_by', 'scaleway')
-                    })
-                return model_list, None
-            except Exception as e:
-                return None, f"Fehler: {str(e)}"
-        
-        elif provider == "Nebius":
-            # Nebius uses OpenAI-compatible API
-            api_key = api_key or API_KEYS.get("NEBIUS")
-            if not api_key:
-                return None, "API Key erforderlich"
-            
-            try:
-                client = openai.OpenAI(base_url="https://api.tokenfactory.nebius.com/v1", api_key=api_key)
-                models = client.models.list()
-                model_list = []
-                for model in models.data:
-                    model_list.append({
-                        "id": model.id,
-                        "name": model.id,
-                        "owned_by": getattr(model, 'owned_by', 'nebius')
-                    })
-                return model_list, None
-            except Exception as e:
-                return None, f"Fehler: {str(e)}"
-        
-        elif provider == "Mistral":
-            # Mistral API
-            api_key = api_key or API_KEYS.get("MISTRAL")
-            if not api_key:
-                return None, "API Key erforderlich"
-            
-            try:
-                client = openai.OpenAI(base_url="https://api.mistral.ai/v1", api_key=api_key)
-                models = client.models.list()
-                model_list = []
-                for model in models.data:
-                    model_list.append({
-                        "id": model.id,
-                        "name": model.id,
-                        "owned_by": getattr(model, 'owned_by', 'mistral')
-                    })
-                return model_list, None
-            except Exception as e:
-                return None, f"Fehler: {str(e)}"
-        
-        elif provider == "OpenRouter":
-            # OpenRouter models list
-            try:
-                response = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    model_list = []
-                    for model in data.get("data", []):
-                        model_list.append({
-                            "id": model["id"],
-                            "name": model.get("name", model["id"]),
-                            "context_length": model.get("context_length", 0)
-                        })
-                    return model_list, None
-                return None, f"Fehler: Status {response.status_code}"
-            except Exception as e:
-                return None, f"Fehler: {str(e)}"
-        
-        elif provider == "Groq":
-            # Groq API
-            api_key = api_key or API_KEYS.get("GROQ")
-            if not api_key:
-                return None, "API Key erforderlich"
-            
-            try:
-                from groq import Groq
-                client = Groq(api_key=api_key)
-                models = client.models.list()
-                model_list = []
-                for model in models.data:
-                    model_list.append({
-                        "id": model.id,
-                        "name": model.id,
-                        "owned_by": getattr(model, 'owned_by', 'groq')
-                    })
-                return model_list, None
-            except Exception as e:
-                return None, f"Fehler: {str(e)}"
-        
-        elif provider == "Poe":
-            # Poe doesn't have a models endpoint, return predefined list
-            poe_models = [
-                {"id": "claude_3_igloo", "name": "Claude-3.5-Sonnet"},
-                {"id": "claude_2_1_cedar", "name": "Claude-3-Opus"},
-                {"id": "claude_2_1_bamboo", "name": "Claude-3-Sonnet"},
-                {"id": "claude_3_haiku", "name": "Claude-3-Haiku"},
-                {"id": "claude_3_igloo_200k", "name": "Claude-3.5-Sonnet-200k"},
-                {"id": "chinchilla", "name": "GPT-3.5-Turbo"},
-                {"id": "beaver", "name": "GPT-4-Turbo"},
-                {"id": "gpt4_o", "name": "GPT-4o"},
-                {"id": "gpt4_o_mini", "name": "GPT-4o-Mini"},
-                {"id": "gemini_1_5_pro_1m", "name": "Gemini-1.5-Pro-2M"},
-            ]
-            return poe_models, None
-        
-        else:
-            # For providers without /models endpoint, return configured models
-            provider_config = PROVIDERS.get(provider, {})
-            chat_models = provider_config.get("chat_models", [])
-            model_list = [{"id": m, "name": m} for m in chat_models]
-            return model_list, None
-    
-    except Exception as e:
-        logger.exception(f"Error fetching models for {provider}: {str(e)}")
-        return None, f"Fehler: {str(e)}"
-
-def get_user_model_preferences(user_id, provider):
-    """Get user's model preferences for a provider"""
-    db = SessionLocal()
-    try:
-        prefs = db.query(UserModelPreference).filter(
-            UserModelPreference.user_id == user_id,
-            UserModelPreference.provider == provider
-        ).order_by(UserModelPreference.display_order).all()
-        
-        return prefs
-    except Exception as e:
-        logger.exception(f"Error getting user model preferences: {str(e)}")
-        return []
-    finally:
-        db.close()
-
-def save_user_model_preferences(user_id, provider, model_configs):
-    """
-    Save user's model preferences
-    model_configs: list of dicts with keys: model_id, display_name, is_visible, display_order
-    """
-    db = SessionLocal()
-    try:
-        # Delete existing preferences for this provider
-        db.query(UserModelPreference).filter(
-            UserModelPreference.user_id == user_id,
-            UserModelPreference.provider == provider
-        ).delete()
-        
-        # Add new preferences
-        for config in model_configs:
-            pref = UserModelPreference(
-                user_id=user_id,
-                provider=provider,
-                model_id=config["model_id"],
-                display_name=config.get("display_name", config["model_id"]),
-                display_order=config.get("display_order", 0),
-                is_visible=config.get("is_visible", True)
-            )
-            db.add(pref)
-        
-        db.commit()
-        logger.info(f"Saved {len(model_configs)} model preferences for user {user_id}, provider {provider}")
-        return True, "✅ Einstellungen gespeichert"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error saving model preferences: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def get_user_visible_models(user_id, provider):
-    """Get list of visible models for user, in order"""
-    prefs = get_user_model_preferences(user_id, provider)
-    
-    if not prefs:
-        # No preferences set, return all models from provider config
-        provider_config = PROVIDERS.get(provider, {})
-        return provider_config.get("chat_models", [])
-    
-    # Return visible models in order
-    visible_models = [p.model_id for p in prefs if p.is_visible]
-    return visible_models if visible_models else [prefs[0].model_id] if prefs else []
-
-def get_default_model_for_user(user_id, provider):
-    """Get user's default model (first in order)"""
-    visible = get_user_visible_models(user_id, provider)
-    return visible[0] if visible else None
-        
-# ==========================================
 # ⚙️ ZENTRALE KONFIGURATION
 # ==========================================
 
@@ -913,7 +489,6 @@ API_KEYS = {
     "GLADIA": os.environ.get("GLADIA_API_KEY", ""),
     "OPENROUTER": os.environ.get("OPENROUTER_API_KEY", ""),
     "GROQ": os.environ.get("GROQ_API_KEY", ""),
-    "POE": os.environ.get("POE_API_KEY", ""),
 }
 
 # Provider-Datenbank (Modelle, Endpoints, Compliance)
@@ -957,27 +532,6 @@ PROVIDERS = {
         "chat_models": ["openai/gpt-oss-120b", "moonshotai/kimi-k2-instruct-0905", "meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.3-70b-versatile", "qwen/qwen3-32b"],
         "audio_models": ["whisper-large-v3-turbo"],
         "vision_models": ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"]
-    },
-    "Poe": {
-        "base_url": "https://api.poe.com",
-        "key_name": "POE",
-        "badge": "🤖 <span style='color:purple'><b>Poe.com</b> (Multi-Model Hub)</span>",
-        "chat_models": [
-            "claude_3_igloo",  # Claude-3.5-Sonnet
-            "claude_2_1_cedar",  # Claude-3-Opus
-            "claude_2_1_bamboo",  # Claude-3-Sonnet
-            "claude_3_haiku",  # Claude-3-Haiku
-            "claude_3_igloo_200k",  # Claude-3.5-Sonnet-200k
-            "chinchilla",  # GPT-3.5-Turbo
-            "beaver",  # GPT-4-Turbo
-            "gpt4_o",  # GPT-4o
-            "gpt4_o_mini",  # GPT-4o-Mini
-            "gemini_1_5_pro_1m",  # Gemini-1.5-Pro-2M
-        ],
-        "vision_models": [
-            "claude_3_igloo", "claude_2_1_cedar", "claude_2_1_bamboo",
-            "claude_3_haiku", "gpt4_o", "gpt4_o_mini", "beaver"
-        ]
     }
 }
 
@@ -1045,50 +599,6 @@ def get_client(provider_name, api_key_override=None):
 
     return openai.OpenAI(base_url=conf["base_url"], api_key=key)
 
-def call_poe_sync(messages, model_name, api_key):
-    """Call Poe API synchronously"""
-    try:
-        if not HAS_POE:
-            raise ImportError("fastapi_poe package not installed. Install with: pip install fastapi_poe")
-        
-        if not api_key:
-            raise ValueError("Poe API key is required")
-        
-        # Convert messages to Poe format
-        poe_messages = []
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            
-            # Skip system messages (Poe doesn't support them directly)
-            if role == "system":
-                continue
-            
-            # Handle content format
-            if isinstance(content, list):
-                # Extract text from multimodal content
-                text_parts = []
-                for item in content:
-                    if item.get("type") == "text":
-                        text_parts.append(item["text"])
-                content = "\n".join(text_parts)
-            
-            # Convert role format
-            poe_role = "user" if role == "user" else "bot"
-            poe_messages.append(fp.ProtocolMessage(role=poe_role, content=content))
-        
-        # Make synchronous request
-        response_content = ""
-        for partial in fp.get_bot_response(messages=poe_messages, bot_name=model_name, api_key=api_key):
-            if hasattr(partial, "text"):
-                response_content += partial.text
-        
-        return response_content
-        
-    except Exception as e:
-        logger.error(f"Poe API error: {str(e)}")
-        raise e
-
 def encode_image(image_path):
     if not image_path: return None
     with open(image_path, "rb") as image_file:
@@ -1104,40 +614,11 @@ def format_duration(seconds):
 # ==========================================
 
 def run_chat(message, history, provider, model, temp, system_prompt, key):
-    # HANDLE POE SEPARATELY
-    if provider == "Poe":
-        try:
-            api_key = key if key else API_KEYS.get("POE")
-            if not api_key:
-                yield "❌ Kein Poe API Key gefunden."
-                return
-            
-            # Build messages
-            messages = [{"role": "system", "content": system_prompt}]
-            
-            for msg in history:
-                if isinstance(msg, dict):
-                    messages.append({"role": msg["role"], "content": str(msg["content"])})
-                else:
-                    messages.append({"role": "user", "content": str(msg[0])})
-                    messages.append({"role": "assistant", "content": str(msg[1])})
-            
-            messages.append({"role": "user", "content": message})
-            
-            # Call Poe API
-            response = call_poe_sync(messages, model, api_key)
-            yield response
-            
-        except Exception as e:
-            yield f"🔥 Poe Fehler: {str(e)}"
-        return
-    
-    # OTHER PROVIDERS
     try:
         client = get_client(provider, key)
-        
+
         messages = [{"role": "system", "content": system_prompt}]
-        
+
         for msg in history:
             if isinstance(msg, dict):
                 messages.append({"role": msg["role"], "content": str(msg["content"])})
@@ -1145,13 +626,13 @@ def run_chat(message, history, provider, model, temp, system_prompt, key):
                 # Fallback for old tuple format (u, a)
                 messages.append({"role": "user", "content": str(msg[0])})
                 messages.append({"role": "assistant", "content": str(msg[1])})
-        
+
         messages.append({"role": "user", "content": message})
 
         stream = client.chat.completions.create(
             model=model, messages=messages, temperature=temp, stream=True, max_tokens=2048
         )
-        
+
         partial = ""
         for chunk in stream:
             if chunk.choices[0].delta.content:
@@ -1160,31 +641,17 @@ def run_chat(message, history, provider, model, temp, system_prompt, key):
 
     except Exception as e:
         yield f"🔥 Fehler: {str(e)}"
-        
+
 # ==========================================
 # 2. VISION LOGIK
 # ==========================================
 
 def run_vision(image, prompt, provider, model, key):
     if not image: return "❌ Bitte Bild hochladen."
-    
-    # HANDLE POE
-    if provider == "Poe":
-        api_key = key if key else API_KEYS.get("POE")
-        if not api_key:
-            return "❌ Kein Poe API Key gefunden."
-        
-        try:
-            # Poe doesn't support images in the same way, so just inform user
-            return "⚠️ Poe vision support requires direct image URLs. Use other providers for local images."
-        except Exception as e:
-            return f"🔥 Poe Vision Fehler: {str(e)}"
-    
-    # EXISTING CODE
     try:
         client = get_client(provider, key)
         b64_img = encode_image(image)
-        
+
         messages = [{
             "role": "user",
             "content": [
@@ -1192,7 +659,7 @@ def run_vision(image, prompt, provider, model, key):
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
             ]
         }]
-        
+
         response = client.chat.completions.create(
             model=model, messages=messages, max_tokens=1000
         )
@@ -1963,22 +1430,11 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         c_badge = gr.HTML(value=PROVIDERS["Scaleway"]["badge"])
 
-                        # updates model dropdown based on provider
                         def update_c_ui(prov):
-                            """Update chat UI when provider changes"""
                             p_data = PROVIDERS.get(prov, {})
-                            
-                            # Get user's preferred models if logged in
-                            if current_user["id"]:
-                                user_models = get_user_visible_models(current_user["id"], prov)
-                                if user_models:
-                                    default_model = user_models[0]
-                                    return gr.update(choices=user_models, value=default_model), p_data.get("badge", "")
-                            
-                            # Fallback to provider defaults
                             ms = p_data.get("chat_models", [])
                             return gr.update(choices=ms, value=ms[0] if ms else ""), p_data.get("badge", "")
-                        
+
                         c_prov.change(update_c_ui, c_prov, [c_model, c_badge])
 
                         c_bot = gr.Chatbot(height=500, type="messages")
@@ -2543,6 +1999,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 )
 
             # --- TAB 5: VERLAUF & VERWALTUNG ---
+            # --- TAB 5: VERLAUF & VERWALTUNG ---
             with gr.TabItem("📚 Verlauf & Verwaltung", id="tab_management"):
                 # Display Current User
                 display_user = current_user.get('username') if current_user.get('username') else "Gast"
@@ -2822,642 +2279,31 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             return [[u.id, u.username, u.is_admin, u.created_at.strftime("%Y-%m-%d")] for u in usrs]
 
                         refresh_users_btn.click(load_users, outputs=users_list)
-                        
-                # --- TAB 6: USER MANAGEMENT (ADMIN ONLY) ---
-                with gr.TabItem("👥 Benutzerverwaltung", visible=False) as admin_tab:
-                    gr.Markdown("## 👥 Benutzerverwaltung")
-                    gr.Markdown("*Nur für Administratoren*")
-                    
-                    with gr.Tabs():
-                        # =========================================================
-                        # CREATE NEW USER
-                        # =========================================================
-                        with gr.TabItem("➕ Neuer Benutzer"):
-                            gr.Markdown("### Neuen Benutzer erstellen")
-                            
-                            with gr.Row():
-                                with gr.Column(scale=1):
-                                    new_user_username = gr.Textbox(
-                                        label="Benutzername",
-                                        placeholder="max.mustermann"
-                                    )
-                                    new_user_password = gr.Textbox(
-                                        label="Passwort",
-                                        placeholder="Mindestens 8 Zeichen",
-                                        type="password"
-                                    )
-                                    new_user_password_confirm = gr.Textbox(
-                                        label="Passwort bestätigen",
-                                        placeholder="Passwort wiederholen",
-                                        type="password"
-                                    )
-                                    new_user_email = gr.Textbox(
-                                        label="E-Mail (Optional)",
-                                        placeholder="max@example.com"
-                                    )
-                                    new_user_is_admin = gr.Checkbox(
-                                        label="Als Administrator erstellen",
-                                        value=False
-                                    )
-                                    
-                                    create_user_btn = gr.Button("➕ Benutzer erstellen", variant="primary", size="lg")
-                                    create_user_status = gr.Markdown("")
-                                
-                                with gr.Column(scale=1):
-                                    gr.Markdown("""
-                                    ### 📋 Hinweise
-                                    
-                                    **Benutzername:**
-                                    - Muss eindeutig sein
-                                    - Keine Leerzeichen
-                                    - Empfohlen: kleinbuchstaben
-                                    
-                                    **Passwort:**
-                                    - Mindestens 8 Zeichen empfohlen
-                                    - Wird sicher verschlüsselt (bcrypt)
-                                    
-                                    **Administrator:**
-                                    - Admins können:
-                                    - Alle Benutzer verwalten
-                                    - Andere Admins erstellen
-                                    - Alle Daten sehen
-                                    
-                                    **Standard-Benutzer:**
-                                    - admin / akademie2025
-                                    - user / dialog2025
-                                    """)
-                        
-                        # =========================================================
-                        # MANAGE EXISTING USERS
-                        # =========================================================
-                        with gr.TabItem("⚙️ Benutzer verwalten"):
-                            gr.Markdown("### Bestehende Benutzer verwalten")
-                            
-                            with gr.Row():
-                                refresh_users_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                            
-                            users_table = gr.Dataframe(
-                                headers=["ID", "Benutzername", "E-Mail", "Rolle", "Erstellt"],
-                                value=[["", "", "", "", ""]],
-                                interactive=False,
-                                wrap=True,
-                                height=400,
-                                datatype=["number", "str", "str", "str", "str"],
-                                column_widths=["10%", "25%", "25%", "20%", "20%"]
-                            )
-                            
-                            with gr.Row():
-                                selected_user_id = gr.Number(
-                                    label="Benutzer-ID",
-                                    precision=0,
-                                    value=0
-                                )
-                            
-                            with gr.Tabs():
-                                # RENAME USER
-                                with gr.TabItem("✏️ Umbenennen"):
-                                    with gr.Row():
-                                        rename_new_username = gr.Textbox(
-                                            label="Neuer Benutzername",
-                                            placeholder="neuer.name"
-                                        )
-                                        rename_user_btn = gr.Button("✏️ Umbenennen", variant="secondary")
-                                    rename_status = gr.Markdown("")
-                                
-                                # RESET PASSWORD
-                                with gr.TabItem("🔑 Passwort zurücksetzen"):
-                                    with gr.Row():
-                                        reset_new_password = gr.Textbox(
-                                            label="Neues Passwort",
-                                            placeholder="Neues Passwort",
-                                            type="password"
-                                        )
-                                        reset_confirm_password = gr.Textbox(
-                                            label="Passwort bestätigen",
-                                            placeholder="Passwort wiederholen",
-                                            type="password"
-                                        )
-                                    reset_password_btn = gr.Button("🔑 Passwort zurücksetzen", variant="secondary")
-                                    reset_password_status = gr.Markdown("")
-                                
-                                # UPDATE EMAIL
-                                with gr.TabItem("📧 E-Mail ändern"):
-                                    with gr.Row():
-                                        update_email_input = gr.Textbox(
-                                            label="Neue E-Mail",
-                                            placeholder="neue@email.de"
-                                        )
-                                        update_email_btn = gr.Button("📧 E-Mail aktualisieren", variant="secondary")
-                                    update_email_status = gr.Markdown("")
-                                
-                                # TOGGLE ADMIN
-                                with gr.TabItem("⬆️⬇️ Admin-Status"):
-                                    gr.Markdown("""
-                                    ### Admin-Status umschalten
-                                    
-                                    **Achtung:** 
-                                    - Du kannst deinen eigenen Status nicht ändern
-                                    - Admins haben volle Kontrolle über die App
-                                    """)
-                                    toggle_admin_btn = gr.Button("⬆️⬇️ Admin-Status umschalten", variant="secondary")
-                                    toggle_admin_status = gr.Markdown("")
-                                
-                                # DELETE USER
-                                with gr.TabItem("🗑️ Benutzer löschen"):
-                                    gr.Markdown("""
-                                    ### ⚠️ WARNUNG: Benutzer löschen
-                                    
-                                    Diese Aktion:
-                                    - Löscht den Benutzer **permanent**
-                                    - Löscht alle zugehörigen Daten (Chats, Transkripte, etc.)
-                                    - **Kann nicht rückgängig gemacht werden**
-                                    - Du kannst dich nicht selbst löschen
-                                    """)
-                                    
-                                    with gr.Row():
-                                        delete_confirm = gr.Textbox(
-                                            label="Bestätigung",
-                                            placeholder="Tippe 'LÖSCHEN' zur Bestätigung"
-                                        )
-                                        delete_user_btn = gr.Button("🗑️ BENUTZER LÖSCHEN", variant="stop")
-                                    delete_user_status = gr.Markdown("")
-                            
-                            # Select user from table
-                            def select_user_from_table(evt: gr.SelectData):
-                                """Select user by clicking on table row"""
-                                try:
-                                    # Get the row data
-                                    row_idx = evt.index[0]
-                                    # Load fresh data
-                                    users_data = get_all_users()
-                                    if row_idx < len(users_data):
-                                        user_id = users_data[row_idx][0]
-                                        return int(user_id)
-                                except Exception as e:
-                                    logger.exception(f"Error selecting user: {str(e)}")
-                                return gr.update()
-                            
-                            users_table.select(select_user_from_table, outputs=selected_user_id)
-                    
-                    # =========================================================
-                    # EVENT HANDLERS
-                    # =========================================================
-                    
-                    # Create user
-                    def handle_create_user(username, password, password_confirm, email, is_admin):
-                        if not username or not password:
-                            return "❌ Benutzername und Passwort sind erforderlich"
-                        
-                        if password != password_confirm:
-                            return "❌ Passwörter stimmen nicht überein"
-                        
-                        if len(password) < 8:
-                            return "⚠️ Warnung: Passwort sollte mindestens 8 Zeichen haben"
-                        
-                        success, message = create_user(username, password, email, is_admin)
-                        
-                        if success:
-                            # Clear form
-                            return message
-                        return message
-                    
-                    create_user_btn.click(
-                        handle_create_user,
-                        inputs=[
-                            new_user_username,
-                            new_user_password,
-                            new_user_password_confirm,
-                            new_user_email,
-                            new_user_is_admin
-                        ],
-                        outputs=create_user_status
-                    )
-                    
-                    # Refresh users list
-                    def load_users_list():
-                        return get_all_users()
-                    
-                    refresh_users_btn.click(load_users_list, outputs=users_table)
-                    
-                    # Rename user
-                    def handle_rename_user(user_id, new_username):
-                        if not new_username:
-                            return "❌ Neuer Benutzername erforderlich", get_all_users()
-                        
-                        success, message = rename_user(int(user_id), new_username)
-                        return message, get_all_users()
-                    
-                    rename_user_btn.click(
-                        handle_rename_user,
-                        inputs=[selected_user_id, rename_new_username],
-                        outputs=[rename_status, users_table]
-                    )
-                    
-                    # Reset password
-                    def handle_reset_password(user_id, new_password, confirm_password):
-                        if not new_password:
-                            return "❌ Neues Passwort erforderlich"
-                        
-                        if new_password != confirm_password:
-                            return "❌ Passwörter stimmen nicht überein"
-                        
-                        if len(new_password) < 8:
-                            return "⚠️ Warnung: Passwort sollte mindestens 8 Zeichen haben"
-                        
-                        success, message = reset_user_password(int(user_id), new_password)
-                        return message
-                    
-                    reset_password_btn.click(
-                        handle_reset_password,
-                        inputs=[selected_user_id, reset_new_password, reset_confirm_password],
-                        outputs=reset_password_status
-                    )
-                    
-                    # Update email
-                    def handle_update_email(user_id, new_email):
-                        success, message = update_user_email(int(user_id), new_email)
-                        return message, get_all_users()
-                    
-                    update_email_btn.click(
-                        handle_update_email,
-                        inputs=[selected_user_id, update_email_input],
-                        outputs=[update_email_status, users_table]
-                    )
-                    
-                    # Toggle admin status
-                    def handle_toggle_admin(user_id):
-                        if not current_user["id"]:
-                            return "❌ Nicht angemeldet", get_all_users()
-                        
-                        success, message = toggle_admin_status(int(user_id), current_user["id"])
-                        return message, get_all_users()
-                    
-                    toggle_admin_btn.click(
-                        handle_toggle_admin,
-                        inputs=selected_user_id,
-                        outputs=[toggle_admin_status, users_table]
-                    )
-                    
-                    # Delete user
-                    def handle_delete_user(user_id, confirmation):
-                        if confirmation != "LÖSCHEN":
-                            return "❌ Bestätigung erforderlich: Tippe 'LÖSCHEN'", get_all_users()
-                        
-                        if not current_user["id"]:
-                            return "❌ Nicht angemeldet", get_all_users()
-                        
-                        success, message = delete_user(int(user_id), current_user["id"])
-                        return message, get_all_users()
-                    
-                    delete_user_btn.click(
-                        handle_delete_user,
-                        inputs=[selected_user_id, delete_confirm],
-                        outputs=[delete_user_status, users_table]
-                    )
 
-                    # --- AUTO-LOAD ON TAB SWITCH ---
-                    trans_tab.select(fn=load_trans_data, outputs=[trans_history, trans_state])
-                    images_tab.select(fn=load_img_data, outputs=[images_history, img_state])
-                    prompts_tab.select(fn=load_prompts_data, outputs=[saved_prompts, prompt_state])
-                    
-                # --- TAB 7: MODEL PREFERENCES ---
-                with gr.TabItem("🎯 Modell-Einstellungen"):
-                    gr.Markdown("## 🎯 Bevorzugte Modelle verwalten")
-                    gr.Markdown("Wähle welche Modelle in den Dropdown-Menüs erscheinen sollen und lege die Reihenfolge fest.")
-                    
-                    with gr.Row():
-                        pref_provider = gr.Dropdown(
-                            choices=list(PROVIDERS.keys()),
-                            value="Scaleway",
-                            label="Provider auswählen"
-                        )
-                    
-                    with gr.Row():
-                        fetch_models_btn = gr.Button("🔄 Verfügbare Modelle laden", variant="secondary")
-                        fetch_status = gr.Markdown("")
-                    
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            gr.Markdown("### 📋 Verfügbare Modelle")
-                            available_models_list = gr.Dataframe(
-                                headers=["Modell-ID", "Anzeigename"],
-                                value=[["", ""]],
-                                interactive=False,
-                                wrap=True,
-                                height=400
-                            )
-                        
-                        with gr.Column(scale=1):
-                            gr.Markdown("### ✅ Deine Auswahl")
-                            gr.Markdown("*Erste Modell = Standard. Drag & Drop zum Sortieren.*")
-                            
-                            selected_models_state = gr.State([])
-                            
-                            selected_models_display = gr.Dataframe(
-                                headers=["Reihenfolge", "Modell-ID", "Anzeigename", "Sichtbar"],
-                                value=[["", "", "", ""]],
-                                interactive=False,
-                                wrap=True,
-                                height=400,
-                                datatype=["number", "str", "str", "bool"]
-                            )
-                            
-                            with gr.Row():
-                                save_prefs_btn = gr.Button("💾 Einstellungen speichern", variant="primary")
-                                reset_prefs_btn = gr.Button("🔄 Zurücksetzen", variant="secondary")
-                            
-                            save_prefs_status = gr.Markdown("")
-                    
-                    with gr.Accordion("⚙️ Modell-Verwaltung", open=True):
-                        with gr.Row():
-                            with gr.Column():
-                                model_to_add = gr.Textbox(
-                                    label="Modell-ID hinzufügen",
-                                    placeholder="z.B. llama-3.3-70b-instruct"
-                                )
-                                model_display_name = gr.Textbox(
-                                    label="Anzeigename (optional)",
-                                    placeholder="z.B. Llama 3.3 70B"
-                                )
-                                add_model_btn = gr.Button("➕ Hinzufügen", variant="secondary")
-                            
-                            with gr.Column():
-                                model_to_remove_idx = gr.Number(
-                                    label="Position zum Entfernen (Reihenfolge-Nummer)",
-                                    precision=0,
-                                    value=1
-                                )
-                                remove_model_btn = gr.Button("➖ Entfernen", variant="secondary")
-                            
-                            with gr.Column():
-                                move_from_idx = gr.Number(
-                                    label="Von Position",
-                                    precision=0,
-                                    value=1
-                                )
-                                move_to_idx = gr.Number(
-                                    label="Zu Position",
-                                    precision=0,
-                                    value=2
-                                )
-                                move_model_btn = gr.Button("↕️ Verschieben", variant="secondary")
-                        
-                        model_mgmt_status = gr.Markdown("")
-                    
-                    gr.Markdown("""
-                    ### 💡 Tipps
-                    
-                    - **Erstes Modell** = Standard-Modell für diesen Provider
-                    - **Unsichtbare Modelle** werden nicht in Dropdown-Menüs angezeigt
-                    - Klicke auf "🔄 Verfügbare Modelle laden" um die neuesten Modelle vom Provider zu laden
-                    - Änderungen gelten sofort nach dem Speichern
-                    """)
-                    
-                    # =========================================================
-                    # EVENT HANDLERS FOR MODEL PREFERENCES
-                    # =========================================================
-                    
-                    def fetch_models_for_provider(provider, api_key=None):
-                        """Fetch and display available models"""
-                        if not current_user["id"]:
-                            return [["", ""]], "❌ Bitte anmelden", gr.update()
-                        
-                        # Get API key for provider if available
-                        provider_key = API_KEYS.get(PROVIDERS.get(provider, {}).get("key_name", ""))
-                        
-                        models, error = fetch_available_models(provider, provider_key)
-                        
-                        if error:
-                            return [["", ""]], f"❌ {error}", gr.update()
-                        
-                        if not models:
-                            return [["", ""]], "⚠️ Keine Modelle gefunden", gr.update()
-                        
-                        # Format for display
-                        model_data = [[m["id"], m.get("name", m["id"])] for m in models]
-                        
-                        return model_data, f"✅ {len(models)} Modelle geladen", gr.update()
-                    
-                    def load_user_preferences(provider):
-                        """Load user's saved preferences for provider"""
-                        if not current_user["id"]:
-                            return [["", "", "", ""]], []
-                        
-                        prefs = get_user_model_preferences(current_user["id"], provider)
-                        
-                        if not prefs:
-                            # No preferences, show default models
-                            default_models = PROVIDERS.get(provider, {}).get("chat_models", [])
-                            display_data = []
-                            state_data = []
-                            for i, model_id in enumerate(default_models, 1):
-                                display_data.append([i, model_id, model_id, True])
-                                state_data.append({
-                                    "model_id": model_id,
-                                    "display_name": model_id,
-                                    "is_visible": True,
-                                    "display_order": i
-                                })
-                            return display_data, state_data
-                        
-                        # Load saved preferences
-                        display_data = []
-                        state_data = []
-                        for i, pref in enumerate(prefs, 1):
-                            display_data.append([
-                                i,
-                                pref.model_id,
-                                pref.display_name or pref.model_id,
-                                "✅" if pref.is_visible else "❌"
-                            ])
-                            state_data.append({
-                                "model_id": pref.model_id,
-                                "display_name": pref.display_name or pref.model_id,
-                                "is_visible": pref.is_visible,
-                                "display_order": i
-                            })
-                        
-                        return display_data, state_data
-                    
-                    def add_model_to_selection(provider, model_id, display_name, current_state):
-                        """Add a model to user's selection"""
-                        if not model_id:
-                            return gr.update(), current_state, "❌ Modell-ID erforderlich"
-                        
-                        # Check if already exists
-                        if any(m["model_id"] == model_id for m in current_state):
-                            return gr.update(), current_state, "⚠️ Modell bereits in Auswahl"
-                        
-                        # Add to state
-                        new_model = {
-                            "model_id": model_id,
-                            "display_name": display_name or model_id,
-                            "is_visible": True,
-                            "display_order": len(current_state) + 1
-                        }
-                        current_state.append(new_model)
-                        
-                        # Update display
-                        display_data = []
-                        for i, m in enumerate(current_state, 1):
-                            display_data.append([
-                                i,
-                                m["model_id"],
-                                m["display_name"],
-                                "✅" if m["is_visible"] else "❌"
-                            ])
-                        
-                        return display_data, current_state, f"✅ '{model_id}' hinzugefügt"
-                    
-                    def remove_model_from_selection(idx, current_state):
-                        """Remove a model from selection"""
-                        if not current_state or idx < 1 or idx > len(current_state):
-                            return gr.update(), current_state, "❌ Ungültige Position"
-                        
-                        removed = current_state.pop(idx - 1)
-                        
-                        # Update display
-                        display_data = []
-                        for i, m in enumerate(current_state, 1):
-                            display_data.append([
-                                i,
-                                m["model_id"],
-                                m["display_name"],
-                                "✅" if m["is_visible"] else "❌"
-                            ])
-                        
-                        return display_data, current_state, f"✅ '{removed['model_id']}' entfernt"
-                    
-                    def move_model_in_selection(from_idx, to_idx, current_state):
-                        """Move a model in the selection order"""
-                        if not current_state:
-                            return gr.update(), current_state, "❌ Keine Modelle vorhanden"
-                        
-                        if from_idx < 1 or from_idx > len(current_state):
-                            return gr.update(), current_state, "❌ Ungültige Ausgangsposition"
-                        
-                        if to_idx < 1 or to_idx > len(current_state):
-                            return gr.update(), current_state, "❌ Ungültige Zielposition"
-                        
-                        # Move item
-                        item = current_state.pop(from_idx - 1)
-                        current_state.insert(to_idx - 1, item)
-                        
-                        # Update display
-                        display_data = []
-                        for i, m in enumerate(current_state, 1):
-                            display_data.append([
-                                i,
-                                m["model_id"],
-                                m["display_name"],
-                                "✅" if m["is_visible"] else "❌"
-                            ])
-                        
-                        return display_data, current_state, f"✅ Modell von Position {from_idx} zu {to_idx} verschoben"
-                    
-                    def save_preferences(provider, current_state):
-                        """Save preferences to database"""
-                        if not current_user["id"]:
-                            return "❌ Bitte anmelden"
-                        
-                        if not current_state:
-                            return "⚠️ Keine Modelle ausgewählt"
-                        
-                        # Update display_order
-                        for i, model in enumerate(current_state):
-                            model["display_order"] = i
-                        
-                        success, message = save_user_model_preferences(
-                            current_user["id"],
-                            provider,
-                            current_state
-                        )
-                        
-                        return message
-                    
-                    def reset_to_defaults(provider):
-                        """Reset to default provider models"""
-                        default_models = PROVIDERS.get(provider, {}).get("chat_models", [])
-                        
-                        display_data = []
-                        state_data = []
-                        for i, model_id in enumerate(default_models, 1):
-                            display_data.append([i, model_id, model_id, "✅"])
-                            state_data.append({
-                                "model_id": model_id,
-                                "display_name": model_id,
-                                "is_visible": True,
-                                "display_order": i
-                            })
-                        
-                        return display_data, state_data, "✅ Auf Standard zurückgesetzt"
-                    
-                    # Wire up event handlers
-                    fetch_models_btn.click(
-                        fetch_models_for_provider,
-                        inputs=[pref_provider],
-                        outputs=[available_models_list, fetch_status, selected_models_display]
-                    )
-                    
-                    pref_provider.change(
-                        load_user_preferences,
-                        inputs=[pref_provider],
-                        outputs=[selected_models_display, selected_models_state]
-                    )
-                    
-                    add_model_btn.click(
-                        add_model_to_selection,
-                        inputs=[pref_provider, model_to_add, model_display_name, selected_models_state],
-                        outputs=[selected_models_display, selected_models_state, model_mgmt_status]
-                    )
-                    
-                    remove_model_btn.click(
-                        remove_model_from_selection,
-                        inputs=[model_to_remove_idx, selected_models_state],
-                        outputs=[selected_models_display, selected_models_state, model_mgmt_status]
-                    )
-                    
-                    move_model_btn.click(
-                        move_model_in_selection,
-                        inputs=[move_from_idx, move_to_idx, selected_models_state],
-                        outputs=[selected_models_display, selected_models_state, model_mgmt_status]
-                    )
-                    
-                    save_prefs_btn.click(
-                        save_preferences,
-                        inputs=[pref_provider, selected_models_state],
-                        outputs=[save_prefs_status]
-                    )
-                    
-                    reset_prefs_btn.click(
-                        reset_to_defaults,
-                        inputs=[pref_provider],
-                        outputs=[selected_models_display, selected_models_state, save_prefs_status]
-                    )
+                # --- AUTO-LOAD ON TAB SWITCH ---
+                trans_tab.select(fn=load_trans_data, outputs=[trans_history, trans_state])
+                images_tab.select(fn=load_img_data, outputs=[images_history, img_state])
+                prompts_tab.select(fn=load_prompts_data, outputs=[saved_prompts, prompt_state])
 
     # Login/Logout handlers
     def handle_login(username, password):
         success, message, show_app, show_login = login_user(username, password)
         status = f"👤 Angemeldet als: **{current_user['username']}**"
-        
-        # Show admin tab only for admins
-        show_admin_tab = current_user.get("is_admin", False)
-        
-        return message, show_app, show_login, status, gr.update(visible=True), gr.update(visible=show_admin_tab)
+        return message, show_app, show_login, status, gr.update(visible=True)
 
     def handle_logout():
         message, show_app, show_login = logout_user()
-        return message, show_app, show_login, "👤 Nicht angemeldet", gr.update(visible=False), gr.update(visible=False)
+        return message, show_app, show_login, "👤 Nicht angemeldet", gr.update(visible=False)
 
     login_btn.click(
         handle_login,
         [login_username, login_password],
-        [login_message, main_app, login_screen, login_status, logout_btn, admin_tab]  # Add admin_tab
+        [login_message, main_app, login_screen, login_status, logout_btn]
     )
 
     logout_btn.click(
         handle_logout,
-        outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab]  # Add admin_tab
+        outputs=[login_message, main_app, login_screen, login_status, logout_btn]
     )
 
 # ==========================================
