@@ -19,6 +19,7 @@ app.log
 
 # Generated Content (Media/Images usually shouldn't be in git if they are user-generated)
 generated_images/
+jobs/
 
 # OS generated files
 .DS_Store
