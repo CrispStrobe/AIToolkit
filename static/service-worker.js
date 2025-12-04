@@ -1,8 +1,8 @@
 const CACHE_NAME = 'akademie-ki-v1';
 const ASSETS_TO_CACHE = [
   '/',
-  '/custom.css',
-  '/pwa.js',
+  '/static/custom.css',
+  '/static/pwa.js',
   '/manifest.json',
   '/static/icon-192.png',
   '/static/icon-512.png'
