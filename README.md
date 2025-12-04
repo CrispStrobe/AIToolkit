@@ -1,15 +1,19 @@
-# Akademie KI Suite - Complete Deployment Guide
+# KI Suite - Deployment Guide
 
 This documentation covers the deployment of a **GDPR-compliant Multi-Provider AI Suite** with:
-- 💬 **Chat** (Multiple LLM providers)
-- 🎙️ **Audio Transcription** (Gladia, Scaleway, Groq with Whisper)
+- 💬 **Chat** (Multiple LLM providers with context-aware history)
+- 🎙️ **Audio Transcription** (Gladia V2 for long files + Native Chunking for Whisper/Mistral)
+- 📦 **Cloud Storage** (Hetzner Storage Box integration via SMB)
+- 🔄 **Resumable Jobs** (Job tracking for large files)
 - 👁️ **Vision Analysis** (Image understanding)
-- 🎨 **Image Generation** (FLUX models via Nebius)
+- 🎨 **Image Generation** (e.g. FLUX models via Nebius)
 - 💾 **Database Integration** (SQLite with user authentication)
 - 📱 **PWA Support** (Progressive Web App for mobile installation)
 - 🛡️ **Security** (Fail2Ban protection)
 
 The application runs as a Python/Gradio service on `localhost:7860`, managed by **systemd**, and exposed via **Apache reverse proxy** with SSL.
+
+---
 
 ## 📋 Prerequisites
 
@@ -17,166 +21,300 @@ The application runs as a Python/Gradio service on `localhost:7860`, managed by 
 - **RAM:** Minimum 8GB (for handling audio files)
 - **Root/Sudo Access**
 - **Domain:** DNS A-Record pointing to server IP (e.g., `ki.akademie-rs.de`)
-- **API Keys:** From providers (Scaleway, Nebius, etc.)
+- **Storage:** Hetzner Storage Box with sub-account access
+- **API Keys:** Required providers (stored in `.env` file):
+  - OpenAI (for GPT models)
+  - Anthropic (for Claude models)
+  - Scaleway (for transcription)
+  - Groq (for Whisper transcription)
+  - Gladia (for long-form transcription)
+  - Nebius (for FLUX image generation)
+  - Poe (optional, for additional models)
 
 ---
 
 ## 🛠️ Step 1: System Dependencies & Security
 
-**CRITICAL:** FFmpeg must be in PATH for audio. Fail2Ban is installed for intrusion prevention.
+**CRITICAL:** FFmpeg must be in PATH. `cifs-utils` is required for Storage Box mounting.
 
 ```bash
 sudo apt update
 sudo apt upgrade -y
-# Install Python, FFmpeg, Apache, Certbot, SQLite, and Fail2Ban
-sudo apt install -y python3-venv python3-pip ffmpeg apache2 certbot python3-certbot-apache sqlite3 fail2ban
-````
 
-**Verify Installations:**
-
-```bash
-which ffmpeg
-# Output: /usr/bin/ffmpeg
-
-sudo systemctl status fail2ban
-# Should be active (running)
+# Install all required system packages
+sudo apt install -y \
+    python3-venv \
+    python3-pip \
+    ffmpeg \
+    apache2 \
+    certbot \
+    python3-certbot-apache \
+    sqlite3 \
+    fail2ban \
+    cifs-utils
 ```
 
------
+**Verify critical installations:**
 
-## 🐍 Step 2: Application Setup
+```bash
+which ffmpeg                    # Must show: /usr/bin/ffmpeg
+sudo systemctl status fail2ban  # Must be: active (running)
+```
 
-### 2.1 Create Directory Structure
+---
 
-We use a `static` folder for all PWA assets to keep the root clean and permissions manageable.
+## 📦 Step 2: Storage Box Mounting (Hetzner)
+
+Mount the Hetzner Storage Box to `/mnt/akademie_storage` for direct file access.
+
+### 2.1 Create Mount Point
+
+```bash
+sudo mkdir -p /mnt/akademie_storage
+```
+
+### 2.2 Create Credentials File
+
+```bash
+sudo nano /etc/cifs-credentials
+```
+
+**Content:**
+
+```ini
+username=u12345-sub1
+password=YOUR_SUBACCOUNT_PASSWORD
+```
+
+**Secure it:**
+
+```bash
+sudo chmod 600 /etc/cifs-credentials
+```
+
+### 2.3 Configure Auto-Mount via fstab
+
+```bash
+sudo nano /etc/fstab
+```
+
+**Add (single line):**
+
+```text
+//u12345-sub1.your-storagebox.de/u12345-sub1 /mnt/akademie_storage cifs credentials=/etc/cifs-credentials,uid=0,gid=0,file_mode=0770,dir_mode=0770,nounix,vers=3.0,x-systemd.automount,x-systemd.idle-timeout=60 0 0
+```
+
+> **Note:** `uid=0` assumes app runs as root. Change to `1000` for non-root user.
+
+### 2.4 Mount and Verify
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart remote-fs.target
+ls -la /mnt/akademie_storage  # Should list files from Storage Box
+```
+
+---
+
+## 🐍 Step 3: Application Setup
+
+### 3.1 Create Directory Structure
 
 ```bash
 sudo mkdir -p /var/www/transkript_app
 sudo mkdir -p /var/www/transkript_app/static
 sudo mkdir -p /var/www/transkript_app/generated_images
+sudo mkdir -p /var/www/transkript_app/jobs
 cd /var/www/transkript_app
 ```
 
-### 2.2 Create Virtual Environment
+### 3.2 Clone Repository or Copy Files
+
+**Option A: Clone from GitHub**
+```bash
+git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git .
+```
+
+**Option B: Manual File Upload**
+Upload these files from your repository:
+- `app.py` - Main application
+- `requirements.txt` - Python dependencies
+- `static/` folder containing:
+  - `custom.css` - PWA styling
+  - `manifest.json` - PWA manifest
+  - `pwa.js` - PWA logic & install prompt
+  - `service-worker.js` - Offline caching
+  - `icon-192.png` - App icon (192x192)
+  - `icon-512.png` - App icon (512x512)
+
+### 3.3 Create Environment File
+
+**CRITICAL:** Store all API keys in a secured `.env` file.
+
+```bash
+sudo nano /var/www/transkript_app/.env
+```
+
+**Required content:**
+
+```bash
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Scaleway
+SCALEWAY_API_KEY=...
+SCALEWAY_PROJECT_ID=...
+
+# Groq
+GROQ_API_KEY=gsk_...
+
+# Gladia
+GLADIA_API_KEY=...
+
+# Nebius (FLUX)
+NEBIUS_API_KEY=...
+
+# Poe (Optional)
+POE_API_KEY=...
+
+# Storage Box
+STORAGE_BOX_PATH=/mnt/akademie_storage
+```
+
+**Secure it:**
+
+```bash
+sudo chmod 600 /var/www/transkript_app/.env
+```
+
+### 3.4 Create Virtual Environment
 
 ```bash
 sudo python3 -m venv venv
 source venv/bin/activate
 ```
 
-### 2.3 Install Python Dependencies
+### 3.5 Install Python Dependencies
 
 ```bash
 pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+**If `requirements.txt` is missing, install manually:**
+
+```bash
 pip install \
     "openai>=1.0" \
     gradio==4.44.0 \
     requests \
     pillow \
+    pydub \
     pypdf2 \
     sqlalchemy \
-    bcrypt
+    bcrypt \
+    fastapi-poe
 ```
 
-### 2.4 Application Code (`app.py`)
-
-When creating `app.py`, you **must** inject the PWA HTML head tags.
-
-**PWA Injection (Insert before `with gr.Blocks...`):**
-
-```python
-# ==========================================
-# 📱 PWA CONFIGURATION
-# ==========================================
-PWA_HEAD = """
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#1976d2">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Akademie KI">
-
-<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
-<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
-<link rel="icon" type="image/png" sizes="512x512" href="/static/icon-512.png">
-<link rel="apple-touch-icon" href="/static/icon-192.png">
-
-<link rel="stylesheet" href="/static/custom.css">
-<script src="/static/pwa.js" defer></script>
-"""
-
-# Pass it to Gradio:
-with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD) as demo:
-    # ... rest of app ...
-```
-
-### 2.5 Initialize Logs & DB Permissions
+### 3.6 Initialize Permissions
 
 ```bash
+# Create log file
 sudo touch /var/www/transkript_app/app.log
 sudo chmod 666 /var/www/transkript_app/app.log
-# Database created on first run
+
+# Set directory permissions
 sudo chmod -R 755 /var/www/transkript_app
+
+# PWA files need Apache ownership
+sudo chown -R www-data:www-data /var/www/transkript_app/static
+sudo chmod -R 755 /var/www/transkript_app/static
 ```
 
------
+---
 
-## 🌐 Step 3: Apache Configuration (The Robust Method)
+## 🌐 Step 4: Apache Configuration
 
-This configuration serves PWA files directly via Apache and proxies the rest to Python. This prevents 404 errors.
+This configuration serves PWA files directly via Apache and proxies the Gradio app with proper HTTPS headers.
 
-### 3.1 Enable Modules
+### 4.1 Enable Required Modules
 
 ```bash
 sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl
 ```
 
-### 3.2 SSL Setup
-
-First, generate the certificate:
+### 4.2 SSL Certificate Setup
 
 ```bash
 sudo certbot --apache -d ki.akademie-rs.de
 ```
 
-### 3.3 Final Apache Config
+### 4.3 HTTP Config (Port 80 - HTTPS Redirect)
 
-Edit the SSL config created by Certbot:
+Edit `/etc/apache2/sites-available/transkript.conf`:
 
-```bash
-sudo nano /etc/apache2/sites-available/transkript-le-ssl.conf
+```apache
+<VirtualHost *:80>
+    ServerName ki.akademie-rs.de
+    
+    # Proxy settings for Gradio
+    ProxyPreserveHost On
+    
+    # Websocket support (Required for Gradio queue)
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*)           ws://127.0.0.1:7860/$1 [P,L]
+    
+    RewriteCond %{HTTP:Upgrade} !=websocket [NC]
+    RewriteRule /(.*)           http://127.0.0.1:7860/$1 [P,L]
+    
+    ProxyPass / http://127.0.0.1:7860/
+    ProxyPassReverse / http://127.0.0.1:7860/
+    
+    # Force HTTPS
+    RewriteCond %{SERVER_NAME} =ki.akademie-rs.de
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+</VirtualHost>
 ```
 
-**Replace content with:**
+### 4.4 HTTPS Config (Port 443 - Main Config)
+
+Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
 
 ```apache
 <IfModule mod_ssl.c>
 <VirtualHost *:443>
     ServerName ki.akademie-rs.de
-
+    
     # =================================================
     # 1. STATIC FILES (Served by Apache)
     # =================================================
-
-    # Serve the static folder
+    
+    # Static Directory
     Alias /static /var/www/transkript_app/static
     <Directory /var/www/transkript_app/static>
         Require all granted
         Options -Indexes
+        # Force MIME types
         AddType text/css .css
         AddType application/javascript .js
         AddType image/png .png
+        # Cache control
         Header set Cache-Control "public, max-age=31536000, immutable"
     </Directory>
-
-    # Manifest (Map root URL -> static file)
+    
+    # Manifest (Root Alias)
     Alias /manifest.json /var/www/transkript_app/static/manifest.json
     <Files "manifest.json">
         Require all granted
         Header set Content-Type "application/manifest+json"
         Header set Cache-Control "no-cache"
     </Files>
-
-    # Service Worker (Map root URL -> static file)
+    
+    # Service Worker (Root Alias)
     Alias /service-worker.js /var/www/transkript_app/static/service-worker.js
     <Files "service-worker.js">
         Require all granted
@@ -184,35 +322,42 @@ sudo nano /etc/apache2/sites-available/transkript-le-ssl.conf
         Header set Cache-Control "no-cache"
         Header set Service-Worker-Allowed "/"
     </Files>
-
+    
     # =================================================
     # 2. PROXY SETTINGS (Gradio)
     # =================================================
     
     ProxyPreserveHost On
+    
+    # Critical Headers for HTTPS Forwarding
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port "443"
+    RequestHeader set X-Forwarded-Host "ki.akademie-rs.de"
+    
     RewriteEngine On
-
+    
     # Websockets (Required for Gradio queue)
     RewriteCond %{HTTP:Upgrade} =websocket [NC]
     RewriteRule /(.*)           ws://127.0.0.1:7860/$1 [P,L]
-
-    # EXCLUDE PWA files from Proxy (Apache handles them)
+    
+    # Exclude PWA files from Proxy (Apache serves these)
     ProxyPass /static !
     ProxyPass /manifest.json !
     ProxyPass /service-worker.js !
-
-    # Proxy everything else to Python
-    ProxyPass / [http://127.0.0.1:7860/](http://127.0.0.1:7860/)
-    ProxyPassReverse / [http://127.0.0.1:7860/](http://127.0.0.1:7860/)
-
+    
+    # Send everything else to Python
+    ProxyPass / http://127.0.0.1:7860/
+    ProxyPassReverse / http://127.0.0.1:7860/
+    
     # =================================================
-    # 3. SSL & LIMITS
+    # 3. SSL CONFIGURATION
     # =================================================
+    
     SSLCertificateFile /etc/letsencrypt/live/ki.akademie-rs.de/fullchain.pem
     SSLCertificateKeyFile /etc/letsencrypt/live/ki.akademie-rs.de/privkey.pem
     Include /etc/letsencrypt/options-ssl-apache.conf
-
-    # Increase limits for large audio uploads
+    
+    # Upload Limits (1GB for audio files)
     LimitRequestBody 1048576000
     ProxyTimeout 600
     TimeOut 600
@@ -220,17 +365,24 @@ sudo nano /etc/apache2/sites-available/transkript-le-ssl.conf
 </IfModule>
 ```
 
------
-
-## ⚙️ Step 4: Systemd Service
+### 4.5 Enable Sites and Restart Apache
 
 ```bash
-sudo nano /etc/systemd/system/transkript.service
+sudo a2ensite transkript.conf
+sudo a2ensite transkript-le-ssl.conf
+sudo apache2ctl configtest  # Should show "Syntax OK"
+sudo systemctl restart apache2
 ```
+
+---
+
+## ⚙️ Step 5: Systemd Service
+
+Create `/etc/systemd/system/transkript.service`:
 
 ```ini
 [Unit]
-Description=Gradio Akademie KI Suite
+Description=Gradio App
 After=network.target
 
 [Service]
@@ -238,7 +390,7 @@ Type=simple
 User=root
 WorkingDirectory=/var/www/transkript_app
 Environment="PATH=/var/www/transkript_app/venv/bin:/usr/local/bin:/usr/bin:/bin"
-Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/var/www/transkript_app/.env
 ExecStart=/var/www/transkript_app/venv/bin/python app.py
 Restart=always
 RestartSec=10
@@ -247,136 +399,292 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Enable it:
+**Key Points:**
+- `EnvironmentFile=/var/www/transkript_app/.env` - Loads API keys from .env file
+- `User=root` - Runs as root (change if using non-root deployment)
+- `Restart=always` - Auto-restart on crashes
+
+**Enable and start:**
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable transkript
-sudo systemctl restart transkript
+sudo systemctl start transkript
 ```
 
------
-
-## 📱 Step 5: PWA Files Setup
-
-All PWA files must reside in `/var/www/transkript_app/static/`.
-
-### 5.1 Directory Permissions
-
-**Crucial:** Apache (`www-data`) needs ownership of static files.
+**Check status:**
 
 ```bash
-sudo chown -R www-data:www-data /var/www/transkript_app/static
-sudo chmod -R 755 /var/www/transkript_app/static
+sudo systemctl status transkript
 ```
 
-### 5.2 `manifest.json` (in /static/)
-
-Note: Icons point to `/static/`.
-
-```json
-{
-  "name": "Akademie KI Suite Ultimate",
-  "short_name": "Akademie KI",
-  "start_url": "/?source=pwa",
-  "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#1976d2",
-  "icons": [
-    {
-      "src": "/static/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/static/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ]
-}
-```
-
-### 5.3 `service-worker.js` (in /static/)
-
-```javascript
-const CACHE_NAME = 'akademie-ki-v1';
-const ASSETS_TO_CACHE = [
-  '/',
-  '/static/custom.css',
-  '/static/pwa.js',
-  '/manifest.json',
-  '/static/icon-192.png'
-];
-
-self.addEventListener('install', event => {
-  self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS_TO_CACHE))
-  );
-});
-
-self.addEventListener('fetch', event => {
-  event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
-  );
-});
-```
-
------
+---
 
 ## 🛡️ Step 6: Fail2Ban Configuration
 
-Fail2Ban is installed, but we can add a custom jail for Apache to block repeated 404/403 errors or bot scanners.
+Protect against brute-force attacks and malicious bots.
 
-1.  Create a local jail config:
-
-<!-- end list -->
+### 6.1 Create Local Configuration
 
 ```bash
 sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
 sudo nano /etc/fail2ban/jail.local
 ```
 
-2.  Ensure `[sshd]` is enabled.
-3.  Optionally enable `[apache-auth]` or `[apache-badbots]`.
+### 6.2 Enable Apache Protections
 
-Restart to apply:
+Ensure these sections are enabled:
+
+```ini
+[sshd]
+enabled = true
+
+[apache-auth]
+enabled = true
+
+[apache-badbots]
+enabled = true
+
+[apache-noscript]
+enabled = true
+
+[apache-overflows]
+enabled = true
+```
+
+### 6.3 Restart Fail2Ban
 
 ```bash
 sudo systemctl restart fail2ban
+sudo fail2ban-client status  # Verify active jails
 ```
 
------
+---
 
 ## 📁 Final File Structure
 
 ```
 /var/www/transkript_app/
-├── app.py                      # Main App (with PWA_HEAD)
-├── akademie_suite.db           # Database
-├── venv/                       # Virtual Environment
-└── static/                     # Owned by www-data
-    ├── custom.css
-    ├── pwa.js
-    ├── manifest.json
-    ├── service-worker.js
-    ├── icon-192.png
-    └── icon-512.png
+├── app.py                      # Main application (from repo)
+├── requirements.txt            # Python dependencies (from repo)
+├── .env                        # API keys (NOT in repo - created manually)
+├── akademie_suite.db           # SQLite database (auto-created on first run)
+├── app.log                     # Application logs
+├── venv/                       # Python virtual environment
+├── jobs/                       # Resume job manifests (auto-created)
+├── generated_images/           # AI-generated images (auto-created)
+└── static/                     # PWA assets (from repo, owned by www-data)
+    ├── custom.css              # PWA styling
+    ├── pwa.js                  # PWA registration & install prompt
+    ├── manifest.json           # PWA manifest
+    ├── service-worker.js       # Offline caching
+    ├── icon-192.png            # App icon (192x192)
+    └── icon-512.png            # App icon (512x512)
+
+/mnt/akademie_storage/          # Hetzner Storage Box (mounted via CIFS)
+├── shared/                     # Shared files across users
+└── [username]/                 # User-specific folders
 ```
 
------
+**Files from GitHub Repository:**
+- `app.py`, `requirements.txt`, `static/*` - Version controlled
+- `.env` - **NOT in repo** (contains secrets, create manually on server)
+- `akademie_suite.db`, `app.log`, `jobs/`, `generated_images/` - Auto-generated
 
-## 🔍 Troubleshooting PWA
+---
 
-If "Install App" does not appear:
+## 🔍 Troubleshooting
 
-1.  **Clear Mobile Cache:** Browsers cache 404 errors aggressively.
-2.  **Check Console:** Look for Red 404s.
-3.  **Verify HTTPS:** PWA requires valid SSL.
-4.  **Test URLs:**
-      * `https://ki.akademie-rs.de/manifest.json` (Should load JSON)
-      * `https://ki.akademie-rs.de/static/pwa.js` (Should load JS)
+### Service Not Starting
 
+```bash
+# Check service status
+sudo systemctl status transkript
+
+# View detailed logs
+sudo journalctl -u transkript -f
+
+# Check application logs
+tail -f /var/www/transkript_app/app.log
+
+# Common issues:
+# - Missing .env file → Create /var/www/transkript_app/.env
+# - Missing FFmpeg → sudo apt install ffmpeg
+# - Port 7860 in use → sudo lsof -i :7860
+```
+
+### PWA Not Installing on Mobile
+
+```bash
+# Test URLs (all should return 200 OK)
+curl -I https://ki.akademie-rs.de/manifest.json
+curl -I https://ki.akademie-rs.de/service-worker.js
+curl -I https://ki.akademie-rs.de/static/icon-192.png
+
+# Common fixes:
+# 1. Clear browser cache/data on mobile
+# 2. Verify HTTPS is working
+# 3. Check Apache logs: sudo tail -f /var/log/apache2/error.log
+# 4. Verify permissions: ls -la /var/www/transkript_app/static
+```
+
+### Storage Box Not Mounting
+
+```bash
+# Check mount status
+mount | grep akademie_storage
+
+# Test credentials
+sudo cat /etc/cifs-credentials
+
+# Manual mount test
+sudo mount -t cifs \
+    //u12345-sub1.your-storagebox.de/u513542-sub1 \
+    /mnt/akademie_storage \
+    -o credentials=/etc/cifs-credentials,uid=0,gid=0
+
+# Check mount in real-time
+sudo mount -v -t cifs //u12345-sub1.your-storagebox.de/u12345-sub1 /mnt/akademie_storage -o credentials=/etc/cifs-credentials
+```
+
+### Apache Configuration Issues
+
+```bash
+# Test configuration
+sudo apache2ctl configtest
+
+# Check which sites are enabled
+sudo apache2ctl -S
+
+# View Apache logs
+sudo tail -f /var/log/apache2/error.log
+sudo tail -f /var/log/apache2/access.log
+
+# Restart Apache
+sudo systemctl restart apache2
+```
+
+### Permission Issues
+
+```bash
+# Fix static files (must be owned by www-data)
+sudo chown -R www-data:www-data /var/www/transkript_app/static
+sudo chmod -R 755 /var/www/transkript_app/static
+
+# Fix log file
+sudo chmod 666 /var/www/transkript_app/app.log
+
+# Fix app directory
+sudo chmod -R 755 /var/www/transkript_app
+```
+
+### Missing API Keys
+
+```bash
+# Verify .env file exists
+cat /var/www/transkript_app/.env
+
+# Test if service can read it
+sudo systemctl restart transkript
+sudo journalctl -u transkript -n 50  # Look for API key errors
+```
+
+---
+
+## 📝 Maintenance Tasks
+
+### SSL Certificate Renewal
+
+Certbot auto-renews, but test it:
+
+```bash
+sudo certbot renew --dry-run
+```
+
+### Update Application
+
+```bash
+cd /var/www/transkript_app
+
+# Pull latest changes (if using Git)
+git pull
+
+# Or upload new files manually
+
+# Update dependencies
+source venv/bin/activate
+pip install -r requirements.txt --upgrade
+
+# Restart service
+sudo systemctl restart transkript
+```
+
+### Update Python Dependencies
+
+```bash
+cd /var/www/transkript_app
+source venv/bin/activate
+pip list --outdated
+pip install --upgrade [package_name]
+sudo systemctl restart transkript
+```
+
+### Backup Database
+
+```bash
+sudo cp /var/www/transkript_app/akademie_suite.db \
+       /var/www/transkript_app/akademie_suite.db.backup-$(date +%Y%m%d)
+```
+
+### Monitor Disk Space
+
+```bash
+# Check Storage Box usage
+df -h /mnt/akademie_storage
+
+# Check local disk
+df -h /var/www/transkript_app
+```
+
+---
+
+## 🚀 Quick Reference
+
+### Service Management
+```bash
+sudo systemctl start transkript      # Start service
+sudo systemctl stop transkript       # Stop service
+sudo systemctl restart transkript    # Restart service
+sudo systemctl status transkript     # Check status
+```
+
+### View Logs
+```bash
+sudo journalctl -u transkript -f     # Follow systemd logs
+tail -f /var/www/transkript_app/app.log  # Follow app logs
+sudo tail -f /var/log/apache2/error.log  # Apache errors
+```
+
+### Critical Files
+- **Application:** `/var/www/transkript_app/app.py`
+- **Environment:** `/var/www/transkript_app/.env` (secrets)
+- **Service:** `/etc/systemd/system/transkript.service`
+- **Apache SSL:** `/etc/apache2/sites-available/transkript-le-ssl.conf`
+- **Storage Credentials:** `/etc/cifs-credentials`
+
+---
+
+## ⚠️ Security Checklist
+
+- ✅ `.env` file permissions set to `600` (only root can read)
+- ✅ `/etc/cifs-credentials` permissions set to `600`
+- ✅ Fail2Ban enabled and running
+- ✅ SSL certificate valid and auto-renewing
+- ✅ Firewall configured (only ports 22, 80, 443 open)
+- ✅ Regular backups of `akademie_suite.db`
+- ✅ Apache upload limits configured (1GB)
+- ✅ Storage Box mounted with restricted permissions
+
+---
+
+**Last Updated:** December 2025
