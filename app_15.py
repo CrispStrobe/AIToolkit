@@ -2378,50 +2378,29 @@ def select_chat_row(evt: gr.SelectData, state_data):
 
 def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_file, sb_files):
     """
-    Attach content to chat.
-    Fixes: Now accepts 6 arguments including sb_files.
+    Attach content (Transcript, Vision, Custom Text, or File) to chat.
     """
     if not current_user["id"]:
         return hist, "❌ Bitte anmelden"
 
     content_to_add = ""
 
-    # 1. Handle File Upload (Browser)
+    # 1. Handle File Upload
     if attach_type == "Datei uploaden" and uploaded_file:
         try:
             filename = os.path.basename(uploaded_file.name)
+            # Simple text extraction for code/text files
             if filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.py', '.js', '.html', '.css', '.xml', '.yaml')):
-                with open(uploaded_file.name, "r", encoding="utf-8", errors='ignore') as f:
+                with open(uploaded_file.name, "r", encoding="utf-8") as f:
                     file_content = f.read()
                 content_to_add = f"[Datei Inhalt: {filename}]\n\n{file_content}"
             else:
+                # For binaries/PDFs/Images (placeholder for future OCR/Vision logic)
                 content_to_add = f"[Datei hochgeladen: {filename}] (Inhalt konnte nicht als Text extrahiert werden, aber Datei liegt vor.)"
         except Exception as e:
             return hist, f"❌ Fehler beim Lesen der Datei: {str(e)}"
 
-    # 2. Handle Storage Box File
-    elif attach_type == "Storage Box Datei" and sb_files:
-        try:
-            # FileExplorer returns list of files
-            f_path = sb_files[0] if isinstance(sb_files, list) else sb_files
-            
-            # Sanitize path
-            if not f_path.startswith("/"):
-                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
-            
-            filename = os.path.basename(f_path)
-            
-            # We try to read text files directly; generic note for others
-            if filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.html')):
-                with open(f_path, "r", encoding="utf-8", errors='ignore') as f:
-                    content = f.read()
-                content_to_add = f"[Datei aus Cloud: {filename}]\n\n{content}"
-            else:
-                content_to_add = f"[Datei aus Cloud: {filename}] (Pfad: {f_path})"
-        except Exception as e:
-            return hist, f"❌ Lesefehler: {str(e)}"
-
-    # 3. Handle Transcript
+    # 2. Handle Transcript
     elif attach_type == "Transkript":
         if not attach_id: return hist, "❌ ID fehlt"
         db = get_db()
@@ -2430,7 +2409,7 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
         if trans: content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
         else: return hist, "❌ Transkript nicht gefunden"
 
-    # 4. Handle Vision
+    # 3. Handle Vision
     elif attach_type == "Vision-Ergebnis":
         if not attach_id: return hist, "❌ ID fehlt"
         db = get_db()
@@ -2439,10 +2418,25 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
         if vision: content_to_add = f"[Vision #{vision.id}]\n\n{vision.result}"
         else: return hist, "❌ Vision nicht gefunden"
 
-    # 5. Handle Custom Text
+    # 4. Handle Custom Text
     elif attach_type == "Eigener Text":
         if not custom_text: return hist, "❌ Text fehlt"
         content_to_add = custom_text
+        
+    # 5. Handle Storage Box File
+    elif attach_type == "Storage Box Datei" and sb_files:
+        try:
+            f_path = sb_files[0] if isinstance(sb_files, list) else sb_files
+            if not f_path.startswith("/"):
+                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+            
+            # Read directly
+            with open(f_path, "r", encoding="utf-8", errors='ignore') as f:
+                content = f.read()
+                
+            content_to_add = f"[Datei aus Cloud: {os.path.basename(f_path)}]\n\n{content}"
+        except Exception as e:
+            return hist, f"❌ Lesefehler: {str(e)}"
 
     # Add to chat history
     if not hist: hist = []
@@ -2722,21 +2716,24 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
             with gr.TabItem("💬 Chat", id="chat_tab") as chat_tab:
                 with gr.Row():
                     with gr.Column(scale=3):
-                        # Top Bar
+                        # Top Bar: Provider, Model, Load All
                         with gr.Row():
-                            c_prov = gr.Dropdown(list(PROVIDERS.keys()), value="Scaleway", label="Anbieter", scale=2)
-                            c_model = gr.Dropdown(PROVIDERS["Scaleway"]["chat_models"], value=PROVIDERS["Scaleway"]["chat_models"][0], label="Modell", scale=4)
-                            c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=60)
+                            c_prov = gr.Dropdown(list(PROVIDERS.keys()), value="Scaleway", label="Anbieter", scale=1)
+                            c_model = gr.Dropdown(PROVIDERS["Scaleway"]["chat_models"], value=PROVIDERS["Scaleway"]["chat_models"][0], label="Modell", scale=2)
+                            c_load_all_btn = gr.Button("🌍 Alle laden", scale=0, size="sm", variant="secondary", min_width=80)
 
                         c_badge = gr.HTML(value=PROVIDERS["Scaleway"]["badge"])
 
-                        # UI Updates
-                        c_prov.change(lambda p: update_c_ui(p, force_all=False), inputs=c_prov, outputs=[c_model, c_badge])
-                        c_load_all.click(lambda p: update_c_ui(p, force_all=True), inputs=c_prov, outputs=[c_model, c_badge])
+                        # UI Update Logic
+                        def trigger_update_c_ui(prov, load_all_click=False):
+                            return update_c_ui(prov, force_all=load_all_click)
+
+                        c_prov.change(trigger_update_c_ui, inputs=[c_prov], outputs=[c_model, c_badge])
+                        c_load_all_btn.click(lambda p: update_c_ui(p, force_all=True), inputs=[c_prov], outputs=[c_model, c_badge])
 
                         # Chat Area
                         c_bot = gr.Chatbot(height=500, type="messages")
-                        c_msg = gr.Textbox(placeholder="Nachricht...", show_label=False, lines=3)
+                        c_msg = gr.Textbox(placeholder="Nachricht eingeben...", show_label=False, lines=3)
 
                         with gr.Row():
                             c_btn = gr.Button("📤 Senden", variant="primary", scale=2)
@@ -2746,32 +2743,40 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         c_save_status = gr.Markdown("")
 
-                    # Right Sidebar
+                    # Right Sidebar (Settings & Tools)
                     with gr.Column(scale=1):
                         
-                        # 1. Settings (Closed)
+                        # 1. SETTINGS (Default: Closed)
                         with gr.Accordion("⚙️ Einstellungen", open=False):
                             c_key = gr.Textbox(label="API Key (Optional)", type="password")
                             c_sys = gr.Textbox(label="System Rolle", value="Du bist ein hilfreicher Assistent.", lines=3)
                             c_temp = gr.Slider(0, 2, value=0.7, label="Kreativität")
 
-                        # 2. History (Closed)
+                        # 2. LOAD CHATS (Default: Closed, Preloads on Tab Select)
                         with gr.Accordion("📚 Alte Chats laden", open=False):
-                            c_history_state = gr.State([]) 
+                            c_history_state = gr.State([]) # Store real data
                             refresh_chats_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                            old_chats = gr.Dataframe(headers=["ID", "Datum", "Titel", "Modell"], value=[[None, "", "", ""]], label="Gespeicherte Chats", interactive=False, height=200, wrap=True)
+                            
+                            old_chats = gr.Dataframe(
+                                headers=["ID", "Datum", "Titel", "Modell"],
+                                value=[[None, "", "", ""]],
+                                label="Klicken zum Laden",
+                                interactive=False,
+                                height=200,
+                                wrap=True
+                            )
                             
                             with gr.Row():
                                 load_chat_id = gr.Number(label="Chat-ID", precision=0)
                                 delete_chat_btn = gr.Button("🗑️", scale=0)
                             
-                            load_chat_btn = gr.Button("📥 Chat laden", variant="primary")
+                            load_chat_btn = gr.Button("📥 Chat wiederherstellen", variant="primary")
                             chat_load_status = gr.Markdown("")
 
-                        # 3. Attachments & Prompts (Closed)
+                        # 3. ATTACHMENTS (Default: Closed)
                         with gr.Accordion("📎 Inhalt & Prompts", open=False):
                             
-                            # Custom Prompts
+                            # A. Custom Prompts
                             gr.Markdown("**📝 Vorlagen**")
                             with gr.Row():
                                 c_prompt_select = gr.Dropdown(choices=[], label="Vorlage wählen", scale=2)
@@ -2783,7 +2788,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             # Content Attachments
                             gr.Markdown("**📎 Anhang**")
                             attach_type = gr.Radio(
-                                ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"],
+                                ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"], # <--- NEW OPTION
                                 value="Transkript",
                                 label="Typ"
                             )
@@ -2793,74 +2798,75 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             attach_custom = gr.Textbox(label="Text einfügen", lines=3, visible=False)
                             attach_file = gr.File(label="Datei wählen", visible=False)
                             
-                            # STORAGE BOX BROWSER FOR CHAT
-                            with gr.Group(visible=False) as sb_group:
-                                gr.Markdown("Dateien auf Server:")
-                                attach_sb_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
-                                    height=200
-                                )
-                                sb_refresh_btn = gr.Button("🔄 Aktualisieren", size="sm")
-
+                            # Storage Browser for Chat
+                            attach_sb_browser = gr.FileExplorer(
+                                root_dir=STORAGE_MOUNT_POINT,
+                                visible=False,
+                                height=200,
+                                label="Cloud Speicher"
+                            )
+                            
                             attach_btn = gr.Button("➕ An Chat anhängen", variant="secondary")
                             attach_status = gr.Markdown("")
 
-                            # Toggle visibility
+                            # Input visibility logic
                             def toggle_attach_inputs(atype):
                                 return (
                                     gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]),
                                     gr.update(visible=atype == "Eigener Text"),
                                     gr.update(visible=atype == "Datei uploaden"),
-                                    gr.update(visible=atype == "Storage Box Datei")
+                                    gr.update(visible=atype == "Storage Box Datei") # <--- NEW
                                 )
-                            
-                            attach_type.change(
-                                toggle_attach_inputs, 
-                                attach_type, 
-                                [attach_id, attach_custom, attach_file, sb_group]
-                            )
-                            
-                            # Refresh Logic for Chat
-                            def refresh_chat_sb():
-                                return gr.update(value=None)
-                            sb_refresh_btn.click(refresh_chat_sb, outputs=attach_sb_browser)
+                            attach_type.change(toggle_attach_inputs, attach_type, [attach_id, attach_custom, attach_file, attach_sb_browser])
 
                 # --- EVENT WIRING ---
 
-                # Chat Execution (With Stop)
-                submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot
-                )
-                click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot
-                )
+                # Chat Execution with STOP function
+                user_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False)
+                bot_event = user_event.then(bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot)
                 
+                send_click = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False)
+                bot_click_event = send_click.then(bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot)
+
                 # Stop Button
-                c_stop_btn.click(fn=None, cancels=[submit_event, click_event])
+                c_stop_btn.click(fn=None, cancels=[bot_event, bot_click_event])
 
                 # Save & Clear
                 c_save_btn.click(save_chat, [c_bot, c_prov, c_model], c_save_status)
                 c_clear_btn.click(lambda: ([], ""), outputs=[c_bot, c_save_status])
 
-                # History Logic
+                # --- History Logic ---
+                # Preload on Tab Select
                 chat_tab.select(load_chat_list_with_state, outputs=[old_chats, c_history_state])
+                
+                # Refresh Button
                 refresh_chats_btn.click(load_chat_list_with_state, outputs=[old_chats, c_history_state])
+                
+                # Smart Selection (Click row -> Set ID)
                 old_chats.select(select_chat_row, inputs=[c_history_state], outputs=[load_chat_id])
+                
+                # Load / Delete Actions
                 load_chat_btn.click(load_single_chat, load_chat_id, [c_bot, chat_load_status])
-                delete_chat_btn.click(delete_chat, load_chat_id, [chat_load_status, old_chats])
+                delete_chat_btn.click(delete_chat, load_chat_id, [chat_load_status, old_chats]) # Note: Ideally chain reload here
 
-                # Attachment Logic - FIXED: NOW PASSING 6 ARGUMENTS
-                attach_btn.click(
-                    attach_content_to_chat, 
-                    [c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser], 
-                    [c_bot, attach_status]
+                # --- Attachment Logic ---
+                attach_btn.click(attach_content_to_chat, [c_bot, attach_type, attach_id, attach_custom, attach_file], [c_bot, attach_status])
+                
+                # --- Prompt Template Logic ---
+                # Refresh Dropdown
+                c_prompt_refresh.click(
+                    get_user_prompt_choices, 
+                    outputs=c_prompt_select
                 )
-
-                # Prompt Logic
-                c_prompt_refresh.click(get_user_prompt_choices, outputs=c_prompt_select)
+                # Auto-load prompts when opening accordion (optional, using mouseover/click for now or chaining)
                 chat_tab.select(get_user_prompt_choices, outputs=c_prompt_select)
-                c_insert_prompt_btn.click(insert_custom_prompt, inputs=[c_prompt_select, c_msg], outputs=[c_msg])
+
+                # Insert Text
+                c_insert_prompt_btn.click(
+                    insert_custom_prompt,
+                    inputs=[c_prompt_select, c_msg],
+                    outputs=[c_msg]
+                )
 
             # --- TAB 2: TRANSKRIPTION ---
             with gr.TabItem("🎙️ Transkription"):
@@ -2873,16 +2879,15 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle eine Datei aus dem Cloud-Speicher:")
-                                
-                                # FIXED: Glob set to "**/*" to ensure all file types are seen
+                                # Note: Ensure your STORAGE_MOUNT_POINT is accessible
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*", 
+                                    glob="**/*.{mp3,wav,m4a,mp4,mov}", 
                                     height=300,
                                     label="Dateien durchsuchen"
                                 )
                                 with gr.Row():
-                                    t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
+                                    t_refresh_sb_btn = gr.Button("🔄", size="sm", scale=0)
                                     t_load_sb_btn = gr.Button("✅ Diese Datei verwenden", variant="secondary", scale=1)
                                 t_sb_status = gr.Markdown("")
 
@@ -2891,9 +2896,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             if not selected_files:
                                 return None, "❌ Keine Datei ausgewählt"
                             
+                            # Handle list vs single string
                             f_path = selected_files[0] if isinstance(selected_files, list) else selected_files
                             
-                            # Handle relative paths
+                            # Handle relative paths from FileExplorer
                             if not f_path.startswith("/"):
                                 f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
                                 
@@ -2905,7 +2911,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 return None, f"🔥 Fehler: {str(e)}"
 
                         def refresh_explorer():
-                            # Trigger re-render
                             return gr.update(value=None) 
 
                         t_load_sb_btn.click(use_storage_file, inputs=t_storage_browser, outputs=[t_audio, t_sb_status])
@@ -2995,23 +3000,28 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     send_status = gr.Markdown("")
 
                 # --- LOGIC WIRING ---
+                
+                # Update chat model dropdown logic
                 def update_chat_model_dropdown(prov):
                     ms = PROVIDERS.get(prov, {}).get("chat_models", [])
                     return gr.update(choices=ms, value=ms[0] if ms else "")
 
                 chat_provider.change(update_chat_model_dropdown, chat_provider, chat_model_for_transcript)
 
+                # Show/hide custom prompt field
                 def toggle_custom_prompt(template):
                     return gr.update(visible=(template == "Eigener Prompt"))
 
                 prompt_template.change(toggle_custom_prompt, prompt_template, custom_prompt_input)
 
+                # Sync language between Gladia and Whisper
                 def sync_languages(lang_value):
                     return lang_value
 
                 t_lang.change(sync_languages, t_lang, w_lang)
                 w_lang.change(sync_languages, w_lang, t_lang)
 
+                # Connect transcription button
                 t_btn.click(
                     run_and_save_transcription, 
                     inputs=[
@@ -3022,16 +3032,18 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     outputs=[t_log, t_orig, t_trsl]
                 )
 
+                # Connect manual save button
                 t_save_btn.click(
                     manual_save_transcription,
                     inputs=[t_orig, t_trsl, t_prov, t_model, t_lang],
                     outputs=t_save_status
                 )
 
+                # Connect send to chat
                 send_to_chat_btn.click(
                     send_transcript_to_chat,
                     inputs=[
-                        t_orig,
+                        t_orig,  # Use original transcript
                         prompt_template,
                         additional_notes,
                         custom_prompt_input,

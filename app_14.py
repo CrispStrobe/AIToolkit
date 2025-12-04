@@ -508,119 +508,11 @@ def get_user_generated_images(user_id: int, limit: int = 50):
 # Initialize default users
 create_default_users()
 
-
-# ==========================================
-# 📦 STORAGE BOX HELPER
-# ==========================================
-STORAGE_MOUNT_POINT = "/mnt/akademie_storage"
-
-def ensure_user_storage_dirs(username):
-    """Creates /shared and /username folders on the Storage Box"""
-    if not os.path.exists(STORAGE_MOUNT_POINT):
-        return False # Mount not active
-        
-    shared_path = os.path.join(STORAGE_MOUNT_POINT, "shared")
-    user_path = os.path.join(STORAGE_MOUNT_POINT, username)
-    
-    os.makedirs(shared_path, exist_ok=True)
-    os.makedirs(user_path, exist_ok=True)
-    return True
-
-def copy_storage_file_to_temp(file_path):
-    """
-    Copies a file from Storage Box to local temp for processing.
-    Returns path to local temp file.
-    """
-    if not file_path: return None
-    
-    # Security check: Ensure path is within mount point
-    abs_path = os.path.abspath(file_path)
-    if not abs_path.startswith(os.path.abspath(STORAGE_MOUNT_POINT)):
-        raise ValueError("Zugriff verweigert: Datei liegt außerhalb der Storage Box")
-        
-    if not os.path.exists(abs_path):
-        raise ValueError("Datei existiert nicht")
-        
-    # Copy to temp
-    filename = os.path.basename(abs_path)
-    temp_dir = tempfile.gettempdir()
-    local_dest = os.path.join(temp_dir, f"sb_{int(time.time())}_{filename}")
-    
-    import shutil
-    shutil.copy2(abs_path, local_dest)
-    return local_dest
-
-def get_storage_root():
-    """Returns valid root for FileExplorer based on login"""
-    if current_user["id"]:
-        # Ensure folders exist
-        ensure_user_storage_dirs(current_user["username"])
-        return STORAGE_MOUNT_POINT
-    return None
-
 # ==========================================
 # AUDIO HELPERS
 # ==========================================
 
 import shutil
-
-JOB_STATE_DIR = "/var/www/transkript_app/jobs"
-os.makedirs(JOB_STATE_DIR, exist_ok=True)
-
-def create_job_manifest(job_id, audio_path, provider, model, chunks, lang, prompt, temp):
-    """Save job state to disk"""
-    manifest = {
-        "job_id": job_id,
-        "audio_path": audio_path,
-        "provider": provider,
-        "model": model,
-        "lang": lang,
-        "prompt": prompt,
-        "temp": temp,
-        "created_at": time.time(),
-        "chunks": [{"path": p, "status": "pending"} for p in chunks],
-        "transcript_parts": [""] * len(chunks)
-    }
-    with open(os.path.join(JOB_STATE_DIR, f"{job_id}.json"), "w") as f:
-        json.dump(manifest, f)
-    return manifest
-
-def update_job_chunk_status(job_id, chunk_index, status, text=None):
-    """Update status of a specific chunk"""
-    path = os.path.join(JOB_STATE_DIR, f"{job_id}.json")
-    if not os.path.exists(path): return
-    
-    with open(path, "r") as f:
-        manifest = json.load(f)
-    
-    manifest["chunks"][chunk_index]["status"] = status
-    if text is not None:
-        manifest["transcript_parts"][chunk_index] = text
-        
-    with open(path, "w") as f:
-        json.dump(manifest, f)
-
-def get_failed_jobs():
-    """List incomplete jobs"""
-    jobs = []
-    if not os.path.exists(JOB_STATE_DIR): return []
-    
-    for f in os.listdir(JOB_STATE_DIR):
-        if f.endswith(".json"):
-            try:
-                with open(os.path.join(JOB_STATE_DIR, f), "r") as jf:
-                    data = json.load(jf)
-                    # Check if any chunk is not 'done'
-                    pending = sum(1 for c in data["chunks"] if c["status"] != "done")
-                    if pending > 0:
-                        jobs.append([
-                            data["job_id"], 
-                            datetime.fromtimestamp(data["created_at"]).strftime("%Y-%m-%d %H:%M"),
-                            f"{pending}/{len(data['chunks'])} offen",
-                            data["provider"]
-                        ])
-            except: pass
-    return jobs
 
 def get_file_hash(filepath):
     """Generate SHA256 hash for file to track progress"""
@@ -1553,93 +1445,67 @@ def run_mistral_transcription(audio_path, model, lang, api_key):
 
     yield full_transcript.strip()
 
-def run_chunked_api_transcription(client, model, chunk_paths, lang, prompt, temp, job_id=None):
+def run_chunked_api_transcription(client, model, chunk_paths, lang, prompt, temp):
     """
-    Iterates through chunks with State Tracking.
+    Iterates through chunks, calls API, and stitches results.
+    Handles 'prompt' context injection to maintain consistency.
     """
-    import time
-    
-    # Load manifest if resuming
-    start_index = 0
-    full_transcript_parts = [""] * len(chunk_paths)
-    
-    if job_id:
-        try:
-            with open(os.path.join(JOB_STATE_DIR, f"{job_id}.json"), "r") as f:
-                manifest = json.load(f)
-                # Find first non-done chunk
-                for i, c in enumerate(manifest["chunks"]):
-                    if c["status"] == "done":
-                        full_transcript_parts[i] = manifest["transcript_parts"][i]
-                    else:
-                        if start_index == 0 and i > 0: start_index = i
-        except: pass
-
+    full_transcript = ""
     total = len(chunk_paths)
-    MAX_RETRIES = 3
-    BASE_DELAY = 10 
     
-    for i in range(start_index, total):
-        chunk_path = chunk_paths[i]
+    for i, chunk_path in enumerate(chunk_paths):
         step = i + 1
-        chunk_success = False
-        retry_count = 0
+        yield f"⏳ Verarbeite Teil {step}/{total}..."
         
-        # If resuming, check if file still exists (tmp files might be gone if server restarted)
-        if not os.path.exists(chunk_path):
-            yield f"❌ Fehler: Chunk-Datei {step} nicht gefunden. Job kann nicht fortgesetzt werden."
-            return
-
-        while not chunk_success and retry_count < MAX_RETRIES:
-            try:
-                yield f"⏳ Verarbeite Teil {step}/{total}..."
+        try:
+            with open(chunk_path, "rb") as f:
+                # Build API args
+                args = {
+                    "model": model,
+                    "file": f,
+                    "response_format": "json"
+                }
                 
-                with open(chunk_path, "rb") as f:
-                    args = {
-                        "model": model,
-                        "file": f,
-                        "response_format": "json"
-                    }
-                    if lang and lang != "auto": args["language"] = lang
-                    if temp is not None: args["temperature"] = float(temp)
+                if lang and lang != "auto":
+                    args["language"] = lang
+                
+                if temp is not None:
+                    args["temperature"] = float(temp)
                     
-                    # Context handling
-                    if i == 0 and prompt:
-                        args["prompt"] = prompt
-                    elif i > 0:
-                        # Construct context from previous successful parts
-                        prev_text = "".join(full_transcript_parts[:i])
-                        if prev_text: args["prompt"] = prev_text[-220:]
+                # Context Logic:
+                # 1. First chunk gets the user's manual prompt (for vocab/style).
+                # 2. Subsequent chunks get the last 200 chars of previous text 
+                #    to help Whisper maintain context across cuts.
+                if i == 0 and prompt:
+                    args["prompt"] = prompt
+                elif i > 0 and len(full_transcript) > 0:
+                    # Provide previous context to link sentences across splits
+                    prev_context = full_transcript[-220:]
+                    args["prompt"] = prev_context
 
-                    resp = client.audio.transcriptions.create(**args)
-                    text_part = resp.text if hasattr(resp, 'text') else str(resp)
-                    
-                    # Update State
-                    full_transcript_parts[i] = text_part + " "
-                    if job_id:
-                        update_job_chunk_status(job_id, i, "done", text_part + " ")
-                    
-                    yield f"✅ Teil {step}/{total} erledigt."
-                    chunk_success = True
-            
-            except Exception as e:
-                error_str = str(e)
-                if "429" in error_str or "rate_limit" in error_str.lower():
-                    retry_count += 1
-                    wait = BASE_DELAY * (2 ** retry_count)
-                    yield f"⚠️ Rate Limit (429). Warte {wait}s..."
-                    time.sleep(wait)
-                else:
-                    logger.error(f"Critical error in chunk {step}: {e}")
-                    full_transcript_parts[i] = f" [Fehler in Teil {step}] "
-                    if job_id: update_job_chunk_status(job_id, i, "failed")
-                    break 
+                # Call API
+                logger.info(f"Transcribing chunk {step}/{total} ({os.path.getsize(chunk_path)/1024/1024:.2f}MB)")
+                
+                # Check provider type for correct endpoint call
+                # (Mistral/Groq/Scaleway/Nebius all adhere to this standard)
+                resp = client.audio.transcriptions.create(**args)
+                
+                # Extract Text
+                text_part = resp.text if hasattr(resp, 'text') else str(resp)
+                
+                # Append with space
+                full_transcript += text_part + " "
+                
+                # Yield progress + current result state
+                yield f"✅ Teil {step}/{total} erledigt."
         
-        if not chunk_success:
-            full_transcript_parts[i] = f" [Timeout Teil {step}] "
-            if job_id: update_job_chunk_status(job_id, i, "failed")
+        except Exception as e:
+            logger.error(f"Error in chunk {step}: {e}")
+            yield f"⚠️ Fehler in Teil {step}: {str(e)}"
+            # Recover: Add placeholder and continue to next chunk
+            full_transcript += f" [Fehlerhafter Teil {step}] "
 
-    yield "".join(full_transcript_parts).strip()
+    yield full_transcript.strip()
         
 def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt, diar, trans, target, key, chunk_opt=True, chunk_len=10):
     """
@@ -1814,18 +1680,12 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
                     logs += "\n⚠️ WARNUNG: Datei > 25MB. Upload könnte fehlschlagen."
                 chunks = [audio]
 
-            # --- CREATE JOB MANIFEST (For Resume Capability) ---
-            job_id = int(time.time())
-            create_job_manifest(job_id, audio, provider, model, chunks, lang, whisper_prompt, whisper_temp)
-            logs += f"\n🆔 Job-ID: {job_id} (Für Resume gespeichert)"
             yield logs, "", ""
 
             # D. Run Sequential Processing
             full_text = ""
-            
-            # Pass job_id to allow state saving during processing
             transcriber = run_chunked_api_transcription(
-                client, model, chunks, lang, whisper_prompt, whisper_temp, job_id=job_id
+                client, model, chunks, lang, whisper_prompt, whisper_temp
             )
 
             for update in transcriber:
@@ -2376,52 +2236,31 @@ def select_chat_row(evt: gr.SelectData, state_data):
         logger.error(f"Selection error: {e}")
     return gr.update()
 
-def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_file, sb_files):
+def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_file):
     """
-    Attach content to chat.
-    Fixes: Now accepts 6 arguments including sb_files.
+    Attach content (Transcript, Vision, Custom Text, or File) to chat.
     """
     if not current_user["id"]:
         return hist, "❌ Bitte anmelden"
 
     content_to_add = ""
 
-    # 1. Handle File Upload (Browser)
+    # 1. Handle File Upload
     if attach_type == "Datei uploaden" and uploaded_file:
         try:
             filename = os.path.basename(uploaded_file.name)
+            # Simple text extraction for code/text files
             if filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.py', '.js', '.html', '.css', '.xml', '.yaml')):
-                with open(uploaded_file.name, "r", encoding="utf-8", errors='ignore') as f:
+                with open(uploaded_file.name, "r", encoding="utf-8") as f:
                     file_content = f.read()
                 content_to_add = f"[Datei Inhalt: {filename}]\n\n{file_content}"
             else:
+                # For binaries/PDFs/Images (placeholder for future OCR/Vision logic)
                 content_to_add = f"[Datei hochgeladen: {filename}] (Inhalt konnte nicht als Text extrahiert werden, aber Datei liegt vor.)"
         except Exception as e:
             return hist, f"❌ Fehler beim Lesen der Datei: {str(e)}"
 
-    # 2. Handle Storage Box File
-    elif attach_type == "Storage Box Datei" and sb_files:
-        try:
-            # FileExplorer returns list of files
-            f_path = sb_files[0] if isinstance(sb_files, list) else sb_files
-            
-            # Sanitize path
-            if not f_path.startswith("/"):
-                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
-            
-            filename = os.path.basename(f_path)
-            
-            # We try to read text files directly; generic note for others
-            if filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.html')):
-                with open(f_path, "r", encoding="utf-8", errors='ignore') as f:
-                    content = f.read()
-                content_to_add = f"[Datei aus Cloud: {filename}]\n\n{content}"
-            else:
-                content_to_add = f"[Datei aus Cloud: {filename}] (Pfad: {f_path})"
-        except Exception as e:
-            return hist, f"❌ Lesefehler: {str(e)}"
-
-    # 3. Handle Transcript
+    # 2. Handle Transcript
     elif attach_type == "Transkript":
         if not attach_id: return hist, "❌ ID fehlt"
         db = get_db()
@@ -2430,7 +2269,7 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
         if trans: content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
         else: return hist, "❌ Transkript nicht gefunden"
 
-    # 4. Handle Vision
+    # 3. Handle Vision
     elif attach_type == "Vision-Ergebnis":
         if not attach_id: return hist, "❌ ID fehlt"
         db = get_db()
@@ -2439,7 +2278,7 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
         if vision: content_to_add = f"[Vision #{vision.id}]\n\n{vision.result}"
         else: return hist, "❌ Vision nicht gefunden"
 
-    # 5. Handle Custom Text
+    # 4. Handle Custom Text
     elif attach_type == "Eigener Text":
         if not custom_text: return hist, "❌ Text fehlt"
         content_to_add = custom_text
@@ -2722,21 +2561,24 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
             with gr.TabItem("💬 Chat", id="chat_tab") as chat_tab:
                 with gr.Row():
                     with gr.Column(scale=3):
-                        # Top Bar
+                        # Top Bar: Provider, Model, Load All
                         with gr.Row():
-                            c_prov = gr.Dropdown(list(PROVIDERS.keys()), value="Scaleway", label="Anbieter", scale=2)
-                            c_model = gr.Dropdown(PROVIDERS["Scaleway"]["chat_models"], value=PROVIDERS["Scaleway"]["chat_models"][0], label="Modell", scale=4)
-                            c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=60)
+                            c_prov = gr.Dropdown(list(PROVIDERS.keys()), value="Scaleway", label="Anbieter", scale=1)
+                            c_model = gr.Dropdown(PROVIDERS["Scaleway"]["chat_models"], value=PROVIDERS["Scaleway"]["chat_models"][0], label="Modell", scale=2)
+                            c_load_all_btn = gr.Button("🌍 Alle laden", scale=0, size="sm", variant="secondary", min_width=80)
 
                         c_badge = gr.HTML(value=PROVIDERS["Scaleway"]["badge"])
 
-                        # UI Updates
-                        c_prov.change(lambda p: update_c_ui(p, force_all=False), inputs=c_prov, outputs=[c_model, c_badge])
-                        c_load_all.click(lambda p: update_c_ui(p, force_all=True), inputs=c_prov, outputs=[c_model, c_badge])
+                        # UI Update Logic
+                        def trigger_update_c_ui(prov, load_all_click=False):
+                            return update_c_ui(prov, force_all=load_all_click)
+
+                        c_prov.change(trigger_update_c_ui, inputs=[c_prov], outputs=[c_model, c_badge])
+                        c_load_all_btn.click(lambda p: update_c_ui(p, force_all=True), inputs=[c_prov], outputs=[c_model, c_badge])
 
                         # Chat Area
                         c_bot = gr.Chatbot(height=500, type="messages")
-                        c_msg = gr.Textbox(placeholder="Nachricht...", show_label=False, lines=3)
+                        c_msg = gr.Textbox(placeholder="Nachricht eingeben...", show_label=False, lines=3)
 
                         with gr.Row():
                             c_btn = gr.Button("📤 Senden", variant="primary", scale=2)
@@ -2746,32 +2588,40 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         c_save_status = gr.Markdown("")
 
-                    # Right Sidebar
+                    # Right Sidebar (Settings & Tools)
                     with gr.Column(scale=1):
                         
-                        # 1. Settings (Closed)
+                        # 1. SETTINGS (Default: Closed)
                         with gr.Accordion("⚙️ Einstellungen", open=False):
                             c_key = gr.Textbox(label="API Key (Optional)", type="password")
                             c_sys = gr.Textbox(label="System Rolle", value="Du bist ein hilfreicher Assistent.", lines=3)
                             c_temp = gr.Slider(0, 2, value=0.7, label="Kreativität")
 
-                        # 2. History (Closed)
+                        # 2. LOAD CHATS (Default: Closed, Preloads on Tab Select)
                         with gr.Accordion("📚 Alte Chats laden", open=False):
-                            c_history_state = gr.State([]) 
+                            c_history_state = gr.State([]) # Store real data
                             refresh_chats_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                            old_chats = gr.Dataframe(headers=["ID", "Datum", "Titel", "Modell"], value=[[None, "", "", ""]], label="Gespeicherte Chats", interactive=False, height=200, wrap=True)
+                            
+                            old_chats = gr.Dataframe(
+                                headers=["ID", "Datum", "Titel", "Modell"],
+                                value=[[None, "", "", ""]],
+                                label="Klicken zum Laden",
+                                interactive=False,
+                                height=200,
+                                wrap=True
+                            )
                             
                             with gr.Row():
                                 load_chat_id = gr.Number(label="Chat-ID", precision=0)
                                 delete_chat_btn = gr.Button("🗑️", scale=0)
                             
-                            load_chat_btn = gr.Button("📥 Chat laden", variant="primary")
+                            load_chat_btn = gr.Button("📥 Chat wiederherstellen", variant="primary")
                             chat_load_status = gr.Markdown("")
 
-                        # 3. Attachments & Prompts (Closed)
+                        # 3. ATTACHMENTS (Default: Closed)
                         with gr.Accordion("📎 Inhalt & Prompts", open=False):
                             
-                            # Custom Prompts
+                            # A. Custom Prompts
                             gr.Markdown("**📝 Vorlagen**")
                             with gr.Row():
                                 c_prompt_select = gr.Dropdown(choices=[], label="Vorlage wählen", scale=2)
@@ -2780,10 +2630,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             
                             gr.Markdown("---")
                             
-                            # Content Attachments
+                            # B. Content Attachments
                             gr.Markdown("**📎 Anhang**")
                             attach_type = gr.Radio(
-                                ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"],
+                                ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden"],
                                 value="Transkript",
                                 label="Typ"
                             )
@@ -2793,127 +2643,80 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             attach_custom = gr.Textbox(label="Text einfügen", lines=3, visible=False)
                             attach_file = gr.File(label="Datei wählen", visible=False)
                             
-                            # STORAGE BOX BROWSER FOR CHAT
-                            with gr.Group(visible=False) as sb_group:
-                                gr.Markdown("Dateien auf Server:")
-                                attach_sb_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
-                                    height=200
-                                )
-                                sb_refresh_btn = gr.Button("🔄 Aktualisieren", size="sm")
-
                             attach_btn = gr.Button("➕ An Chat anhängen", variant="secondary")
                             attach_status = gr.Markdown("")
 
-                            # Toggle visibility
+                            # Input visibility logic
                             def toggle_attach_inputs(atype):
                                 return (
-                                    gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]),
-                                    gr.update(visible=atype == "Eigener Text"),
-                                    gr.update(visible=atype == "Datei uploaden"),
-                                    gr.update(visible=atype == "Storage Box Datei")
+                                    gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]), # ID
+                                    gr.update(visible=atype == "Eigener Text"),                   # Text
+                                    gr.update(visible=atype == "Datei uploaden")                  # File
                                 )
-                            
-                            attach_type.change(
-                                toggle_attach_inputs, 
-                                attach_type, 
-                                [attach_id, attach_custom, attach_file, sb_group]
-                            )
-                            
-                            # Refresh Logic for Chat
-                            def refresh_chat_sb():
-                                return gr.update(value=None)
-                            sb_refresh_btn.click(refresh_chat_sb, outputs=attach_sb_browser)
+                            attach_type.change(toggle_attach_inputs, attach_type, [attach_id, attach_custom, attach_file])
 
                 # --- EVENT WIRING ---
 
-                # Chat Execution (With Stop)
-                submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot
-                )
-                click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot
-                )
+                # Chat Execution with STOP function
+                user_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False)
+                bot_event = user_event.then(bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot)
                 
+                send_click = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False)
+                bot_click_event = send_click.then(bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot)
+
                 # Stop Button
-                c_stop_btn.click(fn=None, cancels=[submit_event, click_event])
+                c_stop_btn.click(fn=None, cancels=[bot_event, bot_click_event])
 
                 # Save & Clear
                 c_save_btn.click(save_chat, [c_bot, c_prov, c_model], c_save_status)
                 c_clear_btn.click(lambda: ([], ""), outputs=[c_bot, c_save_status])
 
-                # History Logic
+                # --- History Logic ---
+                # Preload on Tab Select
                 chat_tab.select(load_chat_list_with_state, outputs=[old_chats, c_history_state])
+                
+                # Refresh Button
                 refresh_chats_btn.click(load_chat_list_with_state, outputs=[old_chats, c_history_state])
+                
+                # Smart Selection (Click row -> Set ID)
                 old_chats.select(select_chat_row, inputs=[c_history_state], outputs=[load_chat_id])
+                
+                # Load / Delete Actions
                 load_chat_btn.click(load_single_chat, load_chat_id, [c_bot, chat_load_status])
-                delete_chat_btn.click(delete_chat, load_chat_id, [chat_load_status, old_chats])
+                delete_chat_btn.click(delete_chat, load_chat_id, [chat_load_status, old_chats]) # Note: Ideally chain reload here
 
-                # Attachment Logic - FIXED: NOW PASSING 6 ARGUMENTS
+                # --- Attachment Logic ---
                 attach_btn.click(
-                    attach_content_to_chat, 
-                    [c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser], 
+                    attach_content_to_chat,
+                    [c_bot, attach_type, attach_id, attach_custom, attach_file],
                     [c_bot, attach_status]
                 )
 
-                # Prompt Logic
-                c_prompt_refresh.click(get_user_prompt_choices, outputs=c_prompt_select)
+                # --- Prompt Template Logic ---
+                # Refresh Dropdown
+                c_prompt_refresh.click(
+                    get_user_prompt_choices, 
+                    outputs=c_prompt_select
+                )
+                # Auto-load prompts when opening accordion (optional, using mouseover/click for now or chaining)
                 chat_tab.select(get_user_prompt_choices, outputs=c_prompt_select)
-                c_insert_prompt_btn.click(insert_custom_prompt, inputs=[c_prompt_select, c_msg], outputs=[c_msg])
 
-            # --- TAB 2: TRANSKRIPTION ---
+                # Insert Text
+                c_insert_prompt_btn.click(
+                    insert_custom_prompt,
+                    inputs=[c_prompt_select, c_msg],
+                    outputs=[c_msg]
+                )
+
+            # --- TAB 2: TRANSKRIPTION - WITH WHISPER OPTIONS ---
             with gr.TabItem("🎙️ Transkription"):
                 with gr.Row():
                     with gr.Column():
-                        # --- INPUT SELECTION: Upload vs Storage Box ---
-                        with gr.Tabs():
-                            with gr.TabItem("📤 Upload"):
-                                t_audio = gr.Audio(type="filepath", label="Datei hochladen")
-                            
-                            with gr.TabItem("📦 Storage Box"):
-                                gr.Markdown("Wähle eine Datei aus dem Cloud-Speicher:")
-                                
-                                # FIXED: Glob set to "**/*" to ensure all file types are seen
-                                t_storage_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*", 
-                                    height=300,
-                                    label="Dateien durchsuchen"
-                                )
-                                with gr.Row():
-                                    t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
-                                    t_load_sb_btn = gr.Button("✅ Diese Datei verwenden", variant="secondary", scale=1)
-                                t_sb_status = gr.Markdown("")
-
-                        # Logic to handle Storage Box Selection
-                        def use_storage_file(selected_files):
-                            if not selected_files:
-                                return None, "❌ Keine Datei ausgewählt"
-                            
-                            f_path = selected_files[0] if isinstance(selected_files, list) else selected_files
-                            
-                            # Handle relative paths
-                            if not f_path.startswith("/"):
-                                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
-                                
-                            try:
-                                # Copy to local temp for processing
-                                local_temp = copy_storage_file_to_temp(f_path)
-                                return local_temp, f"✅ Geladen: {os.path.basename(f_path)}"
-                            except Exception as e:
-                                return None, f"🔥 Fehler: {str(e)}"
-
-                        def refresh_explorer():
-                            # Trigger re-render
-                            return gr.update(value=None) 
-
-                        t_load_sb_btn.click(use_storage_file, inputs=t_storage_browser, outputs=[t_audio, t_sb_status])
-                        t_refresh_sb_btn.click(refresh_explorer, outputs=t_storage_browser)
-
-                        # --- PROVIDER SELECTION ---
+                        t_audio = gr.Audio(type="filepath", label="Datei")
+                        
                         with gr.Row():
                             t_prov = gr.Radio(["Gladia", "Mistral", "Scaleway", "Groq"], value="Gladia", label="Engine", scale=2)
+                            # LOAD ALL BUTTON (Only visible for Whisper providers ideally, but we keep it simple)
                             t_load_all = gr.Button("🌍 Alle", scale=0, size="sm")
                             
                         t_model = gr.Dropdown(choices=[], value=None, visible=False, label="Modell")
@@ -2927,7 +2730,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             t_trans = gr.Checkbox(False, label="🌍 Übersetzen")
                             t_target = gr.Dropdown([("Deutsch", "de"), ("Englisch", "en")], value="en", label="Zielsprache")
 
-                        # WHISPER/STANDARD OPTIONS
+                        # WHISPER OPTIONS
                         whisper_opts = gr.Accordion("⚙️ Standard Optionen (Mistral, Scaleway...)", open=True, visible=False)
                         with whisper_opts:
                             w_lang = gr.Dropdown([("Auto-Erkennung", "auto"), ("Deutsch", "de"), ("Englisch", "en")], value="de", label="Sprache")
@@ -2944,7 +2747,9 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         t_log = gr.Textbox(label="Log", lines=5)
 
                         # UI Updates
+                        # Normal update (uses prefs)
                         t_prov.change(lambda p: update_t_ui(p, force_all=False), t_prov, [t_badge, t_model, gladia_opts, whisper_opts])
+                        # Load All update
                         t_load_all.click(lambda p: update_t_ui(p, force_all=True), t_prov, [t_badge, t_model, gladia_opts, whisper_opts])
 
                     with gr.Column():
@@ -2955,7 +2760,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             t_save_btn = gr.Button("💾 Transkript speichern", variant="secondary")
                             t_save_status = gr.Markdown("")
 
-                # --- SEND TO CHAT SECTION ---
+                # Send to Chat Section
                 with gr.Accordion("💬 An Chat senden", open=False) as send_to_chat_section:
                     gr.Markdown("### Transkript automatisch weiterverarbeiten")
 
@@ -2994,24 +2799,29 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     send_to_chat_btn = gr.Button("💬 An Chat senden und verarbeiten", variant="primary", size="lg")
                     send_status = gr.Markdown("")
 
-                # --- LOGIC WIRING ---
+                # Update chat model dropdown when provider changes
                 def update_chat_model_dropdown(prov):
                     ms = PROVIDERS.get(prov, {}).get("chat_models", [])
                     return gr.update(choices=ms, value=ms[0] if ms else "")
 
                 chat_provider.change(update_chat_model_dropdown, chat_provider, chat_model_for_transcript)
 
+                # Show/hide custom prompt field
                 def toggle_custom_prompt(template):
                     return gr.update(visible=(template == "Eigener Prompt"))
 
                 prompt_template.change(toggle_custom_prompt, prompt_template, custom_prompt_input)
 
+                t_prov.change(update_t_ui, t_prov, [t_badge, t_model, gladia_opts, whisper_opts])
+
+                # Sync language between Gladia and Whisper
                 def sync_languages(lang_value):
                     return lang_value
 
                 t_lang.change(sync_languages, t_lang, w_lang)
                 w_lang.change(sync_languages, w_lang, t_lang)
 
+                # Connect transcription button
                 t_btn.click(
                     run_and_save_transcription, 
                     inputs=[
@@ -3022,6 +2832,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     outputs=[t_log, t_orig, t_trsl]
                 )
 
+                # Connect manual save button
                 t_save_btn.click(
                     manual_save_transcription,
                     inputs=[t_orig, t_trsl, t_prov, t_model, t_lang],
@@ -3031,7 +2842,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 send_to_chat_btn.click(
                     send_transcript_to_chat,
                     inputs=[
-                        t_orig,
+                        t_orig,  # Use original transcript
                         prompt_template,
                         additional_notes,
                         custom_prompt_input,
@@ -3386,76 +3197,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             return [[u.id, u.username, u.is_admin, u.created_at.strftime("%Y-%m-%d")] for u in usrs]
 
                         refresh_users_btn.click(load_users, outputs=users_list)
-                        
-                    # =========================================================
-                    # 5. RESUME FAILED JOBS
-                    # =========================================================
-                    with gr.TabItem("🔄 Abgebrochene Uploads"):
-                        gr.Markdown("### 🚧 Unvollständige Transkriptionen fortsetzen")
-                        
-                        failed_jobs_table = gr.Dataframe(
-                            headers=["Job ID", "Datum", "Status", "Provider"],
-                            value=[["", "", "", ""]],
-                            interactive=False,
-                            label="Offene Jobs"
-                        )
-                        
-                        with gr.Row():
-                            refresh_jobs_btn = gr.Button("🔄 Liste aktualisieren")
-                            resume_job_id_input = gr.Number(label="Job ID zum Fortsetzen", precision=0)
-                            resume_btn = gr.Button("▶️ Job Fortsetzen", variant="primary")
-                        
-                        resume_log = gr.Textbox(label="Resume Log", lines=5)
-                        resume_result = gr.Textbox(label="Ergebnis", lines=10)
-
-                        # Logic
-                        def list_failed_jobs():
-                            data = get_failed_jobs()
-                            return data if data else [["Keine offenen Jobs", "", "", ""]]
-
-                        def resume_job_process(jid):
-                            """Resume logic"""
-                            try:
-                                jid = int(jid)
-                                path = os.path.join(JOB_STATE_DIR, f"{jid}.json")
-                                if not os.path.exists(path): return "❌ Job nicht gefunden", ""
-                                
-                                with open(path, "r") as f:
-                                    job = json.load(f)
-                                
-                                client = get_client(job["provider"])
-                                chunk_paths = [c["path"] for c in job["chunks"]]
-                                
-                                logs = f"🚀 Setze Job {jid} fort..."
-                                full_text = ""
-                                
-                                transcriber = run_chunked_api_transcription(
-                                    client, job["model"], chunk_paths, job["lang"], 
-                                    job["prompt"], job["temp"], job_id=jid
-                                )
-                                
-                                for update in transcriber:
-                                    if len(update) < 300:
-                                        logs += f"\n{update}"
-                                        yield logs, full_text
-                                    else:
-                                        full_text = update
-                                        
-                                yield logs + "\n🎉 Job abgeschlossen!", full_text
-                                
-                            except Exception as e:
-                                yield f"🔥 Fehler: {e}", ""
-
-                        # Wiring
-                        refresh_jobs_btn.click(list_failed_jobs, outputs=failed_jobs_table)
-                        resume_btn.click(resume_job_process, inputs=resume_job_id_input, outputs=[resume_log, resume_result])
-                        
-                        # Auto-fill ID on click
-                        def select_job(evt: gr.SelectData, data):
-                            try: return int(data.iloc[evt.index[0], 0]) 
-                            except: return 0
-                        
-                        failed_jobs_table.select(select_job, failed_jobs_table, resume_job_id_input)
                         
                 # --- TAB 6: USER MANAGEMENT (ADMIN ONLY) ---
                 with gr.TabItem("👥 Benutzerverwaltung", visible=False) as admin_tab:
@@ -4066,6 +3807,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         outputs=[selected_models_display, selected_models_state, save_prefs_status]
                     )
 
+    # Login/Logout handlers
     def handle_login(username, password):
         success, message, show_app, show_login = login_user(username, password)
         status = f"👤 Angemeldet als: **{current_user['username']}**"
@@ -4073,16 +3815,8 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
         # Show admin tab only for admins
         show_admin_tab = current_user.get("is_admin", False)
         
-        # Create User Folders on Storage Box
-        if success:
-            try:
-                ensure_user_storage_dirs(username)
-            except Exception as e:
-                logger.error(f"Could not create storage dirs: {e}")
-        
         return message, show_app, show_login, status, gr.update(visible=True), gr.update(visible=show_admin_tab)
-    
-    
+
     def handle_logout():
         message, show_app, show_login = logout_user()
         return message, show_app, show_login, "👤 Nicht angemeldet", gr.update(visible=False), gr.update(visible=False)
