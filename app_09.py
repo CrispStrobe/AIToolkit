@@ -1797,17 +1797,12 @@ def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, d
 # ==========================================
 
 def run_image_gen(prompt, provider, model, width, height, steps, key):
-    import requests 
-    import base64
-    import tempfile
-    import re
-    import time
-    
     try:
         client = get_client(provider, key)
-        
+
         # --- SPECIAL CASE: POE (Chat-to-Image) ---
         if provider == "Poe":
+            # 1. Request Image
             response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
@@ -1815,19 +1810,26 @@ def run_image_gen(prompt, provider, model, width, height, steps, key):
             )
             response_text = response.choices[0].message.content
             
-            # Extract Image URL
+            # 2. Extract Image URL (Robust)
+            # Priority A: Markdown Image ![alt](url)
             match = re.search(r'!\[.*?\]\((https?://.*?)\)', response_text)
+            
+            # Priority B: Markdown Link [text](url)
             if not match:
                 match = re.search(r'\[.*?\]\((https?://.*?)\)', response_text)
+            
+            # Priority C: Raw URL (Capture http... until whitespace)
             if not match:
                 match = re.search(r'(https?://[^\s]+)', response_text)
             
             if not match:
                 return None, f"❌ Kein Bild gefunden. Antwort: {response_text[:200]}"
             
+            # Clean up URL (remove trailing punctuation often caught by regex)
             image_url = match.group(1).rstrip(".,;)")
             
-            # Download with Retry
+            # 3. Download with Retry (Polling)
+            # Poe/CDN images sometimes take 1-2 seconds to become globally accessible
             for attempt in range(1, 4):
                 try:
                     r = requests.get(image_url, timeout=15)
@@ -1836,7 +1838,8 @@ def run_image_gen(prompt, provider, model, width, height, steps, key):
                         tfile.write(r.content)
                         tfile.close()
                         return tfile.name, "✅ Erfolg (Poe)"
-                    elif r.status_code in [403, 404]:
+                    elif r.status_code == 403 or r.status_code == 404:
+                        # Wait and retry if it's a permission/not-found issue initially
                         time.sleep(2)
                         continue
                     else:
@@ -1846,48 +1849,15 @@ def run_image_gen(prompt, provider, model, width, height, steps, key):
                     time.sleep(2)
             
             return None, "❌ Bild konnte nach 3 Versuchen nicht geladen werden."
-        
-        # --- SPECIAL CASE: OPENROUTER (Chat Completions with Modalities) ---
-        if provider == "OpenRouter":
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                modalities=["image", "text"],
-                stream=False
-            )
-            
-            message = response.choices[0].message
-            
-            if not hasattr(message, 'images') or not message.images:
-                content = getattr(message, 'content', '')
-                return None, f"❌ Keine Bilder generiert. Antwort: {content[:200]}"
-            
-            image_data_url = message.images[0].image_url.url
-            
-            if not image_data_url.startswith('data:image/'):
-                return None, f"❌ Ungültiges Bildformat: {image_data_url[:50]}"
-            
-            base64_data = image_data_url.split('base64,', 1)[1]
-            img_data = base64.b64decode(base64_data)
-            
-            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-            tfile.write(img_data)
-            tfile.close()
-            return tfile.name, "✅ Erfolg (OpenRouter)"
-        
-        # --- SPECIAL CASE: SCALEWAY ---
-        if provider == "Scaleway":
-            # Scaleway doesn't support standard image generation endpoint
-            return None, "❌ Scaleway: Bildgenerierung derzeit nicht unterstützt. Bitte Nebius verwenden."
-        
-        # --- STANDARD PROVIDER: NEBIUS ---
+
+        # --- STANDARD PROVIDERS (Nebius, Scaleway) ---
         params = {
             "model": model,
             "prompt": prompt,
             "response_format": "b64_json",
         }
         
-        if provider == "Nebius":
+        if provider in ["Nebius", "Scaleway"]:
             params["extra_body"] = {
                 "width": width, 
                 "height": height, 
@@ -1906,7 +1876,8 @@ def run_image_gen(prompt, provider, model, width, height, steps, key):
     except Exception as e:
         logger.exception(f"Image Gen Error: {str(e)}")
         return None, f"🔥 Fehler: {str(e)}"
-    
+
+
 # ==========================================
 # 📋 PREDEFINED PROMPT TEMPLATES
 # ==========================================
@@ -2676,35 +2647,38 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
             # --- TAB 4: BILDERZEUGUNG ---
             def update_image_models(prov):
-                """Update IMAGE dropdown"""
-                p_data = PROVIDERS.get(prov, {})
-                api_key = API_KEYS.get(p_data.get("key_name"))
-                models, error = fetch_available_models(prov, api_key)
+                    """Update IMAGE dropdown"""
+                    p_data = PROVIDERS.get(prov, {})
+                    api_key = API_KEYS.get(p_data.get("key_name"))
+                    models, error = fetch_available_models(prov, api_key)
+                    
+                    choices = []
+                    if models and prov == "Poe":
+                        # Filter: Only 'Bild-Gen' or 'Video-Gen'
+                        choices = [
+                            (f"{m['name']}", m['id']) 
+                            for m in models 
+                            if m.get('type') in ["Bild-Gen", "Video-Gen"]
+                        ]
+                        
+                    if not choices:
+                        choices = [(m, m) for m in p_data.get("image_models", [])]
+                        
+                    return gr.update(choices=choices, value=choices[0][1] if choices else None)
                 
-                choices = []
-                if models and prov == "Poe":
-                    choices = [
-                        (f"{m['name']}", m['id']) 
-                        for m in models 
-                        if m.get('type') in ["Bild-Gen", "Video-Gen"]
-                    ]
-                    
-                if not choices:
-                    choices = [(m, m) for m in p_data.get("image_models", [])]
-                    
-                return gr.update(choices=choices, value=choices[0][1] if choices else None)
-
             with gr.TabItem("🎨 Bilderzeugung"):
                 with gr.Row():
                     with gr.Column():
                         g_prompt = gr.Textbox(label="Prompt", placeholder="Eine futuristische Kirche...", lines=3)
                         
+                        # Provider selection
                         g_provider = gr.Dropdown(
                             ["Nebius", "Scaleway", "OpenRouter", "Poe"],
                             value="Nebius",
                             label="Provider"
                         )
                         
+                        # Model dropdown (will update based on provider)
                         g_model = gr.Dropdown(
                             PROVIDERS["Nebius"]["image_models"],
                             value="black-forest-labs/flux-schnell",
@@ -2721,20 +2695,46 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         # ACTION BUTTONS
                         with gr.Row():
+                            # 1. Download: Standard Button + JS Force Download
+                            g_download_btn = gr.Button("📥 Herunterladen", visible=False, variant="secondary")
+                            # 2. Save: Standard Button + Python DB Wrapper
                             g_save_btn = gr.Button("💾 In Galerie speichern", visible=False)
                         
                         g_save_status = gr.Markdown("")
 
                     with gr.Column():
+                        # Disable built-in download to prevent accidental navigation
                         g_out = gr.Image(label="Ergebnis", type="filepath", show_download_button=False)
-                        # File component for download - like in the transcription app!
-                        g_download_file = gr.File(label="📥 Zum Herunterladen: Rechtsklick → 'Speichern unter' oder Link anklicken")
 
-                # State to store image path
+                # Store the generated image path in State
                 g_img_path = gr.State(value=None)
                 
+                # --- JAVASCRIPT FORCE DOWNLOAD (Blob Method) ---
+                # This ensures the browser downloads the file instead of opening it
+                js_force_download = """
+                async (path) => {
+                    if (!path) return;
+                    const url = `/file=${path}`;
+                    try {
+                        const response = await fetch(url);
+                        const blob = await response.blob();
+                        const blobUrl = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = blobUrl;
+                        a.download = `image_${Date.now()}.jpg`; 
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(blobUrl);
+                        document.body.removeChild(a);
+                    } catch (e) {
+                        console.error("Download failed", e);
+                        window.open(url, '_blank');
+                    }
+                }
+                """
+
                 # --- HELPER FUNCTIONS ---
-                
+
                 def update_image_models_ui(prov):
                     return update_image_models(prov)
                 
@@ -2749,27 +2749,22 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     img_path, status = run_image_gen(prompt, provider, model, width, height, steps, key)
 
                     if img_path:
-                        # Copy to a more permanent location for download
-                        import shutil
-                        download_dir = "/tmp/gradio_downloads"
-                        os.makedirs(download_dir, exist_ok=True)
-                        download_path = os.path.join(download_dir, f"image_{int(time.time())}.jpg")
-                        shutil.copy2(img_path, download_path)
-                        
+                        # Success: Return path to State and Buttons
                         return (
                             img_path,                   # g_out (Preview)
                             status,                     # g_stat
                             img_path,                   # g_img_path (State)
-                            download_path,              # g_download_file (Direct file link)
+                            gr.update(visible=True),    # g_download_btn
                             gr.update(visible=True),    # g_save_btn
                             ""                          # g_save_status (Reset)
                         )
                     else:
+                        # Error
                         return (
                             None, 
                             status, 
-                            None,
-                            None,                       # g_download_file
+                            None, 
+                            gr.update(visible=False), 
                             gr.update(visible=False), 
                             ""
                         )
@@ -2778,11 +2773,13 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 def process_gallery_save(img_path, provider, prompt, model):
                     """Explicit wrapper to handle DB saving safely"""
                     try:
+                        # 1. Validation
                         if not current_user["id"]:
                             return "❌ Bitte anmelden", gr.update(visible=True)
                         if not img_path or not os.path.exists(img_path):
                             return "❌ Datei nicht gefunden (Session abgelaufen?)", gr.update(visible=True)
 
+                        # 2. Persist File (Copy from tmp to permanent)
                         import shutil
                         permanent_dir = "/var/www/transkript_app/generated_images"
                         os.makedirs(permanent_dir, exist_ok=True)
@@ -2790,6 +2787,9 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         permanent_path = os.path.join(permanent_dir, filename)
                         shutil.copy2(img_path, permanent_path)
 
+                        # 3. Save to DB (Explicit Argument Mapping)
+                        # We MUST map these correctly to match the definition:
+                        # save_generated_image(user_id, provider, model, prompt, image_path)
                         img_id = save_generated_image(
                             user_id=int(current_user["id"]), 
                             provider=str(provider), 
@@ -2805,16 +2805,21 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                 # --- EVENT WIRING ---
 
-                # 1. Generate - now outputs to download file component
+                # 1. Generate
                 g_btn.click(
                     generate_and_handle_ui,
                     inputs=[g_prompt, g_provider, g_model, g_w, g_h, g_steps, g_key],
-                    outputs=[g_out, g_stat, g_img_path, g_download_file, g_save_btn, g_save_status]
+                    outputs=[g_out, g_stat, g_img_path, g_download_btn, g_save_btn, g_save_status]
                 )
 
-                # 2. No separate download button needed - File component handles it!
+                # 2. Download (JavaScript)
+                g_download_btn.click(
+                    fn=None, # No python function, just JS
+                    inputs=[g_img_path],
+                    js=js_force_download
+                )
 
-                # 3. Save to Gallery
+                # 3. Save to Gallery (Python Wrapper)
                 g_save_btn.click(
                     process_gallery_save,
                     inputs=[g_img_path, g_provider, g_prompt, g_model],

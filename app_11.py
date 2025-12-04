@@ -2719,19 +2719,19 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         g_btn = gr.Button("🎨 Generieren", variant="primary")
                         g_stat = gr.Textbox(label="Status", interactive=False)
 
-                        # ACTION BUTTONS
+                        # ACTION BUTTONS - with automatic download trigger
                         with gr.Row():
+                            g_download_btn = gr.Button("📥 Herunterladen", visible=False, variant="secondary")
                             g_save_btn = gr.Button("💾 In Galerie speichern", visible=False)
                         
                         g_save_status = gr.Markdown("")
 
                     with gr.Column():
                         g_out = gr.Image(label="Ergebnis", type="filepath", show_download_button=False)
-                        # File component for download - like in the transcription app!
-                        g_download_file = gr.File(label="📥 Zum Herunterladen: Rechtsklick → 'Speichern unter' oder Link anklicken")
 
-                # State to store image path
+                # Hidden components for download mechanics
                 g_img_path = gr.State(value=None)
+                g_download_trigger = gr.State(value=0)
                 
                 # --- HELPER FUNCTIONS ---
                 
@@ -2749,18 +2749,11 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     img_path, status = run_image_gen(prompt, provider, model, width, height, steps, key)
 
                     if img_path:
-                        # Copy to a more permanent location for download
-                        import shutil
-                        download_dir = "/tmp/gradio_downloads"
-                        os.makedirs(download_dir, exist_ok=True)
-                        download_path = os.path.join(download_dir, f"image_{int(time.time())}.jpg")
-                        shutil.copy2(img_path, download_path)
-                        
                         return (
                             img_path,                   # g_out (Preview)
                             status,                     # g_stat
                             img_path,                   # g_img_path (State)
-                            download_path,              # g_download_file (Direct file link)
+                            gr.update(visible=True),    # g_download_btn
                             gr.update(visible=True),    # g_save_btn
                             ""                          # g_save_status (Reset)
                         )
@@ -2769,10 +2762,14 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             None, 
                             status, 
                             None,
-                            None,                       # g_download_file
+                            gr.update(visible=False), 
                             gr.update(visible=False), 
                             ""
                         )
+
+                def trigger_download_count(current_count):
+                    """Increment download trigger to force JS execution"""
+                    return current_count + 1
 
                 # --- DB SAVE WRAPPER ---
                 def process_gallery_save(img_path, provider, prompt, model):
@@ -2805,14 +2802,46 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                 # --- EVENT WIRING ---
 
-                # 1. Generate - now outputs to download file component
+                # 1. Generate
                 g_btn.click(
                     generate_and_handle_ui,
                     inputs=[g_prompt, g_provider, g_model, g_w, g_h, g_steps, g_key],
-                    outputs=[g_out, g_stat, g_img_path, g_download_file, g_save_btn, g_save_status]
+                    outputs=[g_out, g_stat, g_img_path, g_download_btn, g_save_btn, g_save_status]
                 )
 
-                # 2. No separate download button needed - File component handles it!
+                # 2. Download with JavaScript force-download
+                g_download_btn.click(
+                    trigger_download_count,
+                    inputs=[g_download_trigger],
+                    outputs=[g_download_trigger],
+                    js="""
+                    (count) => {
+                        // Get the current image from the Image component
+                        const imgElement = document.querySelector('img[alt="Ergebnis"]');
+                        if (imgElement && imgElement.src) {
+                            // Extract the file path from Gradio's served URL
+                            const src = imgElement.src;
+                            
+                            // Fetch and download
+                            fetch(src)
+                                .then(response => response.blob())
+                                .then(blob => {
+                                    const url = window.URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.style.display = 'none';
+                                    a.href = url;
+                                    a.download = 'generated_image_' + Date.now() + '.jpg';
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    window.URL.revokeObjectURL(url);
+                                    document.body.removeChild(a);
+                                })
+                                .catch(err => console.error('Download failed:', err));
+                        }
+                        return count + 1;
+                    }
+                    """
+                )
 
                 # 3. Save to Gallery
                 g_save_btn.click(

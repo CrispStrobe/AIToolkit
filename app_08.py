@@ -23,7 +23,6 @@ import requests
 import tempfile
 from io import BytesIO
 import asyncio
-import re
 
 try:
     import fastapi_poe as fp
@@ -704,59 +703,9 @@ def update_user_email(user_id, new_email):
 # ==========================================
 
 def fetch_available_models(provider, api_key=None):
-    """
-    Ruft verfügbare Modelle ab. 
-    Für Poe: Nutzt die offizielle API und sortiert nach Modalitäten (Text, Bild, etc.).
-    """
+    """Fetch available models from provider API"""
     try:
-        if provider == "Poe":
-            api_key = api_key or API_KEYS.get("POE")
-            if not api_key:
-                return None, "API Key erforderlich"
-
-            try:
-                # Direkter Request an die Poe API, da wir die Metadaten brauchen
-                headers = {"Authorization": f"Bearer {api_key}"}
-                response = requests.get("https://api.poe.com/v1/models", headers=headers, timeout=15)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    model_list = []
-                    
-                    # Wir kategorisieren die Modelle für die Rückgabe
-                    # (Standardmäßig geben wir alle zurück, aber fügen Infos hinzu)
-                    for model in data.get("data", []):
-                        arch = model.get("architecture", {})
-                        inputs = arch.get("input_modalities", [])
-                        outputs = arch.get("output_modalities", [])
-                        
-                        # Bestimme den Typ für die Anzeige
-                        type_label = "Chat"
-                        if "image" in outputs:
-                            type_label = "Bild-Gen"
-                        elif "video" in outputs:
-                            type_label = "Video-Gen"
-                        elif "audio" in outputs:
-                            type_label = "Audio-Gen"
-                        elif "image" in inputs and "text" in outputs:
-                            type_label = "Vision/Chat"
-                        
-                        model_list.append({
-                            "id": model["id"],
-                            "name": f"{model.get('metadata', {}).get('display_name', model['id'])} ({type_label})",
-                            "type": type_label, # Hilfreich für Filterung später
-                            "context_length": model.get("context_length", 0)
-                        })
-                    
-                    # Sortieren nach Name
-                    model_list.sort(key=lambda x: x["name"])
-                    return model_list, None
-                else:
-                    return None, f"Poe API Fehler: {response.status_code} - {response.text}"
-            except Exception as e:
-                return None, f"Poe Verbindungsfehler: {str(e)}"
-
-        elif provider == "Scaleway":
+        if provider == "Scaleway":
             # Scaleway uses OpenAI-compatible API
             api_key = api_key or API_KEYS.get("SCALEWAY")
             if not api_key:
@@ -861,6 +810,97 @@ def fetch_available_models(provider, api_key=None):
             except Exception as e:
                 return None, f"Fehler: {str(e)}"
         
+        elif provider == "Poe":
+            # Try to fetch bots from Poe using poe-api library
+            api_key = api_key or API_KEYS.get("POE")
+            if not api_key:
+                return None, "API Key erforderlich"
+            
+            try:
+                # Try to import the old poe-api library for client features
+                import poe
+                
+                # Create client
+                client = poe.Client(api_key)
+                
+                # Get bot names
+                bot_names = client.bot_names
+                
+                # Convert to our format
+                model_list = []
+                for codename, display_name in bot_names.items():
+                    model_list.append({
+                        "id": codename,
+                        "name": display_name
+                    })
+                
+                # Also fetch some popular 3rd party bots
+                try:
+                    explore_result = client.explore_bots(count=50)
+                    for bot in explore_result.get("bots", []):
+                        model_list.append({
+                            "id": bot["displayName"],
+                            "name": bot["displayName"],
+                            "description": bot.get("description", ""),
+                            "followers": bot.get("followerCount", 0)
+                        })
+                except:
+                    pass  # Skip if explore fails
+                
+                logger.info(f"Fetched {len(model_list)} bots from Poe")
+                return model_list, None
+                
+            except ImportError:
+                # Fallback: poe-api not installed, use static list
+                logger.warning("poe-api library not installed, using static bot list")
+                poe_models = [
+                    {"id": "claude_3_igloo", "name": "Claude-3.5-Sonnet"},
+                    {"id": "gpt4_o", "name": "GPT-4o"},
+                    {"id": "beaver", "name": "GPT-4-Turbo"},
+                    {"id": "chinchilla", "name": "GPT-3.5-Turbo"},
+                    {"id": "claude_2_1_cedar", "name": "Claude-3-Opus"},
+                    {"id": "claude_2_1_bamboo", "name": "Claude-3-Sonnet"},
+                    {"id": "claude_3_haiku", "name": "Claude-3-Haiku"},
+                    {"id": "claude_3_igloo_200k", "name": "Claude-3.5-Sonnet-200k"},
+                    {"id": "claude_3_opus_200k", "name": "Claude-3-Opus-200k"},
+                    {"id": "claude_3_sonnet_200k", "name": "Claude-3-Sonnet-200k"},
+                    {"id": "claude_3_haiku_200k", "name": "Claude-3-Haiku-200k"},
+                    {"id": "a2_2", "name": "Claude-2-100k"},
+                    {"id": "a2", "name": "Claude-instant"},
+                    {"id": "a2_100k", "name": "Claude-instant-100k"},
+                    {"id": "claude_2_short", "name": "Claude-2"},
+                    {"id": "gpt4_o_128k", "name": "GPT-4o-128k"},
+                    {"id": "gpt4_o_mini", "name": "GPT-4o-Mini"},
+                    {"id": "gpt4_o_mini_128k", "name": "GPT-4o-Mini-128k"},
+                    {"id": "vizcacha", "name": "GPT-4-Turbo-128k"},
+                    {"id": "gpt4_classic", "name": "GPT-4-Classic"},
+                    {"id": "agouti", "name": "ChatGPT-16k"},
+                    {"id": "gpt3_5", "name": "GPT-3.5-Turbo-Raw"},
+                    {"id": "chinchilla_instruct", "name": "GPT-3.5-Turbo-Instruct"},
+                    {"id": "gemini_1_5_pro_1m", "name": "Gemini-1.5-Pro-2M"},
+                    {"id": "gemini_pro_search", "name": "Gemini-1.5-Flash-Search"},
+                    {"id": "acouchy", "name": "Google-PaLM"},
+                    {"id": "capybara", "name": "Assistant"},
+                    {"id": "code_llama_13b_instruct", "name": "Code-Llama-13b"},
+                    {"id": "code_llama_34b_instruct", "name": "Code-Llama-34b"},
+                    {"id": "upstage_solar_0_70b_16bit", "name": "Solar-Mini"},
+                    {"id": "DALL-E-3", "name": "DALL-E-3"},
+                    {"id": "StableDiffusionXL", "name": "StableDiffusionXL"},
+                    {"id": "Playground-v2.5", "name": "Playground-v2.5"},
+                ]
+                return poe_models, None
+            
+            except Exception as e:
+                logger.exception(f"Error fetching Poe bots: {str(e)}")
+                # Return static list as fallback
+                poe_models = [
+                    {"id": "claude_3_igloo", "name": "Claude-3.5-Sonnet"},
+                    {"id": "gpt4_o", "name": "GPT-4o"},
+                    {"id": "beaver", "name": "GPT-4-Turbo"},
+                    {"id": "chinchilla", "name": "GPT-3.5-Turbo"},
+                ]
+                return poe_models, f"Warnung: {str(e)} - Verwende statische Liste"
+        
         else:
             # For providers without /models endpoint, return configured models
             provider_config = PROVIDERS.get(provider, {})
@@ -948,13 +988,12 @@ def get_default_model_for_user(user_id, provider):
 
 # API Keys (aus Environment oder direkt hier eintragen)
 API_KEYS = {
-    "SCALEWAY": os.environ.get("SCALEWAY_API_KEY", "your_key"),
-    "NEBIUS": os.environ.get("NEBIUS_API_KEY", "your_key"),
-    "MISTRAL": os.environ.get("MISTRAL_API_KEY", "your_key"),
-    "GLADIA": os.environ.get("GLADIA_API_KEY", "your_key"),
-    "OPENROUTER": os.environ.get("OPENROUTER_API_KEY", "your_key"),
-    "GROQ": os.environ.get("GROQ_API_KEY", "your_key"),
-    "POE": os.environ.get("POE_API_KEY", "your_poe_key_here"),  
+    "SCALEWAY": os.getenv("SCALEWAY_API_KEY", ""),
+    "NEBIUS": os.getenv("NEBIUS_API_KEY", ""),
+    "MISTRAL": os.getenv("MISTRAL_API_KEY", ""),
+    "OPENROUTER": os.getenv("OPENROUTER_API_KEY", ""),
+    "GROQ": os.getenv("GROQ_API_KEY", ""),
+    "POE": os.getenv("POE_API_KEY", ""),
 }
 
 # Provider-Datenbank (Modelle, Endpoints, Compliance)
@@ -999,46 +1038,71 @@ PROVIDERS = {
         "audio_models": ["whisper-large-v3-turbo"],
         "vision_models": ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"]
     },
-    "Poe": {
-        "base_url": "https://api.poe.com/v1",
+    "poe": {
+        "base_url": "https://poe.com",
         "key_name": "POE",
-        "badge": "🌐 <span style='color:blue'><b>Poe Official API</b> (Universal)</span>",
+        "badge": "🌐 <span style='color:blue'><b>Multi-Provider</b> (Poe Hub)</span>",
         "chat_models": [
-            "gpt-5.1-instant",
-            "claude-sonnet-4.5",
-            "gemini-3-pro",
-            "gpt-5.1",
-            "gpt-4o",
-            "claude-3.5-sonnet",
-            "deepseek-r1",
-            "grok-4"
+            # Most popular first
+            "claude_3_igloo",
+            "gpt4_o",
+            "beaver",
+            "chinchilla",
+            # Claude models
+            "claude_2_1_cedar",
+            "claude_2_1_bamboo",
+            "claude_3_haiku",
+            "claude_3_igloo_200k",
+            "claude_3_opus_200k",
+            "claude_3_sonnet_200k",
+            "claude_3_haiku_200k",
+            "a2_2",
+            "a2",
+            "a2_100k",
+            "claude_2_short",
+            # GPT models
+            "gpt4_o_128k",
+            "gpt4_o_mini",
+            "gpt4_o_mini_128k",
+            "vizcacha",
+            "gpt4_classic",
+            "agouti",
+            "gpt3_5",
+            "chinchilla_instruct",
+            # Other
+            "gemini_1_5_pro_1m",
+            "gemini_pro_search",
+            "acouchy",
+            "capybara",
+            "code_llama_13b_instruct",
+            "code_llama_34b_instruct",
+            "upstage_solar_0_70b_16bit",
         ],
         "vision_models": [
-            "claude-sonnet-4.5",
-            "gpt-5.1",
-            "gemini-3-pro",
-            "gpt-4o",
-            "claude-3.5-sonnet"
+            "claude_3_igloo",
+            "claude_3_igloo_200k",
+            "claude_2_1_cedar",
+            "claude_3_opus_200k",
+            "claude_2_1_bamboo",
+            "claude_3_sonnet_200k",
+            "gpt4_o",
+            "gpt4_o_128k",
+            "gpt4_o_mini",
+            "gpt4_o_mini_128k",
+            "beaver",
+            "vizcacha",
+            "gemini_1_5_pro_1m",
+            "gemini_pro_search",
         ],
+        "audio_models": [],  # Would need specific audio bots
         "image_models": [
-            "gpt-image-1",
-            "flux-pro-1.1-ultra",
-            "ideogram-v3",
-            "dall-e-3",
-            "playground-v3"
+            "DALL-E-3",
+            "StableDiffusionXL",
+            "Playground-v2.5",
         ],
-        "audio_models": [
-            "elevenlabs-v3",
-            "sonic-3.0"
-        ],
-        "video_models": [ # Neu für Poe!
-            "kling-2.5-turbo-pro",
-            "runway-gen-4-turbo",
-            "veo-3.1"
-        ],
-        "supports_system": True,
+        "supports_system": False,
         "supports_streaming": True
-    }
+    },
 }
 
 # Fügen Sie diese Funktion NACH den PROVIDERS Definitionen ein:
@@ -1172,45 +1236,81 @@ def format_duration(seconds):
 # ==========================================
 
 def run_chat(message, history, provider, model, temp, system_prompt, key):
+    # HANDLE POE SEPARATELY
+    if provider == "Poe":
+        try:
+            api_key = key if key else API_KEYS.get("poe")
+            if not api_key:
+                yield "❌ Kein Poe API Key gefunden."
+                return
+            
+            # Build messages (Poe doesn't support system messages)
+            messages = []
+            
+            # Add system prompt as first user message if it exists
+            if system_prompt and system_prompt.strip():
+                messages.append({
+                    "role": "user", 
+                    "content": f"System instructions: {system_prompt}\n\nNow, here's my actual question:"
+                })
+            
+            # Add history
+            for msg in history:
+                if isinstance(msg, dict):
+                    messages.append({
+                        "role": msg["role"], 
+                        "content": str(msg["content"])
+                    })
+                else:
+                    # Tuple format (user_msg, bot_msg)
+                    messages.append({"role": "user", "content": str(msg[0])})
+                    messages.append({"role": "assistant", "content": str(msg[1])})
+            
+            # Add current message
+            messages.append({"role": "user", "content": message})
+            
+            # Call Poe API (this handles the async/await internally)
+            response = call_poe_sync(messages, model, api_key)
+            yield response
+            
+        except Exception as e:
+            logger.exception(f"Poe chat error: {str(e)}")
+            yield f"🔥 Poe Fehler: {str(e)}"
+        return
+    
+    # OTHER PROVIDERS (OpenAI-compatible)
     try:
         client = get_client(provider, key)
         
-        # 1. Build Messages
-        messages = []
-        if system_prompt and system_prompt.strip():
-            messages.append({"role": "system", "content": str(system_prompt)})
-            
-        for msg in history:
-            # Ensure content is string and not None to prevent JSON errors
-            content = str(msg["content"]) if msg.get("content") else ""
-            messages.append({"role": msg["role"], "content": content})
-            
-        messages.append({"role": "user", "content": str(message)})
+        # Build messages
+        messages = [{"role": "system", "content": system_prompt}]
         
-        # 2. Configure Stream
-        stream_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": float(temp),
-            "stream": True
-            # REMOVED: "stream_options" (Causes 400 Error with Poe)
-        }
-
-        # 3. Execute
-        stream = client.chat.completions.create(**stream_params)
+        for msg in history:
+            if isinstance(msg, dict):
+                messages.append({"role": msg["role"], "content": str(msg["content"])})
+            else:
+                messages.append({"role": "user", "content": str(msg[0])})
+                messages.append({"role": "assistant", "content": str(msg[1])})
+        
+        messages.append({"role": "user", "content": message})
+        
+        # Stream response
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temp,
+            stream=True
+        )
         
         full_response = ""
         for chunk in stream:
-            if chunk.choices and len(chunk.choices) > 0:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    full_response += delta.content
-                    yield full_response
-                
+            if chunk.choices[0].delta.content:
+                full_response += chunk.choices[0].delta.content
+                yield full_response
+        
     except Exception as e:
-        logger.exception(f"Chat error with {provider}: {str(e)}")
-        # Show a friendly error in the chat window
-        yield f"🔥 Fehler ({provider}): {str(e)}"
+        logger.exception(f"Chat error: {str(e)}")
+        yield f"🔥 Fehler: {str(e)}"
         
 # ==========================================
 # 2. VISION LOGIK
@@ -1219,6 +1319,58 @@ def run_chat(message, history, provider, model, temp, system_prompt, key):
 def run_vision(image, prompt, provider, model, key):
     if not image: return "❌ Bitte Bild hochladen."
     
+    # HANDLE POE
+    if provider == "Poe":
+        api_key = key if key else API_KEYS.get("POE")
+        if not api_key:
+            return "❌ Kein Poe API Key gefunden."
+        
+        try:
+            import asyncio
+            
+            async def poe_vision_async():
+                # Convert image to bytes
+                buffered = io.BytesIO()
+                image.save(buffered, format="PNG")
+                img_bytes = buffered.getvalue()
+                
+                # Upload image to Poe
+                attachment = await fp.upload_file(
+                    file=img_bytes,
+                    file_name="image.png",
+                    api_key=api_key
+                )
+                
+                # Create message with attachment
+                message = fp.ProtocolMessage(
+                    role="user",
+                    content=prompt,
+                    attachments=[attachment]
+                )
+                
+                # Get response
+                full_response = ""
+                async for partial in fp.get_bot_response(
+                    messages=[message],
+                    bot_name=model,
+                    api_key=api_key
+                ):
+                    full_response += partial.text
+                
+                return full_response
+            
+            # Run async code
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(poe_vision_async())
+            loop.close()
+            return result
+            
+        except Exception as e:
+            logger.exception(f"Poe vision error: {str(e)}")
+            return f"🔥 Poe Vision Fehler: {str(e)}"
+    
+    # EXISTING CODE for other providers
     try:
         client = get_client(provider, key)
         b64_img = encode_image(image)
@@ -1231,7 +1383,6 @@ def run_vision(image, prompt, provider, model, key):
             ]
         }]
         
-        # Standard OpenAI Vision call works for Poe now too
         response = client.chat.completions.create(
             model=model, messages=messages, max_tokens=1000
         )
@@ -1797,106 +1948,68 @@ def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, d
 # ==========================================
 
 def run_image_gen(prompt, provider, model, width, height, steps, key):
-    import requests 
-    import base64
-    import tempfile
-    import re
-    import time
-    
+    """Generate image - supports Nebius, Scaleway, OpenRouter, and Poe"""
     try:
-        client = get_client(provider, key)
-        
-        # --- SPECIAL CASE: POE (Chat-to-Image) ---
+        # HANDLE POE
         if provider == "Poe":
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                stream=False
-            )
-            response_text = response.choices[0].message.content
+            api_key = key if key else API_KEYS.get("POE")
+            if not api_key:
+                return None, "❌ Kein Poe API Key gefunden."
             
-            # Extract Image URL
-            match = re.search(r'!\[.*?\]\((https?://.*?)\)', response_text)
-            if not match:
-                match = re.search(r'\[.*?\]\((https?://.*?)\)', response_text)
-            if not match:
-                match = re.search(r'(https?://[^\s]+)', response_text)
+            import asyncio
+            import re
             
-            if not match:
-                return None, f"❌ Kein Bild gefunden. Antwort: {response_text[:200]}"
+            async def poe_image_async():
+                message = fp.ProtocolMessage(role="user", content=prompt)
+                
+                full_response = ""
+                async for partial in fp.get_bot_response(
+                    messages=[message],
+                    bot_name=model,
+                    api_key=api_key
+                ):
+                    full_response += partial.text
+                
+                return full_response
             
-            image_url = match.group(1).rstrip(".,;)")
+            # Run async
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            response_text = loop.run_until_complete(poe_image_async())
+            loop.close()
             
-            # Download with Retry
-            for attempt in range(1, 4):
-                try:
-                    r = requests.get(image_url, timeout=15)
-                    if r.status_code == 200:
-                        tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
-                        tfile.write(r.content)
-                        tfile.close()
-                        return tfile.name, "✅ Erfolg (Poe)"
-                    elif r.status_code in [403, 404]:
-                        time.sleep(2)
-                        continue
-                    else:
-                        return None, f"❌ Download Fehler: {r.status_code}"
-                except Exception as e:
-                    logger.warning(f"Download attempt {attempt} failed: {e}")
-                    time.sleep(2)
+            # Extract image URL from Markdown: ![alt](URL)
+            image_url_match = re.search(r'!\[.*?\]\((https?://[^\)]+)\)', response_text)
             
-            return None, "❌ Bild konnte nach 3 Versuchen nicht geladen werden."
-        
-        # --- SPECIAL CASE: OPENROUTER (Chat Completions with Modalities) ---
-        if provider == "OpenRouter":
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                modalities=["image", "text"],
-                stream=False
-            )
+            if not image_url_match:
+                return None, f"❌ Keine Bild-URL gefunden. Antwort: {response_text[:200]}"
             
-            message = response.choices[0].message
+            image_url = image_url_match.group(1)
             
-            if not hasattr(message, 'images') or not message.images:
-                content = getattr(message, 'content', '')
-                return None, f"❌ Keine Bilder generiert. Antwort: {content[:200]}"
+            # Download image
+            img_response = requests.get(image_url, timeout=30)
+            img_response.raise_for_status()
             
-            image_data_url = message.images[0].image_url.url
-            
-            if not image_data_url.startswith('data:image/'):
-                return None, f"❌ Ungültiges Bildformat: {image_data_url[:50]}"
-            
-            base64_data = image_data_url.split('base64,', 1)[1]
-            img_data = base64.b64decode(base64_data)
-            
+            # Save to temp file
             tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-            tfile.write(img_data)
+            tfile.write(img_response.content)
             tfile.close()
-            return tfile.name, "✅ Erfolg (OpenRouter)"
+            
+            return tfile.name, "✅ Erfolg (Poe)"
         
-        # --- SPECIAL CASE: SCALEWAY ---
-        if provider == "Scaleway":
-            # Scaleway doesn't support standard image generation endpoint
-            return None, "❌ Scaleway: Bildgenerierung derzeit nicht unterstützt. Bitte Nebius verwenden."
-        
-        # --- STANDARD PROVIDER: NEBIUS ---
-        params = {
-            "model": model,
-            "prompt": prompt,
-            "response_format": "b64_json",
-        }
-        
-        if provider == "Nebius":
-            params["extra_body"] = {
+        # Nebius, Scaleway, OpenRouter
+        client = get_client(provider, key)
+        response = client.images.generate(
+            model=model, 
+            prompt=prompt, 
+            response_format="b64_json",
+            extra_body={
+                "response_extension": "jpg", 
                 "width": width, 
                 "height": height, 
-                "num_inference_steps": steps,
-                "response_extension": "jpg"
+                "num_inference_steps": steps
             }
-            
-        response = client.images.generate(**params)
-        
+        )
         img_data = base64.b64decode(response.data[0].b64_json)
         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
         tfile.write(img_data)
@@ -1904,9 +2017,10 @@ def run_image_gen(prompt, provider, model, width, height, steps, key):
         return tfile.name, "✅ Erfolg"
         
     except Exception as e:
-        logger.exception(f"Image Gen Error: {str(e)}")
+        logger.exception(f"Image generation error: {str(e)}")
         return None, f"🔥 Fehler: {str(e)}"
-    
+
+
 # ==========================================
 # 📋 PREDEFINED PROMPT TEMPLATES
 # ==========================================
@@ -2098,69 +2212,18 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         def update_c_ui(prov):
                             """Update chat UI when provider changes"""
                             p_data = PROVIDERS.get(prov, {})
-                            badge = p_data.get("badge", "")
                             
-                            # 1. Get API Key for dynamic fetching
-                            key_name = p_data.get("key_name")
-                            api_key = API_KEYS.get(key_name)
-                            
-                            choices = []
-                            
-                            # 2. Try to fetch models dynamically
-                            # fetch_available_models returns a list of dicts: [{'id': '...', 'name': '...', 'type': '...'}]
-                            models, error = fetch_available_models(prov, api_key)
-                            
-                            if models:
-                                if prov == "Poe":
-                                    # POE FILTER: Only allow models that support Text output
-                                    # We accept "Chat" and "Vision/Chat" types.
-                                    choices = [
-                                        (m["name"], m["id"]) 
-                                        for m in models 
-                                        if "Chat" in m.get("type", "Chat")
-                                    ]
-                                else:
-                                    # STANDARD PROVIDERS: Use all returned models
-                                    choices = [(m["name"], m["id"]) for m in models]
-                            
-                            # 3. Fallback to Config if API failed or returned nothing
-                            if not choices:
-                                raw_list = p_data.get("chat_models", [])
-                                # Format as (ID, ID) since we don't have display names
-                                choices = [(m, m) for m in raw_list]
-
-                            # 4. Apply User Preferences (Sorting)
+                            # Get user's preferred models if logged in
                             if current_user["id"]:
-                                # Get list of preferred model IDs in order [fav1, fav2, ...]
-                                pref_ids = get_user_visible_models(current_user["id"], prov)
-                                
-                                if pref_ids:
-                                    # Map {model_id: display_name} from the available choices
-                                    val_to_name = {v: k for k, v in choices}
-                                    
-                                    sorted_choices = []
-                                    seen_ids = set()
-                                    
-                                    # A. Add favorites first
-                                    for pid in pref_ids:
-                                        if pid in val_to_name:
-                                            sorted_choices.append((val_to_name[pid], pid))
-                                            seen_ids.add(pid)
-                                    
-                                    # B. Add remaining models
-                                    for name, val in choices:
-                                        if val not in seen_ids:
-                                            sorted_choices.append((name, val))
-                                    
-                                    # Only apply if we actually found matches
-                                    if sorted_choices:
-                                        choices = sorted_choices
-
-                            # 5. Determine default value
-                            default_val = choices[0][1] if choices else None
+                                user_models = get_user_visible_models(current_user["id"], prov)
+                                if user_models:
+                                    default_model = user_models[0]
+                                    return gr.update(choices=user_models, value=default_model), p_data.get("badge", "")
                             
-                            return gr.update(choices=choices, value=default_val), badge
-
+                            # Fallback to provider defaults
+                            ms = p_data.get("chat_models", [])
+                            return gr.update(choices=ms, value=ms[0] if ms else ""), p_data.get("badge", "")
+                        
                         c_prov.change(update_c_ui, c_prov, [c_model, c_badge])
 
                         c_bot = gr.Chatbot(height=500, type="messages")
@@ -2635,76 +2698,26 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         v_btn = gr.Button("Analysieren", variant="primary")
                     with gr.Column():
                         v_out = gr.Markdown(label="Ergebnis")
-                        
                 def update_v_models(prov):
-                    """Update vision models based on provider capability"""
-                    p_data = PROVIDERS.get(prov, {})
-                    
-                    # 1. Get API Key
-                    key_name = p_data.get("key_name")
-                    api_key = API_KEYS.get(key_name)
-                    
-                    choices = []
-                    
-                    # 2. Dynamic Fetch
-                    models, error = fetch_available_models(prov, api_key)
-                    
-                    if models and prov == "Poe":
-                        # POE FILTER: Look for "Vision" in the type label we built
-                        choices = [
-                            (m["name"], m["id"]) 
-                            for m in models 
-                            if "Vision" in m.get("type", "")
-                        ]
-                    elif models and prov != "Poe":
-                        # For non-Poe, dynamic lists usually just return chat models. 
-                        # It's safer to rely on the static config for Vision capabilities 
-                        # unless the provider explicitly tags vision models.
-                        pass 
-                        
-                    # 3. Fallback / Standard Config (Primary for Non-Poe)
-                    if not choices:
-                        raw_list = p_data.get("vision_models", [])
-                        choices = [(m, m) for m in raw_list]
-                        
-                    default_val = choices[0][1] if choices else None
-                    return gr.update(choices=choices, value=default_val)
-
-
+                    ms = PROVIDERS.get(prov, {}).get("vision_models", [])
+                    return gr.update(choices=ms, value=ms[0] if ms else "")
                 v_prov.change(update_v_models, v_prov, v_model)
                 v_btn.click(run_vision, [v_img, v_prompt, v_prov, v_model, v_key], v_out)
 
             # --- TAB 4: BILDERZEUGUNG ---
-            def update_image_models(prov):
-                """Update IMAGE dropdown"""
-                p_data = PROVIDERS.get(prov, {})
-                api_key = API_KEYS.get(p_data.get("key_name"))
-                models, error = fetch_available_models(prov, api_key)
-                
-                choices = []
-                if models and prov == "Poe":
-                    choices = [
-                        (f"{m['name']}", m['id']) 
-                        for m in models 
-                        if m.get('type') in ["Bild-Gen", "Video-Gen"]
-                    ]
-                    
-                if not choices:
-                    choices = [(m, m) for m in p_data.get("image_models", [])]
-                    
-                return gr.update(choices=choices, value=choices[0][1] if choices else None)
-
             with gr.TabItem("🎨 Bilderzeugung"):
                 with gr.Row():
                     with gr.Column():
                         g_prompt = gr.Textbox(label="Prompt", placeholder="Eine futuristische Kirche...", lines=3)
                         
+                        # Provider selection
                         g_provider = gr.Dropdown(
                             ["Nebius", "Scaleway", "OpenRouter", "Poe"],
                             value="Nebius",
                             label="Provider"
                         )
                         
+                        # Model dropdown (will update based on provider)
                         g_model = gr.Dropdown(
                             PROVIDERS["Nebius"]["image_models"],
                             value="black-forest-labs/flux-schnell",
@@ -2716,107 +2729,83 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             g_h = gr.Slider(256, 1024, value=768, step=64, label="Höhe")
                         g_steps = gr.Slider(4, 16, value=10, label="Schritte (max 16)")
                         g_key = gr.Textbox(label="API Key (Optional)", type="password")
-                        g_btn = gr.Button("🎨 Generieren", variant="primary")
+                        g_btn = gr.Button("Generieren", variant="primary")
                         g_stat = gr.Textbox(label="Status", interactive=False)
 
-                        # ACTION BUTTONS
+                        # Save button
                         with gr.Row():
-                            g_save_btn = gr.Button("💾 In Galerie speichern", visible=False)
-                        
-                        g_save_status = gr.Markdown("")
+                            g_save_btn = gr.Button("💾 Bild speichern", variant="secondary", visible=False)
+                            g_save_status = gr.Markdown("")
 
                     with gr.Column():
-                        g_out = gr.Image(label="Ergebnis", type="filepath", show_download_button=False)
-                        # File component for download - like in the transcription app!
-                        g_download_file = gr.File(label="📥 Zum Herunterladen: Rechtsklick → 'Speichern unter' oder Link anklicken")
+                        g_out = gr.Image(label="Ergebnis")
 
-                # State to store image path
+                # Store the generated image path
                 g_img_path = gr.State(value=None)
                 
-                # --- HELPER FUNCTIONS ---
-                
-                def update_image_models_ui(prov):
-                    return update_image_models(prov)
+                # Update model dropdown when provider changes
+                def update_image_models(provider):
+                    models = PROVIDERS.get(provider, {}).get("image_models", [])
+                    if models:
+                        return gr.update(choices=models, value=models[0])
+                    return gr.update(choices=[], value=None)
                 
                 g_provider.change(
-                    update_image_models_ui,
+                    update_image_models,
                     inputs=[g_provider],
                     outputs=[g_model]
                 )
 
-                def generate_and_handle_ui(prompt, provider, model, width, height, steps, key):
-                    """Generates image and updates ALL UI components"""
+                # Generate and show save button
+                def generate_and_show_save(prompt, provider, model, width, height, steps, key):
                     img_path, status = run_image_gen(prompt, provider, model, width, height, steps, key)
 
                     if img_path:
-                        # Copy to a more permanent location for download
-                        import shutil
-                        download_dir = "/tmp/gradio_downloads"
-                        os.makedirs(download_dir, exist_ok=True)
-                        download_path = os.path.join(download_dir, f"image_{int(time.time())}.jpg")
-                        shutil.copy2(img_path, download_path)
-                        
-                        return (
-                            img_path,                   # g_out (Preview)
-                            status,                     # g_stat
-                            img_path,                   # g_img_path (State)
-                            download_path,              # g_download_file (Direct file link)
-                            gr.update(visible=True),    # g_save_btn
-                            ""                          # g_save_status (Reset)
-                        )
+                        return img_path, status, img_path, gr.update(visible=True), ""
                     else:
-                        return (
-                            None, 
-                            status, 
-                            None,
-                            None,                       # g_download_file
-                            gr.update(visible=False), 
-                            ""
-                        )
+                        return None, status, None, gr.update(visible=False), ""
 
-                # --- DB SAVE WRAPPER ---
-                def process_gallery_save(img_path, provider, prompt, model):
-                    """Explicit wrapper to handle DB saving safely"""
+                g_btn.click(
+                    generate_and_show_save,
+                    [g_prompt, g_provider, g_model, g_w, g_h, g_steps, g_key],
+                    [g_out, g_stat, g_img_path, g_save_btn, g_save_status]
+                )
+
+                # Save function
+                def save_generated_image_to_db(img_path, provider, prompt, model):
+                    """Save generated image to database"""
                     try:
                         if not current_user["id"]:
                             return "❌ Bitte anmelden", gr.update(visible=True)
-                        if not img_path or not os.path.exists(img_path):
-                            return "❌ Datei nicht gefunden (Session abgelaufen?)", gr.update(visible=True)
+
+                        if not img_path:
+                            return "❌ Kein Bild zum Speichern", gr.update(visible=True)
 
                         import shutil
                         permanent_dir = "/var/www/transkript_app/generated_images"
                         os.makedirs(permanent_dir, exist_ok=True)
+
                         filename = f"img_{int(time.time())}_{os.path.basename(img_path)}"
                         permanent_path = os.path.join(permanent_dir, filename)
                         shutil.copy2(img_path, permanent_path)
 
                         img_id = save_generated_image(
-                            user_id=int(current_user["id"]), 
-                            provider=str(provider), 
-                            model=str(model), 
-                            prompt=str(prompt), 
-                            image_path=str(permanent_path)
+                            user_id=current_user["id"],
+                            provider=provider,
+                            model=model,
+                            prompt=prompt,
+                            image_path=permanent_path
                         )
-                        return f"✅ Gespeichert (ID: {img_id})", gr.update(visible=False)
+
+                        return f"✅ Bild gespeichert (ID: {img_id})", gr.update(visible=False)
 
                     except Exception as e:
-                        logger.exception(f"Gallery Save Error: {e}")
+                        logger.exception(f"Error saving generated image: {str(e)}")
                         return f"🔥 Fehler: {str(e)}", gr.update(visible=True)
 
-                # --- EVENT WIRING ---
-
-                # 1. Generate - now outputs to download file component
-                g_btn.click(
-                    generate_and_handle_ui,
-                    inputs=[g_prompt, g_provider, g_model, g_w, g_h, g_steps, g_key],
-                    outputs=[g_out, g_stat, g_img_path, g_download_file, g_save_btn, g_save_status]
-                )
-
-                # 2. No separate download button needed - File component handles it!
-
-                # 3. Save to Gallery
+                # Connect save button
                 g_save_btn.click(
-                    process_gallery_save,
+                    save_generated_image_to_db,
                     inputs=[g_img_path, g_provider, g_prompt, g_model],
                     outputs=[g_save_status, g_save_btn]
                 )
