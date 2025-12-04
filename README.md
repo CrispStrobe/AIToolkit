@@ -7,39 +7,49 @@ This documentation covers the deployment of a **GDPR-compliant Multi-Provider AI
 - 🎨 **Image Generation** (FLUX models via Nebius)
 - 💾 **Database Integration** (SQLite with user authentication)
 - 📱 **PWA Support** (Progressive Web App for mobile installation)
+- 🛡️ **Security** (Fail2Ban protection)
 
-The application runs as a Python/Gradio service on `localhost:7860`, managed by **systemd**, and exposed via **Apache reverse proxy** with SSL. It coexists with other services (e.g., LimeSurvey) on the same server using different subdomains.
+The application runs as a Python/Gradio service on `localhost:7860`, managed by **systemd**, and exposed via **Apache reverse proxy** with SSL.
 
 ## 📋 Prerequisites
 
-- **OS:** Ubuntu 20.04 LTS (tested) or newer
+- **OS:** Ubuntu 20.04 LTS or newer
 - **RAM:** Minimum 8GB (for handling audio files)
 - **Root/Sudo Access**
-- **Domain/Subdomain:** DNS A-Record pointing to server IP (e.g., `ai.your-domain.com`)
-- **API Keys:** From providers you wish to use (see Configuration section)
+- **Domain:** DNS A-Record pointing to server IP (e.g., `ki.akademie-rs.de`)
+- **API Keys:** From providers (Scaleway, Nebius, etc.)
 
 ---
 
-## 🛠️ Step 1: System Dependencies
+## 🛠️ Step 1: System Dependencies & Security
 
-**CRITICAL:** FFmpeg must be in PATH for audio transcription to work.
+**CRITICAL:** FFmpeg must be in PATH for audio. Fail2Ban is installed for intrusion prevention.
+
 ```bash
 sudo apt update
 sudo apt upgrade -y
-sudo apt install -y python3-venv python3-pip ffmpeg apache2 certbot python3-certbot-apache sqlite3
-```
+# Install Python, FFmpeg, Apache, Certbot, SQLite, and Fail2Ban
+sudo apt install -y python3-venv python3-pip ffmpeg apache2 certbot python3-certbot-apache sqlite3 fail2ban
+````
 
-**Verify FFmpeg installation:**
+**Verify Installations:**
+
 ```bash
 which ffmpeg
-# Should output: /usr/bin/ffmpeg
+# Output: /usr/bin/ffmpeg
+
+sudo systemctl status fail2ban
+# Should be active (running)
 ```
 
----
+-----
 
 ## 🐍 Step 2: Application Setup
 
 ### 2.1 Create Directory Structure
+
+We use a `static` folder for all PWA assets to keep the root clean and permissions manageable.
+
 ```bash
 sudo mkdir -p /var/www/transkript_app
 sudo mkdir -p /var/www/transkript_app/static
@@ -48,6 +58,7 @@ cd /var/www/transkript_app
 ```
 
 ### 2.2 Create Virtual Environment
+
 ```bash
 sudo python3 -m venv venv
 source venv/bin/activate
@@ -55,20 +66,6 @@ source venv/bin/activate
 
 ### 2.3 Install Python Dependencies
 
-**For Ubuntu 20.04 / Python 3.8:**
-```bash
-pip install --upgrade pip
-pip install --break-system-packages \
-    "openai<2.0" \
-    gradio==4.44.0 \
-    requests \
-    pillow \
-    pypdf2 \
-    sqlalchemy \
-    bcrypt
-```
-
-**For Ubuntu 22.04+ / Python 3.10+:**
 ```bash
 pip install --upgrade pip
 pip install \
@@ -81,186 +78,156 @@ pip install \
     bcrypt
 ```
 
-### 2.4 Create Application File
-```bash
-sudo nano /var/www/transkript_app/app.py
-```
+### 2.4 Application Code (`app.py`)
 
-Paste your complete application code. **Important sections to configure:**
+When creating `app.py`, you **must** inject the PWA HTML head tags.
 
-1. **API Keys Section** (top of file):
+**PWA Injection (Insert before `with gr.Blocks...`):**
+
 ```python
-API_KEYS = {
-    "SCALEWAY": os.getenv("SCALEWAY_API_KEY", ""),
-    "MISTRAL": os.getenv("MISTRAL_API_KEY", ""),
-    "NEBIUS": os.getenv("NEBIUS_API_KEY", ""),
-    "OPENROUTER": os.getenv("OPENROUTER_API_KEY", ""),
-    "GROQ": os.getenv("GROQ_API_KEY", ""),
-    "GLADIA": os.getenv("GLADIA_API_KEY", "")
-}
+# ==========================================
+# 📱 PWA CONFIGURATION
+# ==========================================
+PWA_HEAD = """
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#1976d2">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Akademie KI">
+
+<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/static/icon-512.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+
+<link rel="stylesheet" href="/static/custom.css">
+<script src="/static/pwa.js" defer></script>
+"""
+
+# Pass it to Gradio:
+with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD) as demo:
+    # ... rest of app ...
 ```
 
-2. **Default Users** (in `create_default_users()` function):
-```python
-admin = User(
-    username="admin",
-    password_hash=hash_password("YOUR_ADMIN_PASSWORD"),
-    email="your-email@domain.com",
-    is_admin=True
-)
-```
+### 2.5 Initialize Logs & DB Permissions
 
-3. **Gladia Custom Vocabulary** (if using):
-```python
-GLADIA_CONFIG = {
-    "url": "https://api.gladia.io/v2",
-    "vocab": [
-        "Christian Ströbele",  # Replace with your specific terms
-        "Jesus Christus",
-        # Add more domain-specific terms...
-    ]
-}
-```
-
-### 2.5 Create Log File
 ```bash
 sudo touch /var/www/transkript_app/app.log
 sudo chmod 666 /var/www/transkript_app/app.log
+# Database created on first run
+sudo chmod -R 755 /var/www/transkript_app
 ```
 
-### 2.6 Initialize Database
+-----
 
-The database will auto-create on first run, but verify permissions:
+## 🌐 Step 3: Apache Configuration (The Robust Method)
+
+This configuration serves PWA files directly via Apache and proxies the rest to Python. This prevents 404 errors.
+
+### 3.1 Enable Modules
+
 ```bash
-sudo chmod 755 /var/www/transkript_app
-sudo chmod 666 /var/www/transkript_app/akademie_suite.db  # After first run
+sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl
 ```
 
----
+### 3.2 SSL Setup
 
-## 🌐 Step 3: Apache Reverse Proxy Configuration
+First, generate the certificate:
 
-### 3.1 Enable Required Modules
 ```bash
-sudo a2enmod proxy
-sudo a2enmod proxy_http
-sudo a2enmod proxy_wstunnel
-sudo a2enmod rewrite
-sudo a2enmod headers
-sudo a2enmod ssl
-sudo systemctl restart apache2
+sudo certbot --apache -d ki.akademie-rs.de
 ```
 
-### 3.2 Create HTTP VirtualHost (Initial)
+### 3.3 Final Apache Config
+
+Edit the SSL config created by Certbot:
+
 ```bash
-sudo nano /etc/apache2/sites-available/ai-suite.conf
+sudo nano /etc/apache2/sites-available/transkript-le-ssl.conf
 ```
 
-**Content:**
+**Replace content with:**
+
 ```apache
-<VirtualHost *:80>
-    ServerName ai.your-domain.com
-    
-    ErrorLog ${APACHE_LOG_DIR}/ai-error.log
-    CustomLog ${APACHE_LOG_DIR}/ai-access.log combined
+<IfModule mod_ssl.c>
+<VirtualHost *:443>
+    ServerName ki.akademie-rs.de
 
-    # Static file serving for PWA
+    # =================================================
+    # 1. STATIC FILES (Served by Apache)
+    # =================================================
+
+    # Serve the static folder
     Alias /static /var/www/transkript_app/static
-    Alias /manifest.json /var/www/transkript_app/manifest.json
-    Alias /service-worker.js /var/www/transkript_app/service-worker.js
-    
     <Directory /var/www/transkript_app/static>
         Require all granted
+        Options -Indexes
+        AddType text/css .css
+        AddType application/javascript .js
+        AddType image/png .png
+        Header set Cache-Control "public, max-age=31536000, immutable"
     </Directory>
-    
+
+    # Manifest (Map root URL -> static file)
+    Alias /manifest.json /var/www/transkript_app/static/manifest.json
     <Files "manifest.json">
         Require all granted
-    </Files>
-    
-    <Files "service-worker.js">
-        Require all granted
+        Header set Content-Type "application/manifest+json"
+        Header set Cache-Control "no-cache"
     </Files>
 
-    # Prevent proxying static files
+    # Service Worker (Map root URL -> static file)
+    Alias /service-worker.js /var/www/transkript_app/static/service-worker.js
+    <Files "service-worker.js">
+        Require all granted
+        Header set Content-Type "application/javascript"
+        Header set Cache-Control "no-cache"
+        Header set Service-Worker-Allowed "/"
+    </Files>
+
+    # =================================================
+    # 2. PROXY SETTINGS (Gradio)
+    # =================================================
+    
+    ProxyPreserveHost On
+    RewriteEngine On
+
+    # Websockets (Required for Gradio queue)
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*)           ws://127.0.0.1:7860/$1 [P,L]
+
+    # EXCLUDE PWA files from Proxy (Apache handles them)
     ProxyPass /static !
     ProxyPass /manifest.json !
     ProxyPass /service-worker.js !
 
-    # WebSocket support (critical for Gradio)
-    RewriteEngine On
-    RewriteCond %{HTTP:Upgrade} =websocket [NC]
-    RewriteRule /(.*)           ws://127.0.0.1:7860/$1 [P,L]
-    RewriteCond %{HTTP:Upgrade} !=websocket [NC]
-    RewriteRule /(.*)           http://127.0.0.1:7860/$1 [P,L]
+    # Proxy everything else to Python
+    ProxyPass / [http://127.0.0.1:7860/](http://127.0.0.1:7860/)
+    ProxyPassReverse / [http://127.0.0.1:7860/](http://127.0.0.1:7860/)
 
-    # Standard proxy
-    ProxyPreserveHost On
-    ProxyPass / http://127.0.0.1:7860/
-    ProxyPassReverse / http://127.0.0.1:7860/
-</VirtualHost>
-```
+    # =================================================
+    # 3. SSL & LIMITS
+    # =================================================
+    SSLCertificateFile /etc/letsencrypt/live/ki.akademie-rs.de/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/ki.akademie-rs.de/privkey.pem
+    Include /etc/letsencrypt/options-ssl-apache.conf
 
-### 3.3 Enable Site
-```bash
-sudo a2ensite ai-suite.conf
-sudo apache2ctl configtest
-sudo systemctl reload apache2
-```
-
----
-
-## 🔒 Step 4: SSL/HTTPS with Let's Encrypt
-```bash
-sudo certbot --apache -d ai.your-domain.com
-```
-
-**Select option 2 (Redirect HTTP to HTTPS)**
-
-Certbot will create `/etc/apache2/sites-available/ai-suite-le-ssl.conf`
-
-### 4.1 Update SSL Config for Large Uploads
-```bash
-sudo nano /etc/apache2/sites-available/ai-suite-le-ssl.conf
-```
-
-**Add inside `<VirtualHost *:443>`:**
-```apache
-    # Increase limits for audio file uploads (100MB)
-    LimitRequestBody 104857600
+    # Increase limits for large audio uploads
+    LimitRequestBody 1048576000
     ProxyTimeout 600
     TimeOut 600
+</VirtualHost>
+</IfModule>
 ```
 
-### 4.2 Also Update Main Apache Config
-```bash
-sudo nano /etc/apache2/apache2.conf
-```
+-----
 
-**Add at the end:**
-```apache
-# File upload limits
-LimitRequestBody 104857600
-TimeOut 600
-```
+## ⚙️ Step 4: Systemd Service
 
-**Reload Apache:**
-```bash
-sudo apache2ctl configtest
-sudo systemctl reload apache2
-```
-
----
-
-## ⚙️ Step 5: Systemd Service Configuration
-
-**CRITICAL:** The PATH environment variable must include `/usr/bin` for FFmpeg access.
-
-### 5.1 Create Service File
 ```bash
 sudo nano /etc/systemd/system/transkript.service
 ```
 
-**Content:**
 ```ini
 [Unit]
 Description=Gradio Akademie KI Suite
@@ -270,15 +237,9 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/var/www/transkript_app
-
-# CRITICAL: Full PATH including /usr/bin for ffmpeg
 Environment="PATH=/var/www/transkript_app/venv/bin:/usr/local/bin:/usr/bin:/bin"
-
-# Force immediate logging to journalctl
 Environment="PYTHONUNBUFFERED=1"
-
 ExecStart=/var/www/transkript_app/venv/bin/python app.py
-
 Restart=always
 RestartSec=10
 
@@ -286,50 +247,41 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-### 5.2 Enable and Start Service
+Enable it:
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable transkript
-sudo systemctl start transkript
+sudo systemctl restart transkript
 ```
 
-### 5.3 Verify Service Status
+-----
+
+## 📱 Step 5: PWA Files Setup
+
+All PWA files must reside in `/var/www/transkript_app/static/`.
+
+### 5.1 Directory Permissions
+
+**Crucial:** Apache (`www-data`) needs ownership of static files.
+
 ```bash
-sudo systemctl status transkript
+sudo chown -R www-data:www-data /var/www/transkript_app/static
+sudo chmod -R 755 /var/www/transkript_app/static
 ```
 
-Should show **"active (running)"**.
+### 5.2 `manifest.json` (in /static/)
 
-**Monitor logs in real-time:**
-```bash
-sudo journalctl -u transkript -f
-```
+Note: Icons point to `/static/`.
 
-**Also check app log:**
-```bash
-tail -f /var/www/transkript_app/app.log
-```
-
----
-
-## 📱 Step 6: PWA Setup (Progressive Web App)
-
-### 6.1 Create Manifest
-```bash
-sudo nano /var/www/transkript_app/manifest.json
-```
-
-**Content:**
 ```json
 {
-  "name": "Akademie KI Suite",
-  "short_name": "KI Suite",
-  "description": "AI Tools für Transkription, Chat und Bildgenerierung",
-  "start_url": "/",
+  "name": "Akademie KI Suite Ultimate",
+  "short_name": "Akademie KI",
+  "start_url": "/?source=pwa",
   "display": "standalone",
-  "background_color": "#1a1a2e",
-  "theme_color": "#6366f1",
-  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#1976d2",
   "icons": [
     {
       "src": "/static/icon-192.png",
@@ -347,301 +299,84 @@ sudo nano /var/www/transkript_app/manifest.json
 }
 ```
 
-### 6.2 Create Service Worker
-```bash
-sudo nano /var/www/transkript_app/service-worker.js
-```
+### 5.3 `service-worker.js` (in /static/)
 
-**Content:**
 ```javascript
 const CACHE_NAME = 'akademie-ki-v1';
-const urlsToCache = [
+const ASSETS_TO_CACHE = [
   '/',
-  '/static/icon-192.png',
-  '/static/icon-512.png'
+  '/static/custom.css',
+  '/static/pwa.js',
+  '/manifest.json',
+  '/static/icon-192.png'
 ];
 
 self.addEventListener('install', event => {
+  self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(urlsToCache))
+    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS_TO_CACHE))
   );
 });
 
 self.addEventListener('fetch', event => {
   event.respondWith(
-    caches.match(event.request)
-      .then(response => response || fetch(event.request))
+    fetch(event.request).catch(() => caches.match(event.request))
   );
 });
 ```
 
-### 6.3 Generate App Icons
+-----
+
+## 🛡️ Step 6: Fail2Ban Configuration
+
+Fail2Ban is installed, but we can add a custom jail for Apache to block repeated 404/403 errors or bot scanners.
+
+1.  Create a local jail config:
+
+<!-- end list -->
+
 ```bash
-cd /var/www/transkript_app
-source venv/bin/activate
-python3 << 'EOF'
-from PIL import Image, ImageDraw, ImageFont
-import os
-
-def create_icon(size, filename):
-    img = Image.new('RGB', (size, size), color='#6366f1')
-    draw = ImageDraw.Draw(img)
-    
-    # Draw simple "KI" text
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size//3)
-    except:
-        font = ImageFont.load_default()
-    
-    text = "KI"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
-    
-    position = ((size - text_width) / 2, (size - text_height) / 2)
-    draw.text(position, text, fill='white', font=font)
-    
-    os.makedirs('static', exist_ok=True)
-    img.save(f'static/{filename}')
-    print(f"Created {filename}")
-
-create_icon(192, 'icon-192.png')
-create_icon(512, 'icon-512.png')
-EOF
+sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+sudo nano /etc/fail2ban/jail.local
 ```
 
----
+2.  Ensure `[sshd]` is enabled.
+3.  Optionally enable `[apache-auth]` or `[apache-badbots]`.
 
-## 🔧 Step 7: Configuration & API Keys
+Restart to apply:
 
-### 7.1 Set Environment Variables (Recommended)
 ```bash
-sudo nano /etc/systemd/system/transkript.service
+sudo systemctl restart fail2ban
 ```
 
-**Add Environment lines:**
-```ini
-Environment="SCALEWAY_API_KEY=your_key_here"
-Environment="MISTRAL_API_KEY=your_key_here"
-Environment="NEBIUS_API_KEY=your_key_here"
-Environment="GROQ_API_KEY=your_key_here"
-Environment="GLADIA_API_KEY=your_key_here"
-```
+-----
 
-**Then reload:**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart transkript
-```
+## 📁 Final File Structure
 
-### 7.2 Alternative: Direct in app.py
-
-Edit `/var/www/transkript_app/app.py` and fill in the `API_KEYS` dictionary directly.
-
----
-
-## 📊 Database Information
-
-### Location
-```
-/var/www/transkript_app/akademie_suite.db
-```
-
-### Default Users
-
-Created on first run:
-
-| Username | Password | Admin | Email |
-|----------|----------|-------|-------|
-| `admin` | `akademie2025` | Yes | `stroebele@akademie-rs.de` |
-| `user` | `dialog2025` | No | `dialog@akademie-rs.de` |
-
-**IMPORTANT:** Change these passwords in `app.py` before deployment!
-
-### Database Schema
-
-- **User**: Authentication and authorization
-- **ChatHistory**: Saved conversations
-- **Transcription**: Saved audio transcriptions
-- **VisionResult**: Vision analysis results
-- **GeneratedImage**: Generated images metadata
-- **CustomPrompt**: User-defined prompt templates
-
-### Backup Database
-```bash
-sudo cp /var/www/transkript_app/akademie_suite.db \
-       /var/www/transkript_app/akademie_suite.db.backup
-```
-
----
-
-## 🔍 Troubleshooting
-
-### Service Won't Start
-```bash
-# Check logs
-sudo journalctl -u transkript -f
-
-# Common issues:
-# 1. FFmpeg not found: Check PATH in service file
-# 2. Port 7860 already in use: sudo ss -tuln | grep 7860
-# 3. Import errors: Check venv installation
-```
-
-### Transcription Fails with "Connection errored out"
-
-**Causes:**
-1. Audio file too large (>100MB)
-2. Apache timeout too short
-3. FFmpeg not accessible
-
-**Fix:**
-```bash
-# Verify FFmpeg
-/usr/bin/ffmpeg -version
-
-# Check Apache limits
-grep -r "LimitRequestBody" /etc/apache2/
-
-# Test locally first
-cd /var/www/transkript_app
-source venv/bin/activate
-python3 -c "import subprocess; print(subprocess.run(['ffmpeg', '-version'], capture_output=True))"
-```
-
-### Database Errors
-```bash
-# Check permissions
-ls -la /var/www/transkript_app/akademie_suite.db
-
-# Should be readable/writable by root
-sudo chmod 666 /var/www/transkript_app/akademie_suite.db
-```
-
-### PWA Not Installing
-
-1. **Check HTTPS:** PWAs require HTTPS (except localhost)
-2. **Check manifest:** `curl https://ai.your-domain.com/manifest.json`
-3. **Check Apache static file serving:**
-```bash
-   curl -I https://ai.your-domain.com/static/icon-192.png
-```
-
----
-
-## 🔄 Maintenance
-
-### Update Application Code
-```bash
-sudo nano /var/www/transkript_app/app.py
-sudo systemctl restart transkript
-```
-
-### Update Python Dependencies
-```bash
-cd /var/www/transkript_app
-source venv/bin/activate
-pip install --upgrade gradio openai
-sudo systemctl restart transkript
-```
-
-### View Logs
-```bash
-# Service logs
-sudo journalctl -u transkript -f
-
-# Application logs
-tail -f /var/www/transkript_app/app.log
-
-# Apache logs
-sudo tail -f /var/log/apache2/ai-error.log
-```
-
-### SSL Certificate Renewal
-
-Certbot auto-renews. To test:
-```bash
-sudo certbot renew --dry-run
-```
-
----
-
-## 📁 Complete File Structure
 ```
 /var/www/transkript_app/
-├── app.py                          # Main application
-├── akademie_suite.db               # SQLite database
-├── app.log                         # Application logs
-├── venv/                           # Python virtual environment
-├── static/                         # Static files
-│   ├── icon-192.png
-│   ├── icon-512.png
-│   ├── custom.css (if used)
-│   └── pwa.js (if used)
-├── generated_images/               # Saved generated images
-├── manifest.json                   # PWA manifest
-└── service-worker.js               # PWA service worker
-
-/etc/systemd/system/
-└── transkript.service              # Systemd service config
-
-/etc/apache2/sites-available/
-├── ai-suite.conf                   # HTTP config
-└── ai-suite-le-ssl.conf            # HTTPS config (created by certbot)
+├── app.py                      # Main App (with PWA_HEAD)
+├── akademie_suite.db           # Database
+├── venv/                       # Virtual Environment
+└── static/                     # Owned by www-data
+    ├── custom.css
+    ├── pwa.js
+    ├── manifest.json
+    ├── service-worker.js
+    ├── icon-192.png
+    └── icon-512.png
 ```
 
----
+-----
 
-## 🎯 Provider-Specific Notes
+## 🔍 Troubleshooting PWA
 
-### Gladia (GDPR-Compliant, France)
-- **Best for:** German transcriptions with diarization
-- **Features:** Speaker identification, translation, custom vocabulary
-- **Pricing:** Pay per minute
-- **API:** https://api.gladia.io/v2
+If "Install App" does not appear:
 
-### Scaleway (GDPR-Compliant, France)
-- **Best for:** Fast Whisper transcriptions in EU
-- **Models:** whisper-large-v3
-- **Critical:** Use `response_format="json"` (NOT "verbose_json")
-- **Language:** Always set explicitly for non-English (e.g., `language="de"`)
+1.  **Clear Mobile Cache:** Browsers cache 404 errors aggressively.
+2.  **Check Console:** Look for Red 404s.
+3.  **Verify HTTPS:** PWA requires valid SSL.
+4.  **Test URLs:**
+      * `https://ki.akademie-rs.de/manifest.json` (Should load JSON)
+      * `https://ki.akademie-rs.de/static/pwa.js` (Should load JS)
 
-### Groq (US-Based)
-- **Best for:** Ultra-fast inference, free tier
-- **Models:** whisper-large-v3-turbo, whisper-large-v3
-- **Supports:** `response_format="verbose_json"` with segments
-
-### Nebius (GDPR-Compliant, EU)
-- **Best for:** Image generation (FLUX models)
-- **Max inference steps:** 16 (critical for Gradio slider)
-
----
-
-## 🛡️ Security Recommendations
-
-1. **Change default passwords** in `app.py`
-2. **Use environment variables** for API keys
-3. **Restrict database permissions:** `chmod 600 akademie_suite.db`
-4. **Enable Apache security headers:**
-```apache
-   Header always set X-Frame-Options "SAMEORIGIN"
-   Header always set X-Content-Type-Options "nosniff"
-```
-5. **Regular backups** of database
-6. **Monitor logs** for suspicious activity
-7. **Keep system updated:** `sudo apt update && sudo apt upgrade`
-
----
-
-## 📞 Support Resources
-
-- **Gradio Docs:** https://gradio.app/docs
-- **Apache Proxy:** https://httpd.apache.org/docs/2.4/mod/mod_proxy.html
-- **Let's Encrypt:** https://letsencrypt.org/docs/
-- **SQLAlchemy:** https://docs.sqlalchemy.org/
-
----
-
-**Last Updated:** December 2025  
-**Tested On:** Ubuntu 20.04.4 LTS, Apache 2.4.41, Python 3.8.10
