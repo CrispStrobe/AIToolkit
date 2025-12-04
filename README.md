@@ -22,14 +22,14 @@ The application runs as a Python/Gradio service on `localhost:7860`, managed by 
 - **Root/Sudo Access**
 - **Domain:** DNS A-Record pointing to server IP (e.g., `ki.akademie-rs.de`)
 - **Storage:** Hetzner Storage Box with sub-account access
-- **API Keys:** Required providers (stored in `.env` file):
-  - OpenAI (for GPT models)
-  - Anthropic (for Claude models)
-  - Scaleway (for transcription)
-  - Groq (for Whisper transcription)
-  - Gladia (for long-form transcription)
-  - Nebius (for FLUX image generation)
+- **API Keys:** Supported providers (stored in `.env` file):
+  - Mistral (multipurpose)
+  - Scaleway (e.g. for transcription)
+  - Groq (e.g. for Whisper transcription)
+  - Gladia (esp. for long-form transcription)
+  - Nebius (e.g. for FLUX image generation)
   - Poe (optional, for additional models)
+  - OpenRouter (optional, for additional models)
 
 ---
 
@@ -65,7 +65,7 @@ sudo systemctl status fail2ban  # Must be: active (running)
 
 ## 📦 Step 2: Storage Box Mounting (Hetzner)
 
-Mount the Hetzner Storage Box to `/mnt/akademie_storage` for direct file access.
+Mount e.g. the Hetzner Storage Box e.g. to `/mnt/akademie_storage` for direct file access.
 
 ### 2.1 Create Mount Point
 
