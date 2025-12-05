@@ -2566,20 +2566,23 @@ def update_t_ui(prov, force_all=False):
     # 1. Handle Badge Formatting
     raw_html = get_compliance_html(prov)
     
-    # CSS: Multi-line support, dark background, centered
+    # CSS: Dark Background, White Text, Flexbox Centering
+    # height: 42px matches standard Gradio Dropdown height
     styled_badge = f"""
     <div style="
         background-color: #374151; 
         color: #ffffff !important; 
-        padding: 8px 12px; 
+        padding: 0 12px; 
         border-radius: 8px; 
         border: 1px solid #4b5563; 
-        margin-top: 10px; 
+        margin-top: 25px; 
         display: flex; 
         align-items: center; 
         justify-content: center;
-        text-align: center;
+        height: 42px; 
         font-size: 0.9em;
+        white-space: nowrap;
+        overflow: hidden;
     ">
         {raw_html}
     </div>
@@ -3251,24 +3254,33 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         t_refresh_sb_btn.click(refresh_explorer, outputs=t_storage_browser)
 
                         # --- MAIN CONTROLS ---
-                        gr.Markdown("### 🎛️ Auswahl")
+                        gr.Markdown("### 🎛️ Steuerung")
                         with gr.Group():
                             with gr.Row():
-                                t_prov = gr.Dropdown(
-                                    choices=["Gladia", "Deepgram", "AssemblyAI", "Mistral", "Scaleway", "Groq"], 
-                                    value="Gladia", 
-                                    label="Engine",
-                                    scale=2
-                                )
-                                t_diar = gr.Checkbox(
-                                    value=True, 
-                                    label="🎭 Sprecher erkennen",
-                                    scale=1,
-                                    container=False
-                                )
-                            
-                            # Badge moved to separate row below
-                            t_badge = gr.HTML(value=get_compliance_html("Gladia"))
+                                # LEFT COLUMN: Engine Selection (Scale 1)
+                                with gr.Column(scale=1, min_width=180):
+                                    t_prov = gr.Dropdown(
+                                        choices=["Gladia", "Deepgram", "AssemblyAI", "Mistral", "Scaleway", "Groq"], 
+                                        value="Gladia", 
+                                        label="Engine",
+                                        interactive=True
+                                    )
+                                
+                                # RIGHT COLUMN: Badge + Diarization (Scale 2)
+                                with gr.Column(scale=2, min_width=300):
+                                    with gr.Row():
+                                        # Badge (HTML) - Styling handled in update_t_ui
+                                        t_badge = gr.HTML(
+                                            value=get_compliance_html("Gladia")
+                                        )
+                                        
+                                        # Checkbox (Scale=0 prevents it from stretching)
+                                        t_diar = gr.Checkbox(
+                                            value=True, 
+                                            label="🎭 Sprecher erkennen",
+                                            scale=0,
+                                            container=False # Removes extra border for cleaner look
+                                        )
 
                         # --- SETTINGS ACCORDION ---
                         with gr.Accordion("⚙️ Einstellungen", open=False):
@@ -3613,7 +3625,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     inputs=[g_img_path, g_provider, g_prompt, g_model], 
                     outputs=[g_save_status, g_save_btn]
                 )
-
+                
             # --- TAB 5: VERLAUF & VERWALTUNG ---
             with gr.TabItem("📚 Verlauf & Verwaltung", id="tab_management"):
                 # Display Current User
@@ -3711,16 +3723,12 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         # Wiring
                         refresh_trans_btn.click(load_trans_data, outputs=[trans_history, trans_state])
-                        
-                        # --- FIX: AUTO-LOAD ON TAB SELECT ---
-                        trans_tab.select(load_trans_data, outputs=[trans_history, trans_state])
-
                         # Pass 'trans_state' to select so we know what was clicked
                         trans_history.select(select_trans_row, inputs=[trans_state], outputs=[trans_id_input, loaded_trans_display, trans_action_status])
                         trans_id_input.change(load_single_trans, trans_id_input, [loaded_trans_display, trans_action_status])
                         delete_trans_btn.click(del_trans, trans_id_input, [loaded_trans_display, trans_action_status, trans_history, trans_state])
 
-                        # Chat Button
+                        # Chat Button (Checks if msg_input exists in global scope)
                         if 'msg_input' in locals():
                             trans_to_chat_btn.click(lambda x: x, inputs=loaded_trans_display, outputs=msg_input)
 
@@ -3795,10 +3803,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             return None, "", "✅ Gelöscht", d, s
 
                         refresh_images_btn.click(load_img_data, outputs=[images_history, img_state])
-                        
-                        # --- FIX: AUTO-LOAD ON TAB SELECT ---
-                        images_tab.select(load_img_data, outputs=[images_history, img_state])
-                        
                         images_history.select(select_img_row, inputs=[img_state], outputs=[img_id_input, loaded_img_display, loaded_img_prompt, img_action_status])
                         img_id_input.change(load_single_img, img_id_input, [loaded_img_display, loaded_img_prompt, img_action_status])
                         delete_img_btn.click(del_img, img_id_input, [loaded_img_display, loaded_img_prompt, img_action_status, images_history, img_state])
@@ -3879,10 +3883,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         save_prompt_btn.click(save_p, [new_prompt_name, new_prompt_category, new_prompt_text], [save_prompt_status, saved_prompts, prompt_state])
                         refresh_prompts_btn.click(load_prompts_data, outputs=[saved_prompts, prompt_state])
-                        
-                        # --- FIX: AUTO-LOAD ON TAB SELECT ---
-                        prompts_tab.select(load_prompts_data, outputs=[saved_prompts, prompt_state])
-                        
                         saved_prompts.select(select_prompt_row, inputs=[prompt_state], outputs=[prompt_id_load, loaded_prompt_display])
                         prompt_id_load.change(load_single_prompt, prompt_id_load, loaded_prompt_display)
                         delete_prompt_btn.click(del_p, prompt_id_load, [loaded_prompt_display, saved_prompts, prompt_state])
@@ -3891,11 +3891,26 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             prompt_to_chat_btn.click(lambda x: x, inputs=loaded_prompt_display, outputs=msg_input)
 
 
-                    
                     # =========================================================
-                    # 4. RESUME FAILED JOBS
+                    # 4. USER ADMIN
                     # =========================================================
-                    with gr.TabItem("🔄 Abgebrochene Uploads") as jobs_tab:
+                    with gr.TabItem("👥 Benutzerverwaltung"):
+                        users_list = gr.Dataframe(headers=["ID", "User", "Admin", "Erstellt"], height=400)
+                        refresh_users_btn = gr.Button("🔄 Liste aktualisieren")
+
+                        def load_users():
+                            if not current_user.get("is_admin"): return []
+                            db = SessionLocal()
+                            usrs = db.query(User).all()
+                            db.close()
+                            return [[u.id, u.username, u.is_admin, u.created_at.strftime("%Y-%m-%d")] for u in usrs]
+
+                        refresh_users_btn.click(load_users, outputs=users_list)
+                        
+                    # =========================================================
+                    # 5. RESUME FAILED JOBS
+                    # =========================================================
+                    with gr.TabItem("🔄 Abgebrochene Uploads"):
                         gr.Markdown("### 🚧 Unvollständige Transkriptionen fortsetzen")
                         
                         failed_jobs_table = gr.Dataframe(
@@ -3953,10 +3968,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         # Wiring
                         refresh_jobs_btn.click(list_failed_jobs, outputs=failed_jobs_table)
-                        
-                        # --- FIX: AUTO-LOAD ON TAB SELECT ---
-                        jobs_tab.select(list_failed_jobs, outputs=failed_jobs_table)
-
                         resume_btn.click(resume_job_process, inputs=resume_job_id_input, outputs=[resume_log, resume_result])
                         
                         # Auto-fill ID on click
@@ -3965,321 +3976,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             except: return 0
                         
                         failed_jobs_table.select(select_job, failed_jobs_table, resume_job_id_input)
-
-                    # --- TAB 7: MODEL PREFERENCES ---
-                    with gr.TabItem("🎯 Modell-Einstellungen"):
-                        gr.Markdown("## 🎯 Bevorzugte Modelle verwalten")
-                        gr.Markdown("Wähle welche Modelle in den Dropdown-Menüs erscheinen sollen und lege die Reihenfolge fest.")
-                        
-                        with gr.Row():
-                            pref_provider = gr.Dropdown(
-                                choices=list(PROVIDERS.keys()),
-                                value="Scaleway",
-                                label="Provider auswählen"
-                            )
-                        
-                        with gr.Row():
-                            fetch_models_btn = gr.Button("🔄 Verfügbare Modelle laden", variant="secondary")
-                            fetch_status = gr.Markdown("")
-                        
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                gr.Markdown("### 📋 Verfügbare Modelle")
-                                available_models_list = gr.Dataframe(
-                                    headers=["Modell-ID", "Anzeigename"],
-                                    value=[["", ""]],
-                                    interactive=False,
-                                    wrap=True,
-                                    height=400
-                                )
-                            
-                            with gr.Column(scale=1):
-                                gr.Markdown("### ✅ Deine Auswahl")
-                                gr.Markdown("*Erste Modell = Standard. Drag & Drop zum Sortieren.*")
-                                
-                                selected_models_state = gr.State([])
-                                
-                                selected_models_display = gr.Dataframe(
-                                    headers=["Reihenfolge", "Modell-ID", "Anzeigename", "Sichtbar"],
-                                    value=[["", "", "", ""]],
-                                    interactive=False,
-                                    wrap=True,
-                                    height=400,
-                                    datatype=["number", "str", "str", "bool"]
-                                )
-                                
-                                with gr.Row():
-                                    save_prefs_btn = gr.Button("💾 Einstellungen speichern", variant="primary")
-                                    reset_prefs_btn = gr.Button("🔄 Zurücksetzen", variant="secondary")
-                                
-                                save_prefs_status = gr.Markdown("")
-                        
-                        with gr.Accordion("⚙️ Modell-Verwaltung", open=True):
-                            with gr.Row():
-                                with gr.Column():
-                                    model_to_add = gr.Textbox(
-                                        label="Modell-ID hinzufügen",
-                                        placeholder="z.B. llama-3.3-70b-instruct"
-                                    )
-                                    model_display_name = gr.Textbox(
-                                        label="Anzeigename (optional)",
-                                        placeholder="z.B. Llama 3.3 70B"
-                                    )
-                                    add_model_btn = gr.Button("➕ Hinzufügen", variant="secondary")
-                                
-                                with gr.Column():
-                                    model_to_remove_idx = gr.Number(
-                                        label="Position zum Entfernen (Reihenfolge-Nummer)",
-                                        precision=0,
-                                        value=1
-                                    )
-                                    remove_model_btn = gr.Button("➖ Entfernen", variant="secondary")
-                                
-                                with gr.Column():
-                                    move_from_idx = gr.Number(
-                                        label="Von Position",
-                                        precision=0,
-                                        value=1
-                                    )
-                                    move_to_idx = gr.Number(
-                                        label="Zu Position",
-                                        precision=0,
-                                        value=2
-                                    )
-                                    move_model_btn = gr.Button("↕️ Verschieben", variant="secondary")
-                            
-                            model_mgmt_status = gr.Markdown("")
-                        
-                        gr.Markdown("""
-                        ### 💡 Tipps
-                        
-                        - **Erstes Modell** = Standard-Modell für diesen Provider
-                        - **Unsichtbare Modelle** werden nicht in Dropdown-Menüs angezeigt
-                        - Klicke auf "🔄 Verfügbare Modelle laden" um die neuesten Modelle vom Provider zu laden
-                        - Änderungen gelten sofort nach dem Speichern
-                        """)
-                        
-                        # =========================================================
-                        # EVENT HANDLERS FOR MODEL PREFERENCES
-                        # =========================================================
-                        
-                        def fetch_models_for_provider(provider, api_key=None):
-                            """Fetch and display available models"""
-                            if not current_user["id"]:
-                                return [["", ""]], "❌ Bitte anmelden", gr.update()
-                            
-                            # Get API key for provider if available
-                            provider_key = API_KEYS.get(provider.lower(), "")
-                            
-                            models, error = fetch_available_models(provider, provider_key)
-                            
-                            if error:
-                                return [["", ""]], f"❌ {error}", gr.update()
-                            
-                            if not models:
-                                return [["", ""]], "⚠️ Keine Modelle gefunden", gr.update()
-                            
-                            # Format for display
-                            model_data = [[m["id"], m.get("name", m["id"])] for m in models]
-                            
-                            return model_data, f"✅ {len(models)} Modelle geladen", gr.update()
-                        
-                        def load_user_preferences(provider):
-                            """Load user's saved preferences for provider"""
-                            if not current_user["id"]:
-                                return [["", "", "", ""]], []
-                            
-                            prefs = get_user_model_preferences(current_user["id"], provider)
-                            
-                            if not prefs:
-                                # No preferences, show default models
-                                default_models = PROVIDERS.get(provider, {}).get("chat_models", [])
-                                display_data = []
-                                state_data = []
-                                for i, model_id in enumerate(default_models, 1):
-                                    display_data.append([i, model_id, model_id, True])
-                                    state_data.append({
-                                        "model_id": model_id,
-                                        "display_name": model_id,
-                                        "is_visible": True,
-                                        "display_order": i
-                                    })
-                                return display_data, state_data
-                            
-                            # Load saved preferences
-                            display_data = []
-                            state_data = []
-                            for i, pref in enumerate(prefs, 1):
-                                display_data.append([
-                                    i,
-                                    pref.model_id,
-                                    pref.display_name or pref.model_id,
-                                    "✅" if pref.is_visible else "❌"
-                                ])
-                                state_data.append({
-                                    "model_id": pref.model_id,
-                                    "display_name": pref.display_name or pref.model_id,
-                                    "is_visible": pref.is_visible,
-                                    "display_order": i
-                                })
-                            
-                            return display_data, state_data
-                        
-                        def add_model_to_selection(provider, model_id, display_name, current_state):
-                            """Add a model to user's selection"""
-                            if not model_id:
-                                return gr.update(), current_state, "❌ Modell-ID erforderlich"
-                            
-                            # Check if already exists
-                            if any(m["model_id"] == model_id for m in current_state):
-                                return gr.update(), current_state, "⚠️ Modell bereits in Auswahl"
-                            
-                            # Add to state
-                            new_model = {
-                                "model_id": model_id,
-                                "display_name": display_name or model_id,
-                                "is_visible": True,
-                                "display_order": len(current_state) + 1
-                            }
-                            current_state.append(new_model)
-                            
-                            # Update display
-                            display_data = []
-                            for i, m in enumerate(current_state, 1):
-                                display_data.append([
-                                    i,
-                                    m["model_id"],
-                                    m["display_name"],
-                                    "✅" if m["is_visible"] else "❌"
-                                ])
-                            
-                            return display_data, current_state, f"✅ '{model_id}' hinzugefügt"
-                        
-                        def remove_model_from_selection(idx, current_state):
-                            """Remove a model from selection"""
-                            if not current_state or idx < 1 or idx > len(current_state):
-                                return gr.update(), current_state, "❌ Ungültige Position"
-                            
-                            removed = current_state.pop(idx - 1)
-                            
-                            # Update display
-                            display_data = []
-                            for i, m in enumerate(current_state, 1):
-                                display_data.append([
-                                    i,
-                                    m["model_id"],
-                                    m["display_name"],
-                                    "✅" if m["is_visible"] else "❌"
-                                ])
-                            
-                            return display_data, current_state, f"✅ '{removed['model_id']}' entfernt"
-                        
-                        def move_model_in_selection(from_idx, to_idx, current_state):
-                            """Move a model in the selection order"""
-                            if not current_state:
-                                return gr.update(), current_state, "❌ Keine Modelle vorhanden"
-                            
-                            if from_idx < 1 or from_idx > len(current_state):
-                                return gr.update(), current_state, "❌ Ungültige Ausgangsposition"
-                            
-                            if to_idx < 1 or to_idx > len(current_state):
-                                return gr.update(), current_state, "❌ Ungültige Zielposition"
-                            
-                            # Move item
-                            item = current_state.pop(from_idx - 1)
-                            current_state.insert(to_idx - 1, item)
-                            
-                            # Update display
-                            display_data = []
-                            for i, m in enumerate(current_state, 1):
-                                display_data.append([
-                                    i,
-                                    m["model_id"],
-                                    m["display_name"],
-                                    "✅" if m["is_visible"] else "❌"
-                                ])
-                            
-                            return display_data, current_state, f"✅ Modell von Position {from_idx} zu {to_idx} verschoben"
-                        
-                        def save_preferences(provider, current_state):
-                            """Save preferences to database"""
-                            if not current_user["id"]:
-                                return "❌ Bitte anmelden"
-                            
-                            if not current_state:
-                                return "⚠️ Keine Modelle ausgewählt"
-                            
-                            # Update display_order
-                            for i, model in enumerate(current_state):
-                                model["display_order"] = i
-                            
-                            success, message = save_user_model_preferences(
-                                current_user["id"],
-                                provider,
-                                current_state
-                            )
-                            
-                            return message
-                        
-                        def reset_to_defaults(provider):
-                            """Reset to default provider models"""
-                            default_models = PROVIDERS.get(provider, {}).get("chat_models", [])
-                            
-                            display_data = []
-                            state_data = []
-                            for i, model_id in enumerate(default_models, 1):
-                                display_data.append([i, model_id, model_id, "✅"])
-                                state_data.append({
-                                    "model_id": model_id,
-                                    "display_name": model_id,
-                                    "is_visible": True,
-                                    "display_order": i
-                                })
-                            
-                            return display_data, state_data, "✅ Auf Standard zurückgesetzt"
-                        
-                        # Wire up event handlers
-                        fetch_models_btn.click(
-                            fetch_models_for_provider,
-                            inputs=[pref_provider],
-                            outputs=[available_models_list, fetch_status, selected_models_display]
-                        )
-                        
-                        pref_provider.change(
-                            load_user_preferences,
-                            inputs=[pref_provider],
-                            outputs=[selected_models_display, selected_models_state]
-                        )
-                        
-                        add_model_btn.click(
-                            add_model_to_selection,
-                            inputs=[pref_provider, model_to_add, model_display_name, selected_models_state],
-                            outputs=[selected_models_display, selected_models_state, model_mgmt_status]
-                        )
-                        
-                        remove_model_btn.click(
-                            remove_model_from_selection,
-                            inputs=[model_to_remove_idx, selected_models_state],
-                            outputs=[selected_models_display, selected_models_state, model_mgmt_status]
-                        )
-                        
-                        move_model_btn.click(
-                            move_model_in_selection,
-                            inputs=[move_from_idx, move_to_idx, selected_models_state],
-                            outputs=[selected_models_display, selected_models_state, model_mgmt_status]
-                        )
-                        
-                        save_prefs_btn.click(
-                            save_preferences,
-                            inputs=[pref_provider, selected_models_state],
-                            outputs=[save_prefs_status]
-                        )
-                        
-                        reset_prefs_btn.click(
-                            reset_to_defaults,
-                            inputs=[pref_provider],
-                            outputs=[selected_models_display, selected_models_state, save_prefs_status]
-                        )
                         
                 # --- TAB 6: USER MANAGEMENT (ADMIN ONLY) ---
                 with gr.TabItem("👥 Benutzerverwaltung", visible=False) as admin_tab:
@@ -4575,7 +4271,320 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     images_tab.select(fn=load_img_data, outputs=[images_history, img_state])
                     prompts_tab.select(fn=load_prompts_data, outputs=[saved_prompts, prompt_state])
                     
-                
+                # --- TAB 7: MODEL PREFERENCES ---
+                with gr.TabItem("🎯 Modell-Einstellungen"):
+                    gr.Markdown("## 🎯 Bevorzugte Modelle verwalten")
+                    gr.Markdown("Wähle welche Modelle in den Dropdown-Menüs erscheinen sollen und lege die Reihenfolge fest.")
+                    
+                    with gr.Row():
+                        pref_provider = gr.Dropdown(
+                            choices=list(PROVIDERS.keys()),
+                            value="Scaleway",
+                            label="Provider auswählen"
+                        )
+                    
+                    with gr.Row():
+                        fetch_models_btn = gr.Button("🔄 Verfügbare Modelle laden", variant="secondary")
+                        fetch_status = gr.Markdown("")
+                    
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            gr.Markdown("### 📋 Verfügbare Modelle")
+                            available_models_list = gr.Dataframe(
+                                headers=["Modell-ID", "Anzeigename"],
+                                value=[["", ""]],
+                                interactive=False,
+                                wrap=True,
+                                height=400
+                            )
+                        
+                        with gr.Column(scale=1):
+                            gr.Markdown("### ✅ Deine Auswahl")
+                            gr.Markdown("*Erste Modell = Standard. Drag & Drop zum Sortieren.*")
+                            
+                            selected_models_state = gr.State([])
+                            
+                            selected_models_display = gr.Dataframe(
+                                headers=["Reihenfolge", "Modell-ID", "Anzeigename", "Sichtbar"],
+                                value=[["", "", "", ""]],
+                                interactive=False,
+                                wrap=True,
+                                height=400,
+                                datatype=["number", "str", "str", "bool"]
+                            )
+                            
+                            with gr.Row():
+                                save_prefs_btn = gr.Button("💾 Einstellungen speichern", variant="primary")
+                                reset_prefs_btn = gr.Button("🔄 Zurücksetzen", variant="secondary")
+                            
+                            save_prefs_status = gr.Markdown("")
+                    
+                    with gr.Accordion("⚙️ Modell-Verwaltung", open=True):
+                        with gr.Row():
+                            with gr.Column():
+                                model_to_add = gr.Textbox(
+                                    label="Modell-ID hinzufügen",
+                                    placeholder="z.B. llama-3.3-70b-instruct"
+                                )
+                                model_display_name = gr.Textbox(
+                                    label="Anzeigename (optional)",
+                                    placeholder="z.B. Llama 3.3 70B"
+                                )
+                                add_model_btn = gr.Button("➕ Hinzufügen", variant="secondary")
+                            
+                            with gr.Column():
+                                model_to_remove_idx = gr.Number(
+                                    label="Position zum Entfernen (Reihenfolge-Nummer)",
+                                    precision=0,
+                                    value=1
+                                )
+                                remove_model_btn = gr.Button("➖ Entfernen", variant="secondary")
+                            
+                            with gr.Column():
+                                move_from_idx = gr.Number(
+                                    label="Von Position",
+                                    precision=0,
+                                    value=1
+                                )
+                                move_to_idx = gr.Number(
+                                    label="Zu Position",
+                                    precision=0,
+                                    value=2
+                                )
+                                move_model_btn = gr.Button("↕️ Verschieben", variant="secondary")
+                        
+                        model_mgmt_status = gr.Markdown("")
+                    
+                    gr.Markdown("""
+                    ### 💡 Tipps
+                    
+                    - **Erstes Modell** = Standard-Modell für diesen Provider
+                    - **Unsichtbare Modelle** werden nicht in Dropdown-Menüs angezeigt
+                    - Klicke auf "🔄 Verfügbare Modelle laden" um die neuesten Modelle vom Provider zu laden
+                    - Änderungen gelten sofort nach dem Speichern
+                    """)
+                    
+                    # =========================================================
+                    # EVENT HANDLERS FOR MODEL PREFERENCES
+                    # =========================================================
+                    
+                    def fetch_models_for_provider(provider, api_key=None):
+                        """Fetch and display available models"""
+                        if not current_user["id"]:
+                            return [["", ""]], "❌ Bitte anmelden", gr.update()
+                        
+                        # Get API key for provider if available
+                        provider_key = API_KEYS.get(provider.lower(), "")
+                        
+                        models, error = fetch_available_models(provider, provider_key)
+                        
+                        if error:
+                            return [["", ""]], f"❌ {error}", gr.update()
+                        
+                        if not models:
+                            return [["", ""]], "⚠️ Keine Modelle gefunden", gr.update()
+                        
+                        # Format for display
+                        model_data = [[m["id"], m.get("name", m["id"])] for m in models]
+                        
+                        return model_data, f"✅ {len(models)} Modelle geladen", gr.update()
+                    
+                    def load_user_preferences(provider):
+                        """Load user's saved preferences for provider"""
+                        if not current_user["id"]:
+                            return [["", "", "", ""]], []
+                        
+                        prefs = get_user_model_preferences(current_user["id"], provider)
+                        
+                        if not prefs:
+                            # No preferences, show default models
+                            default_models = PROVIDERS.get(provider, {}).get("chat_models", [])
+                            display_data = []
+                            state_data = []
+                            for i, model_id in enumerate(default_models, 1):
+                                display_data.append([i, model_id, model_id, True])
+                                state_data.append({
+                                    "model_id": model_id,
+                                    "display_name": model_id,
+                                    "is_visible": True,
+                                    "display_order": i
+                                })
+                            return display_data, state_data
+                        
+                        # Load saved preferences
+                        display_data = []
+                        state_data = []
+                        for i, pref in enumerate(prefs, 1):
+                            display_data.append([
+                                i,
+                                pref.model_id,
+                                pref.display_name or pref.model_id,
+                                "✅" if pref.is_visible else "❌"
+                            ])
+                            state_data.append({
+                                "model_id": pref.model_id,
+                                "display_name": pref.display_name or pref.model_id,
+                                "is_visible": pref.is_visible,
+                                "display_order": i
+                            })
+                        
+                        return display_data, state_data
+                    
+                    def add_model_to_selection(provider, model_id, display_name, current_state):
+                        """Add a model to user's selection"""
+                        if not model_id:
+                            return gr.update(), current_state, "❌ Modell-ID erforderlich"
+                        
+                        # Check if already exists
+                        if any(m["model_id"] == model_id for m in current_state):
+                            return gr.update(), current_state, "⚠️ Modell bereits in Auswahl"
+                        
+                        # Add to state
+                        new_model = {
+                            "model_id": model_id,
+                            "display_name": display_name or model_id,
+                            "is_visible": True,
+                            "display_order": len(current_state) + 1
+                        }
+                        current_state.append(new_model)
+                        
+                        # Update display
+                        display_data = []
+                        for i, m in enumerate(current_state, 1):
+                            display_data.append([
+                                i,
+                                m["model_id"],
+                                m["display_name"],
+                                "✅" if m["is_visible"] else "❌"
+                            ])
+                        
+                        return display_data, current_state, f"✅ '{model_id}' hinzugefügt"
+                    
+                    def remove_model_from_selection(idx, current_state):
+                        """Remove a model from selection"""
+                        if not current_state or idx < 1 or idx > len(current_state):
+                            return gr.update(), current_state, "❌ Ungültige Position"
+                        
+                        removed = current_state.pop(idx - 1)
+                        
+                        # Update display
+                        display_data = []
+                        for i, m in enumerate(current_state, 1):
+                            display_data.append([
+                                i,
+                                m["model_id"],
+                                m["display_name"],
+                                "✅" if m["is_visible"] else "❌"
+                            ])
+                        
+                        return display_data, current_state, f"✅ '{removed['model_id']}' entfernt"
+                    
+                    def move_model_in_selection(from_idx, to_idx, current_state):
+                        """Move a model in the selection order"""
+                        if not current_state:
+                            return gr.update(), current_state, "❌ Keine Modelle vorhanden"
+                        
+                        if from_idx < 1 or from_idx > len(current_state):
+                            return gr.update(), current_state, "❌ Ungültige Ausgangsposition"
+                        
+                        if to_idx < 1 or to_idx > len(current_state):
+                            return gr.update(), current_state, "❌ Ungültige Zielposition"
+                        
+                        # Move item
+                        item = current_state.pop(from_idx - 1)
+                        current_state.insert(to_idx - 1, item)
+                        
+                        # Update display
+                        display_data = []
+                        for i, m in enumerate(current_state, 1):
+                            display_data.append([
+                                i,
+                                m["model_id"],
+                                m["display_name"],
+                                "✅" if m["is_visible"] else "❌"
+                            ])
+                        
+                        return display_data, current_state, f"✅ Modell von Position {from_idx} zu {to_idx} verschoben"
+                    
+                    def save_preferences(provider, current_state):
+                        """Save preferences to database"""
+                        if not current_user["id"]:
+                            return "❌ Bitte anmelden"
+                        
+                        if not current_state:
+                            return "⚠️ Keine Modelle ausgewählt"
+                        
+                        # Update display_order
+                        for i, model in enumerate(current_state):
+                            model["display_order"] = i
+                        
+                        success, message = save_user_model_preferences(
+                            current_user["id"],
+                            provider,
+                            current_state
+                        )
+                        
+                        return message
+                    
+                    def reset_to_defaults(provider):
+                        """Reset to default provider models"""
+                        default_models = PROVIDERS.get(provider, {}).get("chat_models", [])
+                        
+                        display_data = []
+                        state_data = []
+                        for i, model_id in enumerate(default_models, 1):
+                            display_data.append([i, model_id, model_id, "✅"])
+                            state_data.append({
+                                "model_id": model_id,
+                                "display_name": model_id,
+                                "is_visible": True,
+                                "display_order": i
+                            })
+                        
+                        return display_data, state_data, "✅ Auf Standard zurückgesetzt"
+                    
+                    # Wire up event handlers
+                    fetch_models_btn.click(
+                        fetch_models_for_provider,
+                        inputs=[pref_provider],
+                        outputs=[available_models_list, fetch_status, selected_models_display]
+                    )
+                    
+                    pref_provider.change(
+                        load_user_preferences,
+                        inputs=[pref_provider],
+                        outputs=[selected_models_display, selected_models_state]
+                    )
+                    
+                    add_model_btn.click(
+                        add_model_to_selection,
+                        inputs=[pref_provider, model_to_add, model_display_name, selected_models_state],
+                        outputs=[selected_models_display, selected_models_state, model_mgmt_status]
+                    )
+                    
+                    remove_model_btn.click(
+                        remove_model_from_selection,
+                        inputs=[model_to_remove_idx, selected_models_state],
+                        outputs=[selected_models_display, selected_models_state, model_mgmt_status]
+                    )
+                    
+                    move_model_btn.click(
+                        move_model_in_selection,
+                        inputs=[move_from_idx, move_to_idx, selected_models_state],
+                        outputs=[selected_models_display, selected_models_state, model_mgmt_status]
+                    )
+                    
+                    save_prefs_btn.click(
+                        save_preferences,
+                        inputs=[pref_provider, selected_models_state],
+                        outputs=[save_prefs_status]
+                    )
+                    
+                    reset_prefs_btn.click(
+                        reset_to_defaults,
+                        inputs=[pref_provider],
+                        outputs=[selected_models_display, selected_models_state, save_prefs_status]
+                    )
 
     def handle_login(username, password):
         success, message, show_app, show_login = login_user(username, password)
