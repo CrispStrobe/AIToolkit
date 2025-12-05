@@ -398,75 +398,67 @@ def save_custom_prompt(user_id: int, name: str, prompt_text: str, category: str 
 # Add after existing database functions
 
 def delete_transcription(trans_id: int, user_id: int):
-    """Delete a transcription safely"""
+    """Delete a transcription"""
     db = get_db()
-    try:
-        trans = db.query(Transcription).filter(Transcription.id == trans_id, Transcription.user_id == user_id).first()
-        if trans:
-            db.delete(trans)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    trans = db.query(Transcription).filter(
+        Transcription.id == trans_id,
+        Transcription.user_id == user_id
+    ).first()
+    if trans:
+        db.delete(trans)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_chat_history(chat_id: int, user_id: int):
-    """Delete a chat history safely"""
+    """Delete a chat history"""
     db = get_db()
-    try:
-        chat = db.query(ChatHistory).filter(ChatHistory.id == chat_id, ChatHistory.user_id == user_id).first()
-        if chat:
-            db.delete(chat)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    chat = db.query(ChatHistory).filter(
+        ChatHistory.id == chat_id,
+        ChatHistory.user_id == user_id
+    ).first()
+    if chat:
+        db.delete(chat)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_vision_result(vision_id: int, user_id: int):
-    """Delete a vision result safely"""
+    """Delete a vision result"""
     db = get_db()
-    try:
-        vision = db.query(VisionResult).filter(VisionResult.id == vision_id, VisionResult.user_id == user_id).first()
-        if vision:
-            db.delete(vision)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    vision = db.query(VisionResult).filter(
+        VisionResult.id == vision_id,
+        VisionResult.user_id == user_id
+    ).first()
+    if vision:
+        db.delete(vision)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_generated_image(img_id: int, user_id: int):
-    """Delete a generated image safely"""
+    """Delete a generated image"""
     db = get_db()
-    try:
-        img = db.query(GeneratedImage).filter(GeneratedImage.id == img_id, GeneratedImage.user_id == user_id).first()
-        if img:
-            if img.image_path and os.path.exists(img.image_path):
-                try: os.remove(img.image_path)
-                except: pass
-            db.delete(img)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    img = db.query(GeneratedImage).filter(
+        GeneratedImage.id == img_id,
+        GeneratedImage.user_id == user_id
+    ).first()
+    if img:
+        # Also delete the file
+        if img.image_path and os.path.exists(img.image_path):
+            os.remove(img.image_path)
+        db.delete(img)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_custom_prompt(prompt_id: int, user_id: int):
     """Delete a custom prompt"""
@@ -565,7 +557,7 @@ def copy_storage_file_to_temp(file_path):
     shutil.copy2(abs_path, local_dest)
     return local_dest
 
-def get_storage_root(user_state=None):
+def get_storage_root(user_state):
     """Returns valid root for FileExplorer based on login"""
     if user_state and user_state.get("id"):
         # Ensure folders exist
@@ -1617,10 +1609,12 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 
 def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens, user_state):
     # --- SECURITY CHECK ---
+    # We look inside the passed dictionary, not the global variable
     if not user_state or not user_state.get("id"):
         yield "⛔ Nicht autorisiert. Bitte neu anmelden."
         return
     
+    # Current User ID for DB logging
     user_id = user_state["id"]
     # ----------------------
 
@@ -1663,6 +1657,7 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
                 extra_body["include_reasoning"] = True
 
         elif provider == "Scaleway":
+            # Scaleway logic
             if r_effort and r_effort != "default":
                 params["reasoning_effort"] = r_effort
             if r_tokens > 0:
@@ -1670,6 +1665,8 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
             params["temperature"] = float(temp)
 
         elif provider == "Mistral":
+            # FIX: Only set max_tokens, do NOT force prompt_mode="reasoning"
+            # as it crashes non-reasoning models (Mistral 400 Error)
             if r_tokens > 0:
                 params["max_tokens"] = int(r_tokens)
             params["temperature"] = float(temp)
@@ -1682,72 +1679,87 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
         if extra_body:
             params["extra_body"] = extra_body
 
-        # 4. Execute
-        stream = client.chat.completions.create(**params)
-        
-        full_response = ""
-        reasoning_buffer = ""
-        is_thinking = False
-        
-        for chunk in stream:
-            if chunk.choices and len(chunk.choices) > 0:
-                delta = chunk.choices[0].delta
-                
-                # --- A. Capture Explicit Reasoning ---
-                new_reasoning = ""
-                if hasattr(delta, 'reasoning') and delta.reasoning:
-                    new_reasoning = delta.reasoning
-                elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                    new_reasoning = delta.reasoning_content
-                elif hasattr(delta, 'reasoning_details') and delta.reasoning_details:
-                    if isinstance(delta.reasoning_details, str):
-                        new_reasoning = delta.reasoning_details
-                    elif isinstance(delta.reasoning_details, list):
-                        for detail in delta.reasoning_details:
-                            if detail.get('type') == 'reasoning.text':
-                                new_reasoning += detail.get('text', '')
-
-                if new_reasoning:
-                    reasoning_buffer += new_reasoning
-                    display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                    yield display_thought + full_response
-                    continue
-
-                # --- B. Capture Content ---
-                if delta.content:
-                    val = delta.content
-                    if "<think>" in val:
-                        is_thinking = True
-                        val = val.replace("<think>", "")
-                    elif "</think>" in val:
-                        is_thinking = False
-                        val = val.replace("</think>", "")
+        # 4. Execute with Error Handling for Scaleway Protocol Leak
+        try:
+            stream = client.chat.completions.create(**params)
+            
+            full_response = ""
+            reasoning_buffer = ""
+            is_thinking = False
+            
+            for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
                     
-                    if is_thinking:
-                        reasoning_buffer += val
+                    # --- A. Capture Explicit Reasoning ---
+                    new_reasoning = ""
+                    if hasattr(delta, 'reasoning') and delta.reasoning:
+                        new_reasoning = delta.reasoning
+                    elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        new_reasoning = delta.reasoning_content
+                    elif hasattr(delta, 'reasoning_details') and delta.reasoning_details:
+                        if isinstance(delta.reasoning_details, str):
+                            new_reasoning = delta.reasoning_details
+                        elif isinstance(delta.reasoning_details, list):
+                            for detail in delta.reasoning_details:
+                                if detail.get('type') == 'reasoning.text':
+                                    new_reasoning += detail.get('text', '')
+
+                    if new_reasoning:
+                        reasoning_buffer += new_reasoning
                         display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
                         yield display_thought + full_response
-                    else:
-                        full_response += val
-                        if reasoning_buffer:
-                            display_thought = f"<details><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
+                        continue
+
+                    # --- B. Capture Content ---
+                    if delta.content:
+                        val = delta.content
+                        if "<think>" in val:
+                            is_thinking = True
+                            val = val.replace("<think>", "")
+                        elif "</think>" in val:
+                            is_thinking = False
+                            val = val.replace("</think>", "")
+                        
+                        if is_thinking:
+                            reasoning_buffer += val
+                            display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
                             yield display_thought + full_response
                         else:
-                            yield full_response
+                            full_response += val
+                            if reasoning_buffer:
+                                display_thought = f"<details><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
+                                yield display_thought + full_response
+                            else:
+                                yield full_response
+
+        # --- C. SPECIFIC FIX FOR SCALEWAY PROTOCOL ERROR ---
+        except Exception as stream_err:
+            err_str = str(stream_err)
+            # Check if this is the "unexpected tokens" error containing the leaked thought
+            if "unexpected tokens remaining in message header" in err_str:
+                try:
+                    # Extract the list part: ["We", "need", "to", ...]
+                    match = re.search(r'\[.*\]', err_str)
+                    if match:
+                        # Parse the list string back to a Python list
+                        leaked_tokens = json.loads(match.group(0))
+                        # Join them to reconstruct the thought
+                        leaked_thought = " ".join(leaked_tokens)
+                        
+                        # Display what we recovered
+                        reasoning_buffer += leaked_thought + " [⚠️ Scaleway Protocol Limit Reached]"
+                        
+                        display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
+                        yield display_thought + full_response
+                        return # Stop processing as the stream crashed
+                except:
+                    pass # If recovery fails, raise original error
+            
+            # If it wasn't the specific Scaleway error, or recovery failed:
+            raise stream_err
                 
     except Exception as e:
-        # Catch specific errors to prevent connection drop
-        err_str = str(e)
-        if "unexpected tokens" in err_str: # Scaleway fix
-             try:
-                 match = re.search(r'\[.*\]', err_str)
-                 if match:
-                     leaked = json.loads(match.group(0))
-                     reasoning_buffer += " ".join(leaked) + " [⚠️ Limit]"
-                     yield f"<details open><summary>💭 Recovered</summary>{reasoning_buffer}</details>"
-                     return
-             except: pass
-        
         logger.exception(f"Chat error with {provider}: {str(e)}")
         yield f"🔥 Fehler ({provider}): {str(e)}"
         
@@ -2748,9 +2760,9 @@ def user_msg(msg, hist):
 
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     """Execute chat passing user state for security"""
-    if not hist: yield hist; return
+    if not hist: return hist
 
-    if hist[-1]["role"] != "user": yield hist; return
+    if hist[-1]["role"] != "user": return hist
 
     last_user_msg = hist[-1]["content"]
     hist.append({"role": "assistant", "content": ""})
@@ -2765,14 +2777,11 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
 
     try:
         # Pass user_state to run_chat
-        generator = run_chat(last_user_msg, clean_context, prov, mod, temp, sys, key, r_effort, r_tokens, user_state)
-        
-        for chunk in generator:
+        for chunk in run_chat(last_user_msg, clean_context, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
             hist[-1]["content"] = chunk
             yield hist
-            
     except Exception as e:
-        hist[-1]["content"] = f"🔥 Wrapper Fehler: {str(e)}"
+        hist[-1]["content"] = f"🔥 Fehler: {str(e)}"
         yield hist
 
 def save_chat(hist, prov, mod, user_state):
@@ -2819,7 +2828,7 @@ def load_chat_list(user_state):
         ])
     return data if data else [["Keine Chats vorhanden", "", "", ""]]
 
-def load_chat_list_with_state(user_state=None):
+def load_chat_list_with_state(user_state):
     """Load user's chat history returning both Display Data and State Data"""
     if not user_state or not user_state.get("id"):
         return [["Bitte anmelden", "", "", ""]], []
@@ -2960,7 +2969,7 @@ def insert_custom_prompt(prompt_name, current_msg, user_state):
         return p.prompt_text
     return current_msg
 
-def load_single_chat(chat_id, user_state=None):
+def load_single_chat(chat_id, user_state):
     """Load a specific chat into the UI"""
     if not user_state or not user_state.get("id"):
         return None, "❌ Bitte anmelden"
@@ -2981,7 +2990,7 @@ def load_single_chat(chat_id, user_state=None):
             
     return None, "❌ Chat nicht gefunden"
 
-def delete_chat(chat_id, user_state=None):
+def delete_chat(chat_id, user_state):
     """Delete a chat and update both list and state"""
     def get_fresh_data():
         return load_chat_list_with_state(user_state)
@@ -3235,7 +3244,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             )
                             c_model = gr.Dropdown(
                                 choices=PROVIDERS["Scaleway"]["chat_models"], 
-                                value=PROVIDERS["Scaleway"]["chat_models"][0], # Ensure this is not None
+                                value=PROVIDERS["Scaleway"]["chat_models"][0], 
                                 label="Modell", 
                                 scale=4
                             )
@@ -3325,12 +3334,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             # 1. Load list on click/tab select
                             chat_tab.select(
                                 load_chat_list_with_state, 
-                                inputs=[session_state], 
                                 outputs=[old_chats, c_history_state]
                             )
                             refresh_chats_btn.click(
                                 load_chat_list_with_state, 
-                                inputs=[session_state],
                                 outputs=[old_chats, c_history_state]
                             )
                             
@@ -3880,8 +3887,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 # Optional: Helper to make tables look full
                 def pad_data(data, width, min_rows=6):
                     while len(data) < min_rows:
-                        # Use empty strings instead of None to prevent JS freezes
-                        row = [""] * width 
+                        row = [None] * width
                         data.append(row)
                     return data
 
@@ -3925,7 +3931,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         trans_action_status = gr.Markdown("")
 
                         # --- LOGIC ---
-                        def load_trans_data(user_state=None):
+                        def load_trans_data(user_state):
                             if not user_state or not user_state.get("id"):
                                 return pad_data([], 5), []
                             try:
@@ -3944,25 +3950,18 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             db.close()
                             return (t.original_text, f"✅ Geladen: {t.title}") if t else ("", "❌ Nicht gefunden")
                         
-                        def select_trans_row(evt: gr.SelectData, state_data, user_state):
+                        def select_trans_row(evt: gr.SelectData, state_data):
                             """Smart Selection: Uses state to find ID from ANY column click"""
                             try:
-                                if not user_state or not user_state.get("id"):
-                                    return 0, "", "❌ Bitte anmelden"
-
                                 row_idx = evt.index[0]
-                                # Check if row exists in real data
-                                if state_data and row_idx < len(state_data):
+                                # Check if row exists in real data (ignore padding clicks)
+                                if row_idx < len(state_data):
                                     real_row = state_data[row_idx]
                                     t_id = int(real_row[0]) # ID is col 0
-                                    
-                                    # Call loader with state
-                                    content, status = load_single_trans(t_id, user_state)
+                                    content, status = load_single_trans(t_id)
                                     return t_id, content, status
-                            except Exception as e: 
-                                logger.error(f"Select Error: {e}")
-                            
-                            return 0, "", "" # Return safe defaults instead of gr.update()
+                            except: pass
+                            return gr.update(), gr.update(), ""
 
                         def del_trans(tid, user_state):
                             if not user_state or not user_state.get("id"):
@@ -3982,11 +3981,8 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         trans_tab.select(load_trans_data, inputs=[session_state], outputs=[trans_history, trans_state])
 
                         # Pass 'trans_state' to select so we know what was clicked
-                        trans_history.select(
-                            select_trans_row, 
-                            inputs=[trans_state, session_state], 
-                            outputs=[trans_id_input, loaded_trans_display, trans_action_status]
-                        )
+                        trans_history.select(select_trans_row, inputs=[trans_state], outputs=[trans_id_input, loaded_trans_display, trans_action_status])
+                        
                         trans_id_input.change(load_single_trans, inputs=[trans_id_input, session_state], outputs=[loaded_trans_display, trans_action_status])
                         delete_trans_btn.click(del_trans, inputs=[trans_id_input, session_state], outputs=[loaded_trans_display, trans_action_status, trans_history, trans_state])
                         
@@ -4035,7 +4031,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 img_action_status = gr.Markdown("")
 
                         # --- LOGIC ---
-                        def load_img_data(user_state=None):
+                        def load_img_data(user_state):
                             if not user_state or not user_state.get("id"): 
                                 return pad_data([], 4), []
                             try:
@@ -4044,7 +4040,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 return pad_data(list(clean), 4), clean
                             except: return pad_data([], 4), []
 
-                        def load_single_img(tid, user_state=None):
+                        def load_single_img(tid, user_state):
                             # Security check: technically images are static files, but we check ownership of metadata
                             if not tid or not user_state or not user_state.get("id"): 
                                 return None, "", "❌"
@@ -4057,21 +4053,15 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 return img.image_path, img.prompt, f"✅ Geladen"
                             return None, "", "❌ Datei fehlt/Zugriff verweigert"
 
-                        def select_img_row(evt: gr.SelectData, state_data, user_state):
+                        def select_img_row(evt: gr.SelectData, state_data):
                             try:
-                                if not user_state or not user_state.get("id"):
-                                    return 0, None, "", "❌ Bitte anmelden"
-
                                 row_idx = evt.index[0]
-                                if state_data and row_idx < len(state_data):
-                                    real_row = state_data[row_idx]
-                                    tid = int(real_row[0])
-                                    
-                                    # Call loader with state
-                                    path, prmt, stat = load_single_img(tid, user_state)
+                                if row_idx < len(state_data):
+                                    tid = int(state_data[row_idx][0])
+                                    path, prmt, stat = load_single_img(tid)
                                     return tid, path, prmt, stat
                             except: pass
-                            return 0, None, "", ""
+                            return gr.update(), None, "", ""
 
                         def del_img(tid, user_state):
                             if not user_state or not user_state.get("id"):
@@ -4089,11 +4079,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         
                         delete_img_btn.click(del_img, inputs=[img_id_input, session_state], outputs=[loaded_img_display, loaded_img_prompt, img_action_status, images_history, img_state])
                         
-                        images_history.select(
-                            select_img_row, 
-                            inputs=[img_state, session_state], 
-                            outputs=[img_id_input, loaded_img_display, loaded_img_prompt, img_action_status]
-                        )
+                        images_history.select(select_img_row, inputs=[img_state], outputs=[img_id_input, loaded_img_display, loaded_img_prompt, img_action_status])
 
                         if 'msg_input' in locals():
                             img_to_chat_btn.click(
@@ -4141,32 +4127,29 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 loaded_prompt_display = gr.Textbox(label="Vorschau", lines=5)
 
                         # --- LOGIC ---
-                        def load_prompts_data(user_state=None):
+                        def load_prompts_data(user_state):
                             if not user_state or not user_state.get("id"): 
                                 return pad_data([], 3), []
                             p_list = get_user_custom_prompts(user_state["id"])
                             clean = [[p.id, p.name, p.category] for p in p_list]
                             return pad_data(list(clean), 3), clean
 
-                        def load_single_prompt(tid, user_state=None):
+                        def load_single_prompt(tid, user_state):
                             if not tid or not user_state or not user_state.get("id"): return ""
                             db = SessionLocal()
                             p = db.query(CustomPrompt).filter(CustomPrompt.id == int(tid), CustomPrompt.user_id == user_state["id"]).first()
                             db.close()
                             return p.prompt_text if p else ""
 
-                        def select_prompt_row(evt: gr.SelectData, state_data, user_state):
+                        def select_prompt_row(evt: gr.SelectData, state_data):
                             try:
-                                if not user_state or not user_state.get("id"):
-                                    return 0, "❌"
-
-                                if state_data and evt.index[0] < len(state_data):
+                                if evt.index[0] < len(state_data):
                                     tid = int(state_data[evt.index[0]][0])
-                                    return tid, load_single_prompt(tid, user_state)
+                                    return tid, load_single_prompt(tid)
                             except: pass
-                            return 0, ""
+                            return gr.update(), ""
 
-                        def save_p(n, c, t, user_state=None):
+                        def save_p(n, c, t, user_state):
                             if not user_state or not user_state.get("id"):
                                 return "❌ Auth Fehler", [], []
                             
@@ -4174,7 +4157,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             d, s = load_prompts_data(user_state)
                             return "✅ Gespeichert", d, s
 
-                        def del_p(tid, user_state=None):
+                        def del_p(tid, user_state):
                             if not user_state or not user_state.get("id"):
                                 return "❌ Auth Fehler", [], []
 
@@ -4188,12 +4171,8 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                         prompt_id_load.change(load_single_prompt, inputs=[prompt_id_load, session_state], outputs=loaded_prompt_display)
                         delete_prompt_btn.click(del_p, inputs=[prompt_id_load, session_state], outputs=[loaded_prompt_display, saved_prompts, prompt_state])
-                        saved_prompts.select(
-                            select_prompt_row, 
-                            inputs=[prompt_state, session_state],
-                            outputs=[prompt_id_load, loaded_prompt_display]
-                        )
-                                                
+                        saved_prompts.select(select_prompt_row, inputs=[prompt_state], outputs=[prompt_id_load, loaded_prompt_display])
+                        
                         if 'msg_input' in locals():
                             prompt_to_chat_btn.click(
                                 lambda x: x, 
@@ -4373,7 +4352,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         # EVENT HANDLERS FOR MODEL PREFERENCES
                         # =========================================================
                         
-                        def fetch_models_for_provider(provider, user_state=None):
+                        def fetch_models_for_provider(provider, user_state):
                             """Fetch and display available models"""
                             if not user_state or not user_state.get("id"):
                                 return [["", ""]], "❌ Bitte anmelden", gr.update()
@@ -4387,7 +4366,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             model_data = [[m["id"], m.get("name", m["id"])] for m in models]
                             return model_data, f"✅ {len(models)} Modelle geladen", gr.update()
 
-                        def load_user_preferences(provider, user_state=None):
+                        def load_user_preferences(provider, user_state):
                             """Load user's saved preferences for provider"""
                             if not user_state or not user_state.get("id"):
                                 return [["", "", "", ""]], []
@@ -4497,7 +4476,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             
                             return display_data, current_state, f"✅ Modell von Position {from_idx} zu {to_idx} verschoben"
                         
-                        def save_preferences(provider, current_state, user_state=None):
+                        def save_preferences(provider, current_state, user_state):
                             if not user_state or not user_state.get("id"):
                                 return "❌ Bitte anmelden"
                             
@@ -4779,7 +4758,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 )
                 
                 # Refresh users list
-                def load_users_list(user_state=None):
+                def load_users_list(user_state):
                     if not user_state or not user_state.get("is_admin"):
                         return []
                     return get_all_users()
@@ -4836,7 +4815,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 )
                 
                 # Toggle admin status
-                def handle_toggle_admin(user_id, user_state=None):
+                def handle_toggle_admin(user_id, user_state):
                     if not user_state or not user_state.get("id"):
                         return "❌ Nicht angemeldet", get_all_users()
                     
@@ -4854,7 +4833,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 )
                 
                 # Delete user
-                def handle_delete_user(user_id, confirmation, user_state=None):
+                def handle_delete_user(user_id, confirmation, user_state):
                     if confirmation != "LÖSCHEN":
                         return "❌ Bestätigung erforderlich: Tippe 'LÖSCHEN'", get_all_users()
                     
@@ -4939,19 +4918,21 @@ if __name__ == "__main__":
 
     @app.middleware("http")
     async def block_api_endpoints(request: Request, call_next):
-        # Allow internal UI paths (/run, /queue), block external API access
-        if request.url.path.startswith("/api"):
-             return JSONResponse(
+        # Block direct access to Gradio API endpoints from outside tools
+        # The browser UI uses internal routes, but named endpoints are blocked
+        if request.url.path.startswith("/run") or request.url.path.startswith("/api"):
+            return JSONResponse(
                 status_code=status.HTTP_403_FORBIDDEN,
-                content={"detail": "External API access is disabled."}
+                content={"detail": "API access is disabled for this application."}
             )
         response = await call_next(request)
         return response
 
-    print(f"🚀 Starting Server on Port 7860 (Fast Shutdown Enabled)...")
+    print(f"🚀 Starting Server on Port 7860 (API Blocked)...")
     print(f"📂 Serving files from: {APP_DIR}")
 
-    # 4. Mount Gradio
+    # 4. Mount Gradio and Run
+    # show_api=False hides the link, middleware blocks the request
     app = gr.mount_gradio_app(
         app, 
         demo, 
@@ -4959,15 +4940,4 @@ if __name__ == "__main__":
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
     )
 
-    # 5. Run with Timeout Configuration
-    # timeout_graceful_shutdown=1 forces the server to kill connections 
-    # and release DB locks instantly when you run `systemctl restart`
-    config = uvicorn.Config(
-        app, 
-        host="0.0.0.0", 
-        port=7860, 
-        timeout_graceful_shutdown=1, # <--- THE FIX
-        log_level="info"
-    )
-    server = uvicorn.Server(config)
-    server.run()
+    uvicorn.run(app, host="0.0.0.0", port=7860)

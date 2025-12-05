@@ -398,75 +398,67 @@ def save_custom_prompt(user_id: int, name: str, prompt_text: str, category: str 
 # Add after existing database functions
 
 def delete_transcription(trans_id: int, user_id: int):
-    """Delete a transcription safely"""
+    """Delete a transcription"""
     db = get_db()
-    try:
-        trans = db.query(Transcription).filter(Transcription.id == trans_id, Transcription.user_id == user_id).first()
-        if trans:
-            db.delete(trans)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    trans = db.query(Transcription).filter(
+        Transcription.id == trans_id,
+        Transcription.user_id == user_id
+    ).first()
+    if trans:
+        db.delete(trans)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_chat_history(chat_id: int, user_id: int):
-    """Delete a chat history safely"""
+    """Delete a chat history"""
     db = get_db()
-    try:
-        chat = db.query(ChatHistory).filter(ChatHistory.id == chat_id, ChatHistory.user_id == user_id).first()
-        if chat:
-            db.delete(chat)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    chat = db.query(ChatHistory).filter(
+        ChatHistory.id == chat_id,
+        ChatHistory.user_id == user_id
+    ).first()
+    if chat:
+        db.delete(chat)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_vision_result(vision_id: int, user_id: int):
-    """Delete a vision result safely"""
+    """Delete a vision result"""
     db = get_db()
-    try:
-        vision = db.query(VisionResult).filter(VisionResult.id == vision_id, VisionResult.user_id == user_id).first()
-        if vision:
-            db.delete(vision)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    vision = db.query(VisionResult).filter(
+        VisionResult.id == vision_id,
+        VisionResult.user_id == user_id
+    ).first()
+    if vision:
+        db.delete(vision)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_generated_image(img_id: int, user_id: int):
-    """Delete a generated image safely"""
+    """Delete a generated image"""
     db = get_db()
-    try:
-        img = db.query(GeneratedImage).filter(GeneratedImage.id == img_id, GeneratedImage.user_id == user_id).first()
-        if img:
-            if img.image_path and os.path.exists(img.image_path):
-                try: os.remove(img.image_path)
-                except: pass
-            db.delete(img)
-            db.commit()
-            return True
-        return False
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"DB Error: {e}")
-        return False
-    finally:
+    img = db.query(GeneratedImage).filter(
+        GeneratedImage.id == img_id,
+        GeneratedImage.user_id == user_id
+    ).first()
+    if img:
+        # Also delete the file
+        if img.image_path and os.path.exists(img.image_path):
+            os.remove(img.image_path)
+        db.delete(img)
+        db.commit()
         db.close()
+        return True
+    db.close()
+    return False
 
 def delete_custom_prompt(prompt_id: int, user_id: int):
     """Delete a custom prompt"""
@@ -3880,8 +3872,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 # Optional: Helper to make tables look full
                 def pad_data(data, width, min_rows=6):
                     while len(data) < min_rows:
-                        # Use empty strings instead of None to prevent JS freezes
-                        row = [""] * width 
+                        row = [None] * width
                         data.append(row)
                     return data
 
@@ -4939,19 +4930,23 @@ if __name__ == "__main__":
 
     @app.middleware("http")
     async def block_api_endpoints(request: Request, call_next):
-        # Allow internal UI paths (/run, /queue), block external API access
-        if request.url.path.startswith("/api"):
+        path = request.url.path
+        # Block only the named API endpoints exposed for external developers
+        # Allowing /run/ is necessary for the UI to function in modern Gradio
+        if path.startswith("/api"):
              return JSONResponse(
                 status_code=status.HTTP_403_FORBIDDEN,
                 content={"detail": "External API access is disabled."}
             )
+        
         response = await call_next(request)
         return response
 
-    print(f"🚀 Starting Server on Port 7860 (Fast Shutdown Enabled)...")
+    print(f"🚀 Starting Server on Port 7860 (API Blocked)...")
     print(f"📂 Serving files from: {APP_DIR}")
 
-    # 4. Mount Gradio
+    # 4. Mount Gradio and Run
+    # show_api=False hides the link, middleware blocks the request
     app = gr.mount_gradio_app(
         app, 
         demo, 
@@ -4959,15 +4954,4 @@ if __name__ == "__main__":
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
     )
 
-    # 5. Run with Timeout Configuration
-    # timeout_graceful_shutdown=1 forces the server to kill connections 
-    # and release DB locks instantly when you run `systemctl restart`
-    config = uvicorn.Config(
-        app, 
-        host="0.0.0.0", 
-        port=7860, 
-        timeout_graceful_shutdown=1, # <--- THE FIX
-        log_level="info"
-    )
-    server = uvicorn.Server(config)
-    server.run()
+    uvicorn.run(app, host="0.0.0.0", port=7860)
