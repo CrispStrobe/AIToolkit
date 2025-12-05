@@ -4288,301 +4288,301 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             outputs=[selected_models_display, selected_models_state, save_prefs_status]
                         )
                         
-            # --- TAB 6: USER MANAGEMENT (ADMIN ONLY) ---
-            with gr.TabItem("👥 Benutzerverwaltung", visible=False) as admin_tab:
-                gr.Markdown("## 👥 Benutzerverwaltung")
-                gr.Markdown("*Nur für Administratoren*")
-                
-                with gr.Tabs():
-                    # =========================================================
-                    # CREATE NEW USER
-                    # =========================================================
-                    with gr.TabItem("➕ Neuer Benutzer"):
-                        gr.Markdown("### Neuen Benutzer erstellen")
-                        
-                        with gr.Row():
-                            with gr.Column(scale=1):
-                                new_user_username = gr.Textbox(
-                                    label="Benutzername",
-                                    placeholder="max.mustermann"
-                                )
-                                new_user_password = gr.Textbox(
-                                    label="Passwort",
-                                    placeholder="Mindestens 8 Zeichen",
-                                    type="password"
-                                )
-                                new_user_password_confirm = gr.Textbox(
-                                    label="Passwort bestätigen",
-                                    placeholder="Passwort wiederholen",
-                                    type="password"
-                                )
-                                new_user_email = gr.Textbox(
-                                    label="E-Mail (Optional)",
-                                    placeholder="max@example.com"
-                                )
-                                new_user_is_admin = gr.Checkbox(
-                                    label="Als Administrator erstellen",
-                                    value=False
-                                )
-                                
-                                create_user_btn = gr.Button("➕ Benutzer erstellen", variant="primary", size="lg")
-                                create_user_status = gr.Markdown("")
-                            
-                            with gr.Column(scale=1):
-                                gr.Markdown("""
-                                ### 📋 Hinweise
-                                
-                                **Benutzername:**
-                                - Muss eindeutig sein
-                                - Keine Leerzeichen
-                                - Empfohlen: kleinbuchstaben
-                                
-                                **Passwort:**
-                                - Mindestens 8 Zeichen empfohlen
-                                - Wird sicher verschlüsselt (bcrypt)
-                                
-                                **Administrator:**
-                                - Admins können:
-                                - Alle Benutzer verwalten
-                                - Andere Admins erstellen
-                                - Alle Daten sehen
-
-                                """)
+                # --- TAB 6: USER MANAGEMENT (ADMIN ONLY) ---
+                with gr.TabItem("👥 Benutzerverwaltung", visible=False) as admin_tab:
+                    gr.Markdown("## 👥 Benutzerverwaltung")
+                    gr.Markdown("*Nur für Administratoren*")
                     
-                    # =========================================================
-                    # MANAGE EXISTING USERS
-                    # =========================================================
-                    with gr.TabItem("⚙️ Benutzer verwalten"):
-                        gr.Markdown("### Bestehende Benutzer verwalten")
-                        
-                        with gr.Row():
-                            refresh_users_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                        
-                        users_table = gr.Dataframe(
-                            headers=["ID", "Benutzername", "E-Mail", "Rolle", "Erstellt"],
-                            value=[["", "", "", "", ""]],
-                            interactive=False,
-                            wrap=True,
-                            height=400,
-                            datatype=["number", "str", "str", "str", "str"],
-                            column_widths=["10%", "25%", "25%", "20%", "20%"]
-                        )
-                        
-                        with gr.Row():
-                            selected_user_id = gr.Number(
-                                label="Benutzer-ID",
-                                precision=0,
-                                value=0
-                            )
-                        
-                        with gr.Tabs():
-                            # RENAME USER
-                            with gr.TabItem("✏️ Umbenennen"):
-                                with gr.Row():
-                                    rename_new_username = gr.Textbox(
-                                        label="Neuer Benutzername",
-                                        placeholder="neuer.name"
-                                    )
-                                    rename_user_btn = gr.Button("✏️ Umbenennen", variant="secondary")
-                                rename_status = gr.Markdown("")
+                    with gr.Tabs():
+                        # =========================================================
+                        # CREATE NEW USER
+                        # =========================================================
+                        with gr.TabItem("➕ Neuer Benutzer"):
+                            gr.Markdown("### Neuen Benutzer erstellen")
                             
-                            # RESET PASSWORD
-                            with gr.TabItem("🔑 Passwort zurücksetzen"):
-                                with gr.Row():
-                                    reset_new_password = gr.Textbox(
-                                        label="Neues Passwort",
-                                        placeholder="Neues Passwort",
+                            with gr.Row():
+                                with gr.Column(scale=1):
+                                    new_user_username = gr.Textbox(
+                                        label="Benutzername",
+                                        placeholder="max.mustermann"
+                                    )
+                                    new_user_password = gr.Textbox(
+                                        label="Passwort",
+                                        placeholder="Mindestens 8 Zeichen",
                                         type="password"
                                     )
-                                    reset_confirm_password = gr.Textbox(
+                                    new_user_password_confirm = gr.Textbox(
                                         label="Passwort bestätigen",
                                         placeholder="Passwort wiederholen",
                                         type="password"
                                     )
-                                reset_password_btn = gr.Button("🔑 Passwort zurücksetzen", variant="secondary")
-                                reset_password_status = gr.Markdown("")
-                            
-                            # UPDATE EMAIL
-                            with gr.TabItem("📧 E-Mail ändern"):
-                                with gr.Row():
-                                    update_email_input = gr.Textbox(
-                                        label="Neue E-Mail",
-                                        placeholder="neue@email.de"
+                                    new_user_email = gr.Textbox(
+                                        label="E-Mail (Optional)",
+                                        placeholder="max@example.com"
                                     )
-                                    update_email_btn = gr.Button("📧 E-Mail aktualisieren", variant="secondary")
-                                update_email_status = gr.Markdown("")
-                            
-                            # TOGGLE ADMIN
-                            with gr.TabItem("⬆️⬇️ Admin-Status"):
-                                gr.Markdown("""
-                                ### Admin-Status umschalten
-                                
-                                **Achtung:** 
-                                - Du kannst deinen eigenen Status nicht ändern
-                                - Admins haben volle Kontrolle über die App
-                                """)
-                                toggle_admin_btn = gr.Button("⬆️⬇️ Admin-Status umschalten", variant="secondary")
-                                toggle_admin_status = gr.Markdown("")
-                            
-                            # DELETE USER
-                            with gr.TabItem("🗑️ Benutzer löschen"):
-                                gr.Markdown("""
-                                ### ⚠️ WARNUNG: Benutzer löschen
-                                
-                                Diese Aktion:
-                                - Löscht den Benutzer **permanent**
-                                - Löscht alle zugehörigen Daten (Chats, Transkripte, etc.)
-                                - **Kann nicht rückgängig gemacht werden**
-                                - Du kannst dich nicht selbst löschen
-                                """)
-                                
-                                with gr.Row():
-                                    delete_confirm = gr.Textbox(
-                                        label="Bestätigung",
-                                        placeholder="Tippe 'LÖSCHEN' zur Bestätigung"
+                                    new_user_is_admin = gr.Checkbox(
+                                        label="Als Administrator erstellen",
+                                        value=False
                                     )
-                                    delete_user_btn = gr.Button("🗑️ BENUTZER LÖSCHEN", variant="stop")
-                                delete_user_status = gr.Markdown("")
-                        
-                        # Select user from table
-                        def select_user_from_table(evt: gr.SelectData):
-                            """Select user by clicking on table row"""
-                            try:
-                                # Get the row data
-                                row_idx = evt.index[0]
-                                # Load fresh data
-                                users_data = get_all_users()
-                                if row_idx < len(users_data):
-                                    user_id = users_data[row_idx][0]
-                                    return int(user_id)
-                            except Exception as e:
-                                logger.exception(f"Error selecting user: {str(e)}")
-                            return gr.update()
-                        
-                        users_table.select(select_user_from_table, outputs=selected_user_id)
-                
-                # =========================================================
-                # EVENT HANDLERS
-                # =========================================================
-                
-                # Create user
-                def handle_create_user(username, password, password_confirm, email, is_admin):
-                    if not username or not password:
-                        return "❌ Benutzername und Passwort sind erforderlich"
-                    
-                    if password != password_confirm:
-                        return "❌ Passwörter stimmen nicht überein"
-                    
-                    if len(password) < 8:
-                        return "⚠️ Warnung: Passwort sollte mindestens 8 Zeichen haben"
-                    
-                    success, message = create_user(username, password, email, is_admin)
-                    
-                    if success:
-                        # Clear form
-                        return message
-                    return message
-                
-                create_user_btn.click(
-                    handle_create_user,
-                    inputs=[
-                        new_user_username,
-                        new_user_password,
-                        new_user_password_confirm,
-                        new_user_email,
-                        new_user_is_admin
-                    ],
-                    outputs=create_user_status
-                )
-                
-                # Refresh users list
-                def load_users_list():
-                    return get_all_users()
-                
-                refresh_users_btn.click(load_users_list, outputs=users_table)
-                
-                # Rename user
-                def handle_rename_user(user_id, new_username):
-                    if not new_username:
-                        return "❌ Neuer Benutzername erforderlich", get_all_users()
-                    
-                    success, message = rename_user(int(user_id), new_username)
-                    return message, get_all_users()
-                
-                rename_user_btn.click(
-                    handle_rename_user,
-                    inputs=[selected_user_id, rename_new_username],
-                    outputs=[rename_status, users_table]
-                )
-                
-                # Reset password
-                def handle_reset_password(user_id, new_password, confirm_password):
-                    if not new_password:
-                        return "❌ Neues Passwort erforderlich"
-                    
-                    if new_password != confirm_password:
-                        return "❌ Passwörter stimmen nicht überein"
-                    
-                    if len(new_password) < 8:
-                        return "⚠️ Warnung: Passwort sollte mindestens 8 Zeichen haben"
-                    
-                    success, message = reset_user_password(int(user_id), new_password)
-                    return message
-                
-                reset_password_btn.click(
-                    handle_reset_password,
-                    inputs=[selected_user_id, reset_new_password, reset_confirm_password],
-                    outputs=reset_password_status
-                )
-                
-                # Update email
-                def handle_update_email(user_id, new_email):
-                    success, message = update_user_email(int(user_id), new_email)
-                    return message, get_all_users()
-                
-                update_email_btn.click(
-                    handle_update_email,
-                    inputs=[selected_user_id, update_email_input],
-                    outputs=[update_email_status, users_table]
-                )
-                
-                # Toggle admin status
-                def handle_toggle_admin(user_id):
-                    if not current_user["id"]:
-                        return "❌ Nicht angemeldet", get_all_users()
-                    
-                    success, message = toggle_admin_status(int(user_id), current_user["id"])
-                    return message, get_all_users()
-                
-                toggle_admin_btn.click(
-                    handle_toggle_admin,
-                    inputs=selected_user_id,
-                    outputs=[toggle_admin_status, users_table]
-                )
-                
-                # Delete user
-                def handle_delete_user(user_id, confirmation):
-                    if confirmation != "LÖSCHEN":
-                        return "❌ Bestätigung erforderlich: Tippe 'LÖSCHEN'", get_all_users()
-                    
-                    if not current_user["id"]:
-                        return "❌ Nicht angemeldet", get_all_users()
-                    
-                    success, message = delete_user(int(user_id), current_user["id"])
-                    return message, get_all_users()
-                
-                delete_user_btn.click(
-                    handle_delete_user,
-                    inputs=[selected_user_id, delete_confirm],
-                    outputs=[delete_user_status, users_table]
-                )
+                                    
+                                    create_user_btn = gr.Button("➕ Benutzer erstellen", variant="primary", size="lg")
+                                    create_user_status = gr.Markdown("")
+                                
+                                with gr.Column(scale=1):
+                                    gr.Markdown("""
+                                    ### 📋 Hinweise
+                                    
+                                    **Benutzername:**
+                                    - Muss eindeutig sein
+                                    - Keine Leerzeichen
+                                    - Empfohlen: kleinbuchstaben
+                                    
+                                    **Passwort:**
+                                    - Mindestens 8 Zeichen empfohlen
+                                    - Wird sicher verschlüsselt (bcrypt)
+                                    
+                                    **Administrator:**
+                                    - Admins können:
+                                    - Alle Benutzer verwalten
+                                    - Andere Admins erstellen
+                                    - Alle Daten sehen
 
-                # --- AUTO-LOAD ON TAB SWITCH ---
-                trans_tab.select(fn=load_trans_data, outputs=[trans_history, trans_state])
-                images_tab.select(fn=load_img_data, outputs=[images_history, img_state])
-                prompts_tab.select(fn=load_prompts_data, outputs=[saved_prompts, prompt_state])
+                                    """)
+                        
+                        # =========================================================
+                        # MANAGE EXISTING USERS
+                        # =========================================================
+                        with gr.TabItem("⚙️ Benutzer verwalten"):
+                            gr.Markdown("### Bestehende Benutzer verwalten")
+                            
+                            with gr.Row():
+                                refresh_users_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
+                            
+                            users_table = gr.Dataframe(
+                                headers=["ID", "Benutzername", "E-Mail", "Rolle", "Erstellt"],
+                                value=[["", "", "", "", ""]],
+                                interactive=False,
+                                wrap=True,
+                                height=400,
+                                datatype=["number", "str", "str", "str", "str"],
+                                column_widths=["10%", "25%", "25%", "20%", "20%"]
+                            )
+                            
+                            with gr.Row():
+                                selected_user_id = gr.Number(
+                                    label="Benutzer-ID",
+                                    precision=0,
+                                    value=0
+                                )
+                            
+                            with gr.Tabs():
+                                # RENAME USER
+                                with gr.TabItem("✏️ Umbenennen"):
+                                    with gr.Row():
+                                        rename_new_username = gr.Textbox(
+                                            label="Neuer Benutzername",
+                                            placeholder="neuer.name"
+                                        )
+                                        rename_user_btn = gr.Button("✏️ Umbenennen", variant="secondary")
+                                    rename_status = gr.Markdown("")
+                                
+                                # RESET PASSWORD
+                                with gr.TabItem("🔑 Passwort zurücksetzen"):
+                                    with gr.Row():
+                                        reset_new_password = gr.Textbox(
+                                            label="Neues Passwort",
+                                            placeholder="Neues Passwort",
+                                            type="password"
+                                        )
+                                        reset_confirm_password = gr.Textbox(
+                                            label="Passwort bestätigen",
+                                            placeholder="Passwort wiederholen",
+                                            type="password"
+                                        )
+                                    reset_password_btn = gr.Button("🔑 Passwort zurücksetzen", variant="secondary")
+                                    reset_password_status = gr.Markdown("")
+                                
+                                # UPDATE EMAIL
+                                with gr.TabItem("📧 E-Mail ändern"):
+                                    with gr.Row():
+                                        update_email_input = gr.Textbox(
+                                            label="Neue E-Mail",
+                                            placeholder="neue@email.de"
+                                        )
+                                        update_email_btn = gr.Button("📧 E-Mail aktualisieren", variant="secondary")
+                                    update_email_status = gr.Markdown("")
+                                
+                                # TOGGLE ADMIN
+                                with gr.TabItem("⬆️⬇️ Admin-Status"):
+                                    gr.Markdown("""
+                                    ### Admin-Status umschalten
+                                    
+                                    **Achtung:** 
+                                    - Du kannst deinen eigenen Status nicht ändern
+                                    - Admins haben volle Kontrolle über die App
+                                    """)
+                                    toggle_admin_btn = gr.Button("⬆️⬇️ Admin-Status umschalten", variant="secondary")
+                                    toggle_admin_status = gr.Markdown("")
+                                
+                                # DELETE USER
+                                with gr.TabItem("🗑️ Benutzer löschen"):
+                                    gr.Markdown("""
+                                    ### ⚠️ WARNUNG: Benutzer löschen
+                                    
+                                    Diese Aktion:
+                                    - Löscht den Benutzer **permanent**
+                                    - Löscht alle zugehörigen Daten (Chats, Transkripte, etc.)
+                                    - **Kann nicht rückgängig gemacht werden**
+                                    - Du kannst dich nicht selbst löschen
+                                    """)
+                                    
+                                    with gr.Row():
+                                        delete_confirm = gr.Textbox(
+                                            label="Bestätigung",
+                                            placeholder="Tippe 'LÖSCHEN' zur Bestätigung"
+                                        )
+                                        delete_user_btn = gr.Button("🗑️ BENUTZER LÖSCHEN", variant="stop")
+                                    delete_user_status = gr.Markdown("")
+                            
+                            # Select user from table
+                            def select_user_from_table(evt: gr.SelectData):
+                                """Select user by clicking on table row"""
+                                try:
+                                    # Get the row data
+                                    row_idx = evt.index[0]
+                                    # Load fresh data
+                                    users_data = get_all_users()
+                                    if row_idx < len(users_data):
+                                        user_id = users_data[row_idx][0]
+                                        return int(user_id)
+                                except Exception as e:
+                                    logger.exception(f"Error selecting user: {str(e)}")
+                                return gr.update()
+                            
+                            users_table.select(select_user_from_table, outputs=selected_user_id)
+                    
+                    # =========================================================
+                    # EVENT HANDLERS
+                    # =========================================================
+                    
+                    # Create user
+                    def handle_create_user(username, password, password_confirm, email, is_admin):
+                        if not username or not password:
+                            return "❌ Benutzername und Passwort sind erforderlich"
+                        
+                        if password != password_confirm:
+                            return "❌ Passwörter stimmen nicht überein"
+                        
+                        if len(password) < 8:
+                            return "⚠️ Warnung: Passwort sollte mindestens 8 Zeichen haben"
+                        
+                        success, message = create_user(username, password, email, is_admin)
+                        
+                        if success:
+                            # Clear form
+                            return message
+                        return message
+                    
+                    create_user_btn.click(
+                        handle_create_user,
+                        inputs=[
+                            new_user_username,
+                            new_user_password,
+                            new_user_password_confirm,
+                            new_user_email,
+                            new_user_is_admin
+                        ],
+                        outputs=create_user_status
+                    )
+                    
+                    # Refresh users list
+                    def load_users_list():
+                        return get_all_users()
+                    
+                    refresh_users_btn.click(load_users_list, outputs=users_table)
+                    
+                    # Rename user
+                    def handle_rename_user(user_id, new_username):
+                        if not new_username:
+                            return "❌ Neuer Benutzername erforderlich", get_all_users()
+                        
+                        success, message = rename_user(int(user_id), new_username)
+                        return message, get_all_users()
+                    
+                    rename_user_btn.click(
+                        handle_rename_user,
+                        inputs=[selected_user_id, rename_new_username],
+                        outputs=[rename_status, users_table]
+                    )
+                    
+                    # Reset password
+                    def handle_reset_password(user_id, new_password, confirm_password):
+                        if not new_password:
+                            return "❌ Neues Passwort erforderlich"
+                        
+                        if new_password != confirm_password:
+                            return "❌ Passwörter stimmen nicht überein"
+                        
+                        if len(new_password) < 8:
+                            return "⚠️ Warnung: Passwort sollte mindestens 8 Zeichen haben"
+                        
+                        success, message = reset_user_password(int(user_id), new_password)
+                        return message
+                    
+                    reset_password_btn.click(
+                        handle_reset_password,
+                        inputs=[selected_user_id, reset_new_password, reset_confirm_password],
+                        outputs=reset_password_status
+                    )
+                    
+                    # Update email
+                    def handle_update_email(user_id, new_email):
+                        success, message = update_user_email(int(user_id), new_email)
+                        return message, get_all_users()
+                    
+                    update_email_btn.click(
+                        handle_update_email,
+                        inputs=[selected_user_id, update_email_input],
+                        outputs=[update_email_status, users_table]
+                    )
+                    
+                    # Toggle admin status
+                    def handle_toggle_admin(user_id):
+                        if not current_user["id"]:
+                            return "❌ Nicht angemeldet", get_all_users()
+                        
+                        success, message = toggle_admin_status(int(user_id), current_user["id"])
+                        return message, get_all_users()
+                    
+                    toggle_admin_btn.click(
+                        handle_toggle_admin,
+                        inputs=selected_user_id,
+                        outputs=[toggle_admin_status, users_table]
+                    )
+                    
+                    # Delete user
+                    def handle_delete_user(user_id, confirmation):
+                        if confirmation != "LÖSCHEN":
+                            return "❌ Bestätigung erforderlich: Tippe 'LÖSCHEN'", get_all_users()
+                        
+                        if not current_user["id"]:
+                            return "❌ Nicht angemeldet", get_all_users()
+                        
+                        success, message = delete_user(int(user_id), current_user["id"])
+                        return message, get_all_users()
+                    
+                    delete_user_btn.click(
+                        handle_delete_user,
+                        inputs=[selected_user_id, delete_confirm],
+                        outputs=[delete_user_status, users_table]
+                    )
+
+                    # --- AUTO-LOAD ON TAB SWITCH ---
+                    trans_tab.select(fn=load_trans_data, outputs=[trans_history, trans_state])
+                    images_tab.select(fn=load_img_data, outputs=[images_history, img_state])
+                    prompts_tab.select(fn=load_prompts_data, outputs=[saved_prompts, prompt_state])
+                    
                 
-            
 
     def handle_login(username, password):
         success, message, show_app, show_login = login_user(username, password)
