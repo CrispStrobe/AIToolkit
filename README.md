@@ -1,8 +1,8 @@
 # KI Suite - Deployment Guide
 
-This documentation covers the deployment of a **GDPR-compliant Multi-Provider AI Suite** with:
+This documentation covers the deployment of a (mostly) **GDPR-compliant Multi-Provider AI Suite** with:
 - 💬 **Chat** (Multiple LLM providers with context-aware history)
-- 🎙️ **Audio Transcription** (Gladia V2 for long files + Native Chunking for Whisper/Mistral)
+- 🎙️ **Audio Transcription** (Gladia, Whisper, Mistral, Deepgram, AssemblyAI; Speaker Diarization; Chunking)
 - 📦 **Cloud Storage** (Hetzner Storage Box integration via SMB)
 - 🔄 **Resumable Jobs** (Job tracking for large files)
 - 👁️ **Vision Analysis** (Image understanding)
@@ -20,7 +20,7 @@ The application runs as a Python/Gradio service on `localhost:7860`, managed by 
 - **OS:** Ubuntu 20.04 LTS or newer
 - **RAM:** Minimum 8GB (for handling audio files)
 - **Root/Sudo Access**
-- **Domain:** DNS A-Record pointing to server IP (e.g., `ki.akademie-rs.de`)
+- **Domain:** DNS A-Record pointing to server IP (e.g., `ai.yourdomain.de`)
 - **Storage:** Hetzner Storage Box with sub-account access
 - **API Keys:** Supported providers (stored in `.env` file):
   - Mistral (multipurpose)
@@ -54,6 +54,50 @@ sudo apt install -y \
     cifs-utils
 ```
 
+### Firewall Configuration (UFW)
+
+**CRITICAL:** You must allow SSH before enabling the firewall, or you will lock yourself out.
+
+```bash
+# 1. Allow incoming SSH connections
+sudo ufw allow OpenSSH
+
+# 2. Allow Web Traffic (HTTP/HTTPS)
+sudo ufw allow 'Apache Full'
+
+# 3. Enable the Firewall
+sudo ufw enable
+
+# 4. Verify Status
+sudo ufw status
+# Output should look like:
+# Status: active
+# To                         Action      From
+# --                         ------      ----
+# OpenSSH                    ALLOW       Anywhere
+# Apache Full                ALLOW       Anywhere
+```
+
+### Configure Swap Space (prevent OOM crashes)
+
+Create some swap space to act as a safety net.
+
+```bash
+# Allocate 4GB
+sudo fallocate -l 4G /swapfile
+
+# Secure permissions
+sudo chmod 600 /swapfile
+
+# Mark as swap
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# Make permanent
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+
 **Verify critical installations:**
 
 ```bash
@@ -65,12 +109,12 @@ sudo systemctl status fail2ban  # Must be: active (running)
 
 ## 📦 Step 2: Storage Box Mounting (Hetzner)
 
-Mount e.g. the Hetzner Storage Box e.g. to `/mnt/akademie_storage` for direct file access.
+Mount e.g. the Hetzner Storage Box e.g. to `/mnt/storage` for direct file access.
 
 ### 2.1 Create Mount Point
 
 ```bash
-sudo mkdir -p /mnt/akademie_storage
+sudo mkdir -p /mnt/storage
 ```
 
 ### 2.2 Create Credentials File
@@ -101,7 +145,7 @@ sudo nano /etc/fstab
 **Add (single line):**
 
 ```text
-//u12345-sub1.your-storagebox.de/u12345-sub1 /mnt/akademie_storage cifs credentials=/etc/cifs-credentials,uid=0,gid=0,file_mode=0770,dir_mode=0770,nounix,vers=3.0,x-systemd.automount,x-systemd.idle-timeout=60 0 0
+//u12345-sub1.your-storagebox.de/u12345-sub1 /mnt/storage cifs credentials=/etc/cifs-credentials,uid=0,gid=0,file_mode=0770,dir_mode=0770,nounix,vers=3.0,x-systemd.automount,x-systemd.idle-timeout=60 0 0
 ```
 
 > **Note:** `uid=0` assumes app runs as root. Change to `1000` for non-root user.
@@ -111,7 +155,7 @@ sudo nano /etc/fstab
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart remote-fs.target
-ls -la /mnt/akademie_storage  # Should list files from Storage Box
+ls -la /mnt/storage  # Should list files from Storage Box
 ```
 
 ---
@@ -181,7 +225,7 @@ NEBIUS_API_KEY=...
 POE_API_KEY=...
 
 # Storage Box
-STORAGE_BOX_PATH=/mnt/akademie_storage
+STORAGE_BOX_PATH=/mnt/storage
 ```
 
 **Secure it:**
@@ -249,7 +293,7 @@ sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl
 ### 4.2 SSL Certificate Setup
 
 ```bash
-sudo certbot --apache -d ki.akademie-rs.de
+sudo certbot --apache -d ai.yourdomain.de
 ```
 
 ### 4.3 HTTP Config (Port 80 - HTTPS Redirect)
@@ -258,7 +302,7 @@ Edit `/etc/apache2/sites-available/transkript.conf`:
 
 ```apache
 <VirtualHost *:80>
-    ServerName ki.akademie-rs.de
+    ServerName ai.yourdomain.de
     
     # Proxy settings for Gradio
     ProxyPreserveHost On
@@ -275,7 +319,7 @@ Edit `/etc/apache2/sites-available/transkript.conf`:
     ProxyPassReverse / http://127.0.0.1:7860/
     
     # Force HTTPS
-    RewriteCond %{SERVER_NAME} =ki.akademie-rs.de
+    RewriteCond %{SERVER_NAME} =ai.yourdomain.de
     RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
 </VirtualHost>
 ```
@@ -287,7 +331,7 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
 ```apache
 <IfModule mod_ssl.c>
 <VirtualHost *:443>
-    ServerName ki.akademie-rs.de
+    ServerName ai.yourdomain.de
     
     # =================================================
     # 1. STATIC FILES (Served by Apache)
@@ -332,7 +376,7 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
     # Critical Headers for HTTPS Forwarding
     RequestHeader set X-Forwarded-Proto "https"
     RequestHeader set X-Forwarded-Port "443"
-    RequestHeader set X-Forwarded-Host "ki.akademie-rs.de"
+    RequestHeader set X-Forwarded-Host "ai.yourdomain.de"
     
     RewriteEngine On
     
@@ -353,8 +397,8 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
     # 3. SSL CONFIGURATION
     # =================================================
     
-    SSLCertificateFile /etc/letsencrypt/live/ki.akademie-rs.de/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/ki.akademie-rs.de/privkey.pem
+    SSLCertificateFile /etc/letsencrypt/live/ai.yourdomain.de/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/ai.yourdomain.de/privkey.pem
     Include /etc/letsencrypt/options-ssl-apache.conf
     
     # Upload Limits (1GB for audio files)
@@ -459,6 +503,42 @@ sudo systemctl restart fail2ban
 sudo fail2ban-client status  # Verify active jails
 ```
 
+## 🔄 Step 7: Log Rotation
+
+We prevent `app.log` from consuming too much disk space.
+
+### 7.1 Create Logrotate Config
+
+```bash
+sudo nano /etc/logrotate.d/transkript_app
+```
+
+**Content:**
+
+```text
+/var/www/transkript_app/app.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 666 root root
+    copytruncate
+}
+```
+
+  * `daily`: Rotate logs every day.
+  * `rotate 14`: Keep 14 days of logs.
+  * `compress`: Compress old logs to save space.
+  * `copytruncate`: Crucial for Python apps—truncates the active file in place so the app doesn't need restarting.
+
+**Test the configuration:**
+
+```bash
+sudo logrotate -d /etc/logrotate.d/transkript_app
+```
+
 ---
 
 ## 📁 Final File Structure
@@ -468,7 +548,7 @@ sudo fail2ban-client status  # Verify active jails
 ├── app.py                      # Main application (from repo)
 ├── requirements.txt            # Python dependencies (from repo)
 ├── .env                        # API keys (NOT in repo - created manually)
-├── akademie_suite.db           # SQLite database (auto-created on first run)
+├── suite.db           # SQLite database (auto-created on first run)
 ├── app.log                     # Application logs
 ├── venv/                       # Python virtual environment
 ├── jobs/                       # Resume job manifests (auto-created)
@@ -481,7 +561,7 @@ sudo fail2ban-client status  # Verify active jails
     ├── icon-192.png            # App icon (192x192)
     └── icon-512.png            # App icon (512x512)
 
-/mnt/akademie_storage/          # Hetzner Storage Box (mounted via CIFS)
+/mnt/storage/          # Hetzner Storage Box (mounted via CIFS)
 ├── shared/                     # Shared files across users
 └── [username]/                 # User-specific folders
 ```
@@ -489,7 +569,7 @@ sudo fail2ban-client status  # Verify active jails
 **Files from GitHub Repository:**
 - `app.py`, `requirements.txt`, `static/*` - Version controlled
 - `.env` - **NOT in repo** (contains secrets, create manually on server)
-- `akademie_suite.db`, `app.log`, `jobs/`, `generated_images/` - Auto-generated
+- `suite.db`, `app.log`, `jobs/`, `generated_images/` - Auto-generated
 
 ---
 
@@ -517,9 +597,9 @@ tail -f /var/www/transkript_app/app.log
 
 ```bash
 # Test URLs (all should return 200 OK)
-curl -I https://ki.akademie-rs.de/manifest.json
-curl -I https://ki.akademie-rs.de/service-worker.js
-curl -I https://ki.akademie-rs.de/static/icon-192.png
+curl -I https://ai.yourdomain.de/manifest.json
+curl -I https://ai.yourdomain.de/service-worker.js
+curl -I https://ai.yourdomain.de/static/icon-192.png
 
 # Common fixes:
 # 1. Clear browser cache/data on mobile
@@ -532,7 +612,7 @@ curl -I https://ki.akademie-rs.de/static/icon-192.png
 
 ```bash
 # Check mount status
-mount | grep akademie_storage
+mount | grep storage
 
 # Test credentials
 sudo cat /etc/cifs-credentials
@@ -540,11 +620,11 @@ sudo cat /etc/cifs-credentials
 # Manual mount test
 sudo mount -t cifs \
     //u12345-sub1.your-storagebox.de/u513542-sub1 \
-    /mnt/akademie_storage \
+    /mnt/storage \
     -o credentials=/etc/cifs-credentials,uid=0,gid=0
 
 # Check mount in real-time
-sudo mount -v -t cifs //u12345-sub1.your-storagebox.de/u12345-sub1 /mnt/akademie_storage -o credentials=/etc/cifs-credentials
+sudo mount -v -t cifs //u12345-sub1.your-storagebox.de/u12345-sub1 /mnt/storage -o credentials=/etc/cifs-credentials
 ```
 
 ### Apache Configuration Issues
@@ -632,15 +712,15 @@ sudo systemctl restart transkript
 ### Backup Database
 
 ```bash
-sudo cp /var/www/transkript_app/akademie_suite.db \
-       /var/www/transkript_app/akademie_suite.db.backup-$(date +%Y%m%d)
+sudo cp /var/www/transkript_app/suite.db \
+       /var/www/transkript_app/suite.db.backup-$(date +%Y%m%d)
 ```
 
 ### Monitor Disk Space
 
 ```bash
 # Check Storage Box usage
-df -h /mnt/akademie_storage
+df -h /mnt/storage
 
 # Check local disk
 df -h /var/www/transkript_app
@@ -681,7 +761,7 @@ sudo tail -f /var/log/apache2/error.log  # Apache errors
 - ✅ Fail2Ban enabled and running
 - ✅ SSL certificate valid and auto-renewing
 - ✅ Firewall configured (only ports 22, 80, 443 open)
-- ✅ Regular backups of `akademie_suite.db`
+- ✅ Regular backups of `suite.db`
 - ✅ Apache upload limits configured (1GB)
 - ✅ Storage Box mounted with restricted permissions
 
