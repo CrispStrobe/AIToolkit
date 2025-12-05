@@ -1596,10 +1596,7 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 # 1. CHAT LOGIK
 # ==========================================
 
-def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens):
-    import re
-    import json
-
+def run_chat(message, history, provider, model, temp, system_prompt, key):
     try:
         client = get_client(provider, key)
         
@@ -1609,137 +1606,35 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
             messages.append({"role": "system", "content": str(system_prompt)})
             
         for msg in history:
+            # Ensure content is string and not None to prevent JSON errors
             content = str(msg["content"]) if msg.get("content") else ""
             messages.append({"role": msg["role"], "content": content})
             
         messages.append({"role": "user", "content": str(message)})
         
-        # 2. Base Parameters
-        params = {
+        # 2. Configure Stream
+        stream_params = {
             "model": model,
             "messages": messages,
+            "temperature": float(temp),
             "stream": True
+            # REMOVED: "stream_options" (Causes 400 Error with Poe)
         }
+
+        # 3. Execute
+        stream = client.chat.completions.create(**stream_params)
         
-        # 3. Provider-Specific Reasoning Logic
-        extra_body = {}
-        
-        if provider == "OpenRouter":
-            reasoning_config = {}
-            if r_tokens > 0:
-                reasoning_config["max_tokens"] = int(r_tokens)
-            elif r_effort != "default":
-                reasoning_config["effort"] = r_effort
-            
-            if reasoning_config:
-                extra_body["reasoning"] = reasoning_config
-                extra_body["include_reasoning"] = True
-
-        elif provider == "Scaleway":
-            # Scaleway logic
-            if r_effort and r_effort != "default":
-                params["reasoning_effort"] = r_effort
-            if r_tokens > 0:
-                params["max_completion_tokens"] = int(r_tokens)
-            params["temperature"] = float(temp)
-
-        elif provider == "Mistral":
-            # FIX: Only set max_tokens, do NOT force prompt_mode="reasoning"
-            # as it crashes non-reasoning models (Mistral 400 Error)
-            if r_tokens > 0:
-                params["max_tokens"] = int(r_tokens)
-            params["temperature"] = float(temp)
-
-        else:
-            params["temperature"] = float(temp)
-            if r_tokens > 0:
-                params["max_tokens"] = int(r_tokens)
-
-        if extra_body:
-            params["extra_body"] = extra_body
-
-        # 4. Execute with Error Handling for Scaleway Protocol Leak
-        try:
-            stream = client.chat.completions.create(**params)
-            
-            full_response = ""
-            reasoning_buffer = ""
-            is_thinking = False
-            
-            for chunk in stream:
-                if chunk.choices and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
-                    
-                    # --- A. Capture Explicit Reasoning ---
-                    new_reasoning = ""
-                    if hasattr(delta, 'reasoning') and delta.reasoning:
-                        new_reasoning = delta.reasoning
-                    elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                        new_reasoning = delta.reasoning_content
-                    elif hasattr(delta, 'reasoning_details') and delta.reasoning_details:
-                        if isinstance(delta.reasoning_details, str):
-                            new_reasoning = delta.reasoning_details
-                        elif isinstance(delta.reasoning_details, list):
-                            for detail in delta.reasoning_details:
-                                if detail.get('type') == 'reasoning.text':
-                                    new_reasoning += detail.get('text', '')
-
-                    if new_reasoning:
-                        reasoning_buffer += new_reasoning
-                        display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                        yield display_thought + full_response
-                        continue
-
-                    # --- B. Capture Content ---
-                    if delta.content:
-                        val = delta.content
-                        if "<think>" in val:
-                            is_thinking = True
-                            val = val.replace("<think>", "")
-                        elif "</think>" in val:
-                            is_thinking = False
-                            val = val.replace("</think>", "")
-                        
-                        if is_thinking:
-                            reasoning_buffer += val
-                            display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                            yield display_thought + full_response
-                        else:
-                            full_response += val
-                            if reasoning_buffer:
-                                display_thought = f"<details><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                                yield display_thought + full_response
-                            else:
-                                yield full_response
-
-        # --- C. SPECIFIC FIX FOR SCALEWAY PROTOCOL ERROR ---
-        except Exception as stream_err:
-            err_str = str(stream_err)
-            # Check if this is the "unexpected tokens" error containing the leaked thought
-            if "unexpected tokens remaining in message header" in err_str:
-                try:
-                    # Extract the list part: ["We", "need", "to", ...]
-                    match = re.search(r'\[.*\]', err_str)
-                    if match:
-                        # Parse the list string back to a Python list
-                        leaked_tokens = json.loads(match.group(0))
-                        # Join them to reconstruct the thought
-                        leaked_thought = " ".join(leaked_tokens)
-                        
-                        # Display what we recovered
-                        reasoning_buffer += leaked_thought + " [⚠️ Scaleway Protocol Limit Reached]"
-                        
-                        display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                        yield display_thought + full_response
-                        return # Stop processing as the stream crashed
-                except:
-                    pass # If recovery fails, raise original error
-            
-            # If it wasn't the specific Scaleway error, or recovery failed:
-            raise stream_err
+        full_response = ""
+        for chunk in stream:
+            if chunk.choices and len(chunk.choices) > 0:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    full_response += delta.content
+                    yield full_response
                 
     except Exception as e:
         logger.exception(f"Chat error with {provider}: {str(e)}")
+        # Show a friendly error in the chat window
         yield f"🔥 Fehler ({provider}): {str(e)}"
         
 # ==========================================
@@ -2540,55 +2435,21 @@ Zusätzliche Hinweise:
 # ==========================================
 # 📱 PWA CONFIGURATION
 # ==========================================
-# ==========================================
-# 📱 PWA & CSS CONFIGURATION
-# ==========================================
 PWA_HEAD = """
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#1976d2">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Akademie KI">
+
 <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+
 <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/static/icon-512.png">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+
 <link rel="stylesheet" href="/static/custom.css">
 <script src="/static/pwa.js" defer></script>
-
-<style>
-/* 🧠 Reasoning/Thinking Block Styling */
-.message-wrap details {
-    background-color: #f9fafb; /* Light gray background */
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 8px 12px;
-    margin-bottom: 12px;
-    font-size: 0.9em;
-}
-
-.message-wrap summary {
-    cursor: pointer;
-    font-weight: 600;
-    color: #6b7280; /* Muted text color */
-    user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    outline: none;
-}
-
-.message-wrap details[open] summary {
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-/* Dark Mode Support (Gradio standard classes) */
-body.dark .message-wrap details {
-    background-color: #1f2937; /* Dark gray */
-    border-color: #374151;
-}
-body.dark .message-wrap summary {
-    color: #9ca3af;
-}
-</style>
 """
 
 # ==========================================
@@ -2756,29 +2617,41 @@ def update_t_ui(prov, force_all=False):
 def user_msg(msg, hist):
     return "", hist + [{"role": "user", "content": msg}]
 
-def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens):
+def bot_msg(hist, prov, mod, temp, sys, key):
     """
-    Execute chat passing explicit reasoning parameters.
+    Execute chat with correct history slicing to prevent duplicate messages
+    and ensure restored chats are respected as context.
     """
     if not hist: return hist
 
+    # Ensure the last message is actually from the user before processing
     if hist[-1]["role"] != "user":
         return hist
 
+    # 1. Get the latest user message
     last_user_msg = hist[-1]["content"]
+
+    # 2. Append the empty assistant bubble (for streaming output)
     hist.append({"role": "assistant", "content": ""})
 
-    # Prepare Context
+    # 3. Prepare Context for API
+    # hist is now [..., PrevBot, CurrUser, CurrEmptyBot]
+    # We want [..., PrevBot] as history, because run_chat adds CurrUser itself.
+    # Therefore we slice up to -2.
     raw_context = hist[:-2]
+    
+    # 4. Normalize Context (Fixes "Poe" history being used in "Scaleway")
     clean_context = []
     for m in raw_context:
         role = m["role"]
-        if role in ["bot", "model"]: role = "assistant"
+        # Normalize 'bot' (Poe) to 'assistant' (OpenAI standard)
+        if role in ["bot", "model"]: 
+            role = "assistant"
         clean_context.append({"role": role, "content": m["content"]})
 
+    # 5. Stream
     try:
-        # Pass new reasoning params to run_chat
-        for chunk in run_chat(last_user_msg, clean_context, prov, mod, temp, sys, key, r_effort, r_tokens):
+        for chunk in run_chat(last_user_msg, clean_context, prov, mod, temp, sys, key):
             hist[-1]["content"] = chunk
             yield hist
     except Exception as e:
@@ -2848,9 +2721,6 @@ def load_chat_list_with_state():
 def select_chat_row(evt: gr.SelectData, state_data):
     """Smart Selection for Chat List"""
     try:
-        if not state_data:
-            return None
-            
         row_idx = evt.index[0]
         if row_idx < len(state_data):
             real_row = state_data[row_idx]
@@ -2858,7 +2728,7 @@ def select_chat_row(evt: gr.SelectData, state_data):
             return int(real_row[0])
     except Exception as e:
         logger.error(f"Selection error: {e}")
-    return None
+    return gr.update()
 
 def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_file, sb_files):
     """
@@ -2977,21 +2847,13 @@ def load_single_chat(chat_id):
     return None, "❌ Chat nicht gefunden"
 
 def delete_chat(chat_id):
-    """Delete a chat and update both list and state"""
-    # Helper to get fresh data
-    def get_fresh_data():
-        return load_chat_list_with_state()
-
+    """Delete a chat"""
     if not current_user["id"] or not chat_id:
-        d, s = get_fresh_data()
-        return "❌ Ungültige ID", d, s
+        return "❌ Ungültige ID", load_chat_list()
 
     if delete_chat_history(int(chat_id), current_user["id"]):
-        d, s = get_fresh_data()
-        return "✅ Chat gelöscht", d, s
-        
-    d, s = get_fresh_data()
-    return "❌ Fehler beim Löschen", d, s
+        return "✅ Chat gelöscht", load_chat_list()
+    return "❌ Fehler beim Löschen", load_chat_list()
 
 def clear_chat():
     """Clear current chat"""
@@ -3244,80 +3106,21 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         # 1. Settings (Closed)
                         with gr.Accordion("⚙️ Einstellungen", open=False):
                             c_key = gr.Textbox(label="API Key (Optional)", type="password")
-                            c_sys = gr.Textbox(label="System Rolle", value="Du bist ein hilfreicher Assistent.", lines=2)
-                            
-                            gr.Markdown("**🧠 Reasoning / Thinking Configuration**")
-                            with gr.Row():
-                                c_reasoning_effort = gr.Dropdown(
-                                    choices=["default", "low", "medium", "high"],
-                                    value="default",
-                                    label="Reasoning Effort",
-                                    info="Für OpenAI o-series & Scaleway."
-                                )
-                                c_reasoning_tokens = gr.Slider(
-                                    0, 32000, value=0, step=1024,
-                                    label="Reasoning Token Budget",
-                                    info="0 = Auto. Für Anthropic/OpenRouter/Mistral."
-                                )
-                            
-                            c_temp = gr.Slider(0, 2, value=0.7, label="Temperatur (Standard)", step=0.1)
-                            
+                            c_sys = gr.Textbox(label="System Rolle", value="Du bist ein hilfreicher Assistent.", lines=3)
+                            c_temp = gr.Slider(0, 2, value=0.7, label="Kreativität")
 
                         # 2. History (Closed)
                         with gr.Accordion("📚 Alte Chats laden", open=False):
                             c_history_state = gr.State([]) 
-                            
-                            with gr.Row():
-                                refresh_chats_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                                delete_chat_btn = gr.Button("🗑️ Löschen", variant="stop", size="sm")
-                            
-                            old_chats = gr.Dataframe(
-                                headers=["ID", "Datum", "Titel", "Modell"], 
-                                value=[[None, "", "", ""]], 
-                                label="Gespeicherte Chats", 
-                                interactive=False, 
-                                height=200, 
-                                wrap=True
-                            )
+                            refresh_chats_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
+                            old_chats = gr.Dataframe(headers=["ID", "Datum", "Titel", "Modell"], value=[[None, "", "", ""]], label="Gespeicherte Chats", interactive=False, height=200, wrap=True)
                             
                             with gr.Row():
                                 load_chat_id = gr.Number(label="Chat-ID", precision=0)
+                                delete_chat_btn = gr.Button("🗑️", scale=0)
                             
                             load_chat_btn = gr.Button("📥 Chat laden", variant="primary")
                             chat_load_status = gr.Markdown("")
-
-                            # --- Events for History ---
-                            
-                            # 1. Load list on click/tab select
-                            chat_tab.select(
-                                load_chat_list_with_state, 
-                                outputs=[old_chats, c_history_state]
-                            )
-                            refresh_chats_btn.click(
-                                load_chat_list_with_state, 
-                                outputs=[old_chats, c_history_state]
-                            )
-                            
-                            # 2. Select row to get ID (Using State to avoid Index Errors)
-                            old_chats.select(
-                                select_chat_row, 
-                                inputs=[c_history_state], 
-                                outputs=[load_chat_id]
-                            )
-                            
-                            # 3. Load Chat Logic
-                            load_chat_btn.click(
-                                load_single_chat, 
-                                inputs=[load_chat_id], 
-                                outputs=[c_bot, chat_load_status]
-                            )
-                            
-                            # 4. Delete Logic (Now updates State + DataFrame to prevent 'backend' errors on next click)
-                            delete_chat_btn.click(
-                                delete_chat, 
-                                inputs=[load_chat_id], 
-                                outputs=[chat_load_status, old_chats, c_history_state]
-                            )
 
                         # 3. Attachments & Prompts (Closed)
                         with gr.Accordion("📎 Inhalt & Prompts", open=False):
@@ -3381,14 +3184,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                 # Chat Execution (With Stop)
                 submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, 
-                    [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens], 
-                    c_bot
+                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot
                 )
                 click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, 
-                    [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens], 
-                    c_bot
+                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key], c_bot
                 )
                 
                 # Stop Button

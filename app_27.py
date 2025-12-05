@@ -1597,9 +1597,6 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 # ==========================================
 
 def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens):
-    import re
-    import json
-
     try:
         client = get_client(provider, key)
         
@@ -1621,10 +1618,13 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
             "stream": True
         }
         
-        # 3. Provider-Specific Reasoning Logic
+        # 3. Provider-Specific Reasoning Logic (Explicit Support)
+        # Based on documentation provided for OpenRouter, Scaleway, Mistral
         extra_body = {}
         
         if provider == "OpenRouter":
+            # OpenRouter Unified "reasoning" object
+            # Docs: Use 'max_tokens' (Anthropic style) OR 'effort' (OpenAI style), not both usually.
             reasoning_config = {}
             if r_tokens > 0:
                 reasoning_config["max_tokens"] = int(r_tokens)
@@ -1633,24 +1633,29 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
             
             if reasoning_config:
                 extra_body["reasoning"] = reasoning_config
+                # OpenRouter legacy/compatibility
                 extra_body["include_reasoning"] = True
 
         elif provider == "Scaleway":
-            # Scaleway logic
-            if r_effort and r_effort != "default":
+            # Scaleway Docs: top-level 'reasoning_effort' parameter
+            # Note: Not all models support it, but passing it to supported ones is key
+            if r_effort != "default":
                 params["reasoning_effort"] = r_effort
+            # Scaleway uses max_completion_tokens for the total budget
             if r_tokens > 0:
                 params["max_completion_tokens"] = int(r_tokens)
             params["temperature"] = float(temp)
 
         elif provider == "Mistral":
-            # FIX: Only set max_tokens, do NOT force prompt_mode="reasoning"
-            # as it crashes non-reasoning models (Mistral 400 Error)
+            # Mistral Docs: 'prompt_mode': 'reasoning'
+            # And standard max_tokens
+            extra_body["prompt_mode"] = "reasoning"
             if r_tokens > 0:
                 params["max_tokens"] = int(r_tokens)
             params["temperature"] = float(temp)
 
         else:
+            # Fallback for generic providers (Groq, Nebius, etc)
             params["temperature"] = float(temp)
             if r_tokens > 0:
                 params["max_tokens"] = int(r_tokens)
@@ -1658,85 +1663,69 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
         if extra_body:
             params["extra_body"] = extra_body
 
-        # 4. Execute with Error Handling for Scaleway Protocol Leak
-        try:
-            stream = client.chat.completions.create(**params)
-            
-            full_response = ""
-            reasoning_buffer = ""
-            is_thinking = False
-            
-            for chunk in stream:
-                if chunk.choices and len(chunk.choices) > 0:
-                    delta = chunk.choices[0].delta
+        # 4. Execute
+        stream = client.chat.completions.create(**params)
+        
+        full_response = ""
+        reasoning_buffer = ""
+        is_thinking = False
+        
+        for chunk in stream:
+            if chunk.choices and len(chunk.choices) > 0:
+                delta = chunk.choices[0].delta
+                
+                # --- A. Capture Explicit Reasoning Fields ---
+                # OpenRouter returns 'reasoning'. Scaleway/OpenAI return 'reasoning_content'. 
+                # Anthropic via OpenRouter might send 'reasoning_details'.
+                
+                new_reasoning = ""
+                
+                # 1. OpenRouter / Standard
+                if hasattr(delta, 'reasoning') and delta.reasoning:
+                    new_reasoning = delta.reasoning
+                # 2. OpenAI / Scaleway
+                elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    new_reasoning = delta.reasoning_content
+                # 3. Anthropic Complex Details (Streaming)
+                elif hasattr(delta, 'reasoning_details') and delta.reasoning_details:
+                    # Some APIs return details as objects/text
+                    if isinstance(delta.reasoning_details, str):
+                        new_reasoning = delta.reasoning_details
+                    elif isinstance(delta.reasoning_details, list):
+                        for detail in delta.reasoning_details:
+                            if detail.get('type') == 'reasoning.text':
+                                new_reasoning += detail.get('text', '')
+
+                if new_reasoning:
+                    reasoning_buffer += new_reasoning
+                    display_thought = f"<details open><summary>💭 Reasoning ({len(reasoning_buffer)} chars)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
+                    yield display_thought + full_response
+                    continue
+
+                # --- B. Capture Content (and fallback <think> tags) ---
+                if delta.content:
+                    val = delta.content
                     
-                    # --- A. Capture Explicit Reasoning ---
-                    new_reasoning = ""
-                    if hasattr(delta, 'reasoning') and delta.reasoning:
-                        new_reasoning = delta.reasoning
-                    elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                        new_reasoning = delta.reasoning_content
-                    elif hasattr(delta, 'reasoning_details') and delta.reasoning_details:
-                        if isinstance(delta.reasoning_details, str):
-                            new_reasoning = delta.reasoning_details
-                        elif isinstance(delta.reasoning_details, list):
-                            for detail in delta.reasoning_details:
-                                if detail.get('type') == 'reasoning.text':
-                                    new_reasoning += detail.get('text', '')
-
-                    if new_reasoning:
-                        reasoning_buffer += new_reasoning
-                        display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
+                    # Fallback for models (like DeepSeek via some providers) that still use <think> tags
+                    if "<think>" in val:
+                        is_thinking = True
+                        val = val.replace("<think>", "")
+                    elif "</think>" in val:
+                        is_thinking = False
+                        val = val.replace("</think>", "")
+                    
+                    if is_thinking:
+                        reasoning_buffer += val
+                        display_thought = f"<details open><summary>💭 Reasoning ({len(reasoning_buffer)} chars)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
                         yield display_thought + full_response
-                        continue
-
-                    # --- B. Capture Content ---
-                    if delta.content:
-                        val = delta.content
-                        if "<think>" in val:
-                            is_thinking = True
-                            val = val.replace("<think>", "")
-                        elif "</think>" in val:
-                            is_thinking = False
-                            val = val.replace("</think>", "")
-                        
-                        if is_thinking:
-                            reasoning_buffer += val
-                            display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
+                    else:
+                        full_response += val
+                        if reasoning_buffer:
+                            # Collapse details when done
+                            display_thought = f"<details><summary>💭 Reasoning ({len(reasoning_buffer)} chars)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
                             yield display_thought + full_response
                         else:
-                            full_response += val
-                            if reasoning_buffer:
-                                display_thought = f"<details><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                                yield display_thought + full_response
-                            else:
-                                yield full_response
-
-        # --- C. SPECIFIC FIX FOR SCALEWAY PROTOCOL ERROR ---
-        except Exception as stream_err:
-            err_str = str(stream_err)
-            # Check if this is the "unexpected tokens" error containing the leaked thought
-            if "unexpected tokens remaining in message header" in err_str:
-                try:
-                    # Extract the list part: ["We", "need", "to", ...]
-                    match = re.search(r'\[.*\]', err_str)
-                    if match:
-                        # Parse the list string back to a Python list
-                        leaked_tokens = json.loads(match.group(0))
-                        # Join them to reconstruct the thought
-                        leaked_thought = " ".join(leaked_tokens)
-                        
-                        # Display what we recovered
-                        reasoning_buffer += leaked_thought + " [⚠️ Scaleway Protocol Limit Reached]"
-                        
-                        display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                        yield display_thought + full_response
-                        return # Stop processing as the stream crashed
-                except:
-                    pass # If recovery fails, raise original error
-            
-            # If it wasn't the specific Scaleway error, or recovery failed:
-            raise stream_err
+                            yield full_response
                 
     except Exception as e:
         logger.exception(f"Chat error with {provider}: {str(e)}")
