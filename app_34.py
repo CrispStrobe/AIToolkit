@@ -2850,57 +2850,30 @@ def select_chat_row(evt: gr.SelectData, state_data):
     return None
 
 # ==========================================
-# 📄 UNIVERSAL CONTENT EXTRACTOR (Robust & Granular)
+# 📄 UNIVERSAL CONTENT EXTRACTOR (Enhanced & Debuggable)
 # ==========================================
 import mimetypes
 import chardet
 import shutil
 import subprocess
-import traceback
-import tempfile
+import traceback  # NEW: For detailed error logging
 from io import StringIO
 
-# --- Granular Imports ---
-HAS_OCR = False
-HAS_PDF_IMG = False
-HAS_DOCX = False
-HAS_FITZ = False
-HAS_PDF_READER = False
-HAS_PANDAS = False
-
+# Try imports and log immediately what is missing
 try:
     import pytesseract
-    HAS_OCR = True
-except ImportError: logger.warning("⚠️ pytesseract missing")
-
-try:
     from pdf2image import convert_from_path
-    HAS_PDF_IMG = True
-except ImportError: logger.warning("⚠️ pdf2image missing")
-
-try:
     from docx import Document
-    HAS_DOCX = True
-except ImportError: logger.warning("⚠️ python-docx missing")
-
-try:
     import fitz  # PyMuPDF
-    HAS_FITZ = True
-except ImportError: logger.warning("⚠️ PyMuPDF (fitz) missing")
-
-try:
-    from pypdf import PdfReader
-    HAS_PDF_READER = True
-except ImportError: logger.warning("⚠️ pypdf missing")
-
-try:
     import pandas as pd
-    HAS_PANDAS = True
-except ImportError: logger.warning("⚠️ pandas missing")
+    from pypdf import PdfReader # NEW: Pure Python fallback
+except ImportError as e:
+    logger.warning(f"⚠️ Missing extraction library: {e}. Functionality will be limited.")
 
 class UniversalExtractor:
     @staticmethod
     def extract(filepath):
+        """Determines file type and extracts text content using robust methods + fallbacks"""
         if not filepath or not os.path.exists(filepath):
             return "❌ Datei nicht gefunden."
             
@@ -2915,69 +2888,60 @@ class UniversalExtractor:
             if (mime_type and mime_type.startswith('image/')) or ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff']:
                 return UniversalExtractor._extract_image(filepath)
             
-            # 2. PDF
+            # 2. PDF (Chain: PyMuPDF -> PyPDF -> CLI -> OCR)
             elif ext == '.pdf':
                 return UniversalExtractor._extract_pdf(filepath)
             
-            # 3. Modern Word
+            # 3. Modern Word (.docx)
             elif ext == '.docx':
-                if HAS_DOCX:
-                    try: return UniversalExtractor._extract_docx(filepath)
-                    except Exception as e: logger.warning(f"Docx error: {e}")
-                return UniversalExtractor._extract_with_cli_tool(filepath)
+                try: return UniversalExtractor._extract_docx(filepath)
+                except Exception as e:
+                    logger.warning(f"Docx-Lib failed: {e}, trying CLI...")
+                    return UniversalExtractor._extract_with_cli_tool(filepath)
 
-            # 4. Excel
+            # 4. Excel (.xls, .xlsx, .csv)
             elif ext in ['.xls', '.xlsx', '.csv']:
                 return UniversalExtractor._extract_excel(filepath)
 
-            # 5. Ebooks & Legacy Docs
-            elif ext in ['.epub', '.mobi', '.azw3', '.fb2', '.doc', '.odt', '.rtf', '.html', '.txt']:
+            # 5. Ebooks & Legacy Docs (.epub, .mobi, .doc, .odt, .rtf)
+            elif ext in ['.epub', '.mobi', '.azw', '.azw3', '.fb2', '.doc', '.odt', '.rtf', '.html']:
                 return UniversalExtractor._extract_with_cli_tool(filepath)
                 
-            # 6. Text/Code Fallback
+            # 6. Text/Code
             else:
                 return UniversalExtractor._extract_plain_text(filepath)
                 
         except Exception as e:
-            logger.error(f"Critical Extractor Error: {e}")
-            logger.error(traceback.format_exc())
-            return f"[Systemfehler: {str(e)}]"
+            # LOG THE FULL ERROR TRACE
+            logger.error(f"🔥 Critical Extraction Error for {filename}: {str(e)}")
+            logger.error(traceback.format_exc()) 
+            return f"[Systemfehler beim Lesen von {filename}: {str(e)}]"
+
+    # --- INTERNAL HANDLERS ---
 
     @staticmethod
-    def _extract_with_cli_tool(path):
+    def _extract_with_cli_tool(input_path):
         """Uses ebook-converter, calibre, or pandoc"""
-        # Check common paths explicitly if not in PATH
-        candidates = [
-            "ebook-converter", 
-            "/var/www/transkript_app/venv/bin/ebook-converter",
-            "ebook-convert", 
-            "pandoc"
-        ]
-        
-        tool = None
-        for c in candidates:
-            if shutil.which(c) or os.path.exists(c):
-                tool = c
-                break
+        tool = shutil.which("ebook-converter") or shutil.which("ebook-convert") or shutil.which("pandoc")
         
         if not tool:
-            logger.warning(f"CLI Tools missing. PATH: {os.environ.get('PATH')}")
-            return "[Kein Konverter (ebook-converter/pandoc) gefunden]"
+            logger.warning("No CLI converter tool found (ebook-converter/calibre/pandoc)")
+            return "[Kein Konverter installiert]"
 
         try:
             with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
                 out_path = tmp.name
 
-            cmd = [tool, path, out_path]
+            cmd = [tool, input_path, out_path]
             if "pandoc" in tool:
-                cmd = [tool, path, "-t", "plain", "-o", out_path]
+                cmd = [tool, input_path, "-t", "plain", "-o", out_path]
 
-            logger.info(f"Running CLI: {cmd}")
-            # Increase timeout for larger files
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            logger.info(f"Running CLI: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             
             if result.returncode != 0:
-                logger.error(f"CLI Error: {result.stderr}")
+                logger.error(f"CLI stderr: {result.stderr}")
+                # Don't return error yet, file might still exist
                 
             if os.path.exists(out_path):
                 with open(out_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -2985,63 +2949,87 @@ class UniversalExtractor:
                 os.remove(out_path)
                 if text.strip(): return text
 
-            return f"[CLI Konvertierung leer. Stderr: {result.stderr[:200]}]"
+            return f"[CLI Konvertierung fehlgeschlagen: {result.stderr}]"
 
         except Exception as e:
+            logger.error(f"CLI Tool Error: {e}")
             return f"[CLI Fehler: {str(e)}]"
 
     @staticmethod
     def _extract_image(path):
-        if not HAS_OCR: return "[OCR Library 'pytesseract' fehlt]"
         try:
-            if not shutil.which("tesseract"): return "[Systemfehler: 'tesseract' Binary fehlt]"
+            # Check if tesseract is installed
+            if not shutil.which("tesseract"):
+                return "[Fehler: 'tesseract' ist nicht installiert. sudo apt install tesseract-ocr]"
+                
             text = pytesseract.image_to_string(Image.open(path), lang='deu+eng')
-            return f"[OCR]:\n{text}" if text.strip() else "[Kein Text erkannt]"
-        except Exception as e: return f"[OCR Fehler: {e}]"
+            return f"[OCR-Ergebnis]:\n{text}" if text.strip() else "[Kein Text im Bild erkannt]"
+        except Exception as e:
+            logger.error(f"OCR Error: {e}")
+            return f"[OCR Fehler: {str(e)}]"
 
     @staticmethod
     def _extract_pdf(path):
-        text = ""
-        # A. PyMuPDF
-        if HAS_FITZ:
-            try:
-                with fitz.open(path) as doc:
-                    for page in doc: text += page.get_text() + "\n"
-                if len(text.strip()) > 50: return text
-                logger.info("PyMuPDF returned empty text (Scanned PDF?)")
-            except Exception as e: logger.warning(f"PyMuPDF failed: {e}")
-
-        # B. PyPDF
-        if HAS_PDF_READER:
-            try:
-                reader = PdfReader(path)
-                pypdf_text = ""
-                for page in reader.pages: pypdf_text += (page.extract_text() or "") + "\n"
-                if len(pypdf_text.strip()) > 50: return f"[PyPDF]:\n{pypdf_text}"
-            except Exception as e: logger.warning(f"PyPDF failed: {e}")
-
-        # C. CLI Tool (ebook-converter)
-        try:
-            cli_text = UniversalExtractor._extract_with_cli_tool(path)
-            if len(cli_text.strip()) > 50 and "Fehler" not in cli_text: return cli_text
-        except: pass
-
-        # D. OCR (Scan)
-        if HAS_PDF_IMG and HAS_OCR:
-            try:
-                logger.info("Attempting OCR on PDF...")
-                return UniversalExtractor._extract_scanned_pdf(path)
-            except Exception as e: return f"[OCR Fehler: {e}]"
+        """Chain of Responsibility for PDFs"""
+        errors = []
         
-        return "[PDF unlesbar: Keine Text-Ebene und OCR Tools fehlen]"
+        # Method A: PyMuPDF (Fastest & Best Layout)
+        try:
+            text = ""
+            with fitz.open(path) as doc:
+                for page in doc: text += page.get_text() + "\n"
+            if len(text.strip()) > 50: 
+                return text
+            else:
+                errors.append("PyMuPDF: Text too short (Scanned?)")
+        except Exception as e:
+            errors.append(f"PyMuPDF Error: {e}")
+            logger.warning(f"PyMuPDF failed: {e}")
+
+        # Method B: PyPDF (Pure Python Fallback)
+        try:
+            reader = PdfReader(path)
+            text = ""
+            for page in reader.pages:
+                text += (page.extract_text() or "") + "\n"
+            if len(text.strip()) > 50:
+                return f"[Extracted via PyPDF]\n{text}"
+            else:
+                errors.append("PyPDF: Text too short")
+        except Exception as e:
+            errors.append(f"PyPDF Error: {e}")
+
+        # Method C: CLI Tool (ebook-converter)
+        try:
+            text = UniversalExtractor._extract_with_cli_tool(path)
+            if "Fehler" not in text and len(text) > 50:
+                return f"[Extracted via CLI]\n{text}"
+        except Exception as e:
+             errors.append(f"CLI Error: {e}")
+
+        # Method D: OCR (Last Resort for Scans)
+        logger.info("All PDF text methods failed. Attempting OCR...")
+        try:
+            return UniversalExtractor._extract_scanned_pdf(path)
+        except Exception as e:
+            errors.append(f"OCR Error: {e}")
+            
+        logger.error(f"PDF Extraction completely failed. Log: {errors}")
+        return f"[PDF konnte nicht gelesen werden. Errors: {'; '.join(errors)}]"
 
     @staticmethod
     def _extract_scanned_pdf(path):
-        text = "[OCR Scan Modus]\n"
-        images = convert_from_path(path, first_page=1, last_page=5)
-        for i, img in enumerate(images):
-            text += pytesseract.image_to_string(img, lang='deu+eng') + "\n"
-        return text
+        try:
+            text = "[HINWEIS: OCR Scan Modus]\n"
+            # Only do first 5 pages to prevent server timeout/hang
+            images = convert_from_path(path, first_page=1, last_page=5) 
+            for i, img in enumerate(images):
+                text += f"\n--- Seite {i+1} ---\n"
+                text += pytesseract.image_to_string(img, lang='deu+eng')
+            return text
+        except Exception as e:
+            logger.error(f"Scan extraction error: {e}")
+            raise e
 
     @staticmethod
     def _extract_docx(path):
@@ -3050,12 +3038,12 @@ class UniversalExtractor:
 
     @staticmethod
     def _extract_excel(path):
-        if not HAS_PANDAS: return "[Pandas fehlt]"
         try:
             if path.endswith('.csv'): df = pd.read_csv(path)
             else: df = pd.read_excel(path)
             return df.to_markdown(index=False)
-        except Exception as e: return f"[Excel Fehler: {e}]"
+        except Exception as e:
+            return f"[Excel Fehler: {str(e)}]"
 
     @staticmethod
     def _extract_plain_text(path):
@@ -3064,149 +3052,79 @@ class UniversalExtractor:
                 raw = f.read(50000)
                 enc = chardet.detect(raw)['encoding'] or 'utf-8'
             with open(path, 'r', encoding=enc, errors='replace') as f:
-                return f.read()
-        except Exception as e: return f"[Read Error: {e}]"
+                content = f.read()
+            if "\0" in content: # Binary fallback
+                return UniversalExtractor._extract_with_cli_tool(path)
+            return content
+        except Exception as e:
+            return f"[Text-Lese-Fehler: {str(e)}]"
 
-def undo_last_attachment(hist):
-    """Removes the last message if it was an attachment"""
-    if not hist or len(hist) == 0:
-        return hist, "❌ Keine Nachrichten"
-    
-    last_msg = hist[-1]
-    # Check if the last message is from user and looks like an attachment header
-    if last_msg["role"] == "user":
-        content = last_msg["content"]
-        if content.startswith("[Datei:") or content.startswith("[Transkript") or content.startswith("[Vision"):
-            hist.pop()
-            return hist, "✅ Letzten Anhang entfernt"
-            
-    return hist, "⚠️ Letzte Nachricht war kein Anhang"
-
-def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_files, sb_files, user_state):
-    """Attach multiple files content to chat"""
+def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_file, sb_files, user_state):
+    """Attach content using UniversalExtractor"""
     if not user_state or not user_state.get("id"):
         return hist, "❌ Bitte anmelden"
     
     user_id = user_state["id"]
-    full_content_to_add = ""
-    display_content_to_add = "" # Shorter version for UI
-    status_msg = []
+    content_to_add = ""
+    filename_label = ""
 
-    # Helper to process a single file path
-    def process_file_path(path, source_label):
-        fname = os.path.basename(path)
-        extracted = UniversalExtractor.extract(path)
-        
-        # Limit extracted text size for the model context (e.g. 150k chars)
-        if len(extracted) > 150000:
-            extracted = extracted[:150000] + "\n... [Gekürzt wegen Länge]"
+    # 1. File Upload (Browser)
+    if attach_type == "Datei uploaden" and uploaded_file:
+        try:
+            filename_label = os.path.basename(uploaded_file.name)
+            extracted_text = UniversalExtractor.extract(uploaded_file.name)
+            content_to_add = f"[Datei: {filename_label}]\n\n{extracted_text}"
+        except Exception as e:
+            return hist, f"❌ Fehler: {str(e)}"
+
+    # 2. Storage Box
+    elif attach_type == "Storage Box Datei" and sb_files:
+        try:
+            f_path = sb_files[0] if isinstance(sb_files, list) else sb_files
+            if not f_path.startswith("/"):
+                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
             
-        full_block = f"\n\n=== 📄 Datei: {fname} ({source_label}) ===\n{extracted}\n"
-        
-        # Creating a collapsible summary for the UI to prevent rendering crash
-        # Gradio supports Markdown, so we use <details>
-        display_block = f"""
-<details>
-<summary>📄 Datei: {fname} ({len(extracted)} Zeichen)</summary>
+            filename_label = os.path.basename(f_path)
+            if os.path.exists(f_path):
+                local_temp = copy_storage_file_to_temp(f_path)
+                extracted_text = UniversalExtractor.extract(local_temp)
+                content_to_add = f"[Datei: {filename_label}]\n\n{extracted_text}"
+                try: os.remove(local_temp)
+                except: pass
+            else: return hist, "❌ Datei nicht gefunden"
+        except Exception as e: return hist, f"❌ Lesefehler: {str(e)}"
 
-{extracted[:1000]} 
+    # 3. Transcript
+    elif attach_type == "Transkript":
+        if not attach_id: return hist, "❌ ID fehlt"
+        db = get_db()
+        trans = db.query(Transcription).filter(Transcription.id == int(attach_id), Transcription.user_id == user_id).first()
+        db.close()
+        if trans: content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
+        else: return hist, "❌ Nicht gefunden"
 
-... (Text ausgeblendet, aber an KI gesendet) ...
-</details>
-"""
-        return full_block, display_block
+    # 4. Vision
+    elif attach_type == "Vision-Ergebnis":
+        if not attach_id: return hist, "❌ ID fehlt"
+        db = get_db()
+        vis = db.query(VisionResult).filter(VisionResult.id == int(attach_id), VisionResult.user_id == user_id).first()
+        db.close()
+        if vis: content_to_add = f"[Vision #{vis.id}]\n\n{vis.result}"
+        else: return hist, "❌ Nicht gefunden"
 
-    try:
-        # 1. Browser Upload
-        if attach_type == "Datei uploaden" and uploaded_files:
-            files_list = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
-            for file_obj in files_list:
-                f, d = process_file_path(file_obj.name, "Upload")
-                full_content_to_add += f
-                display_content_to_add += d
-                status_msg.append(os.path.basename(file_obj.name))
+    # 5. Custom Text
+    elif attach_type == "Eigener Text":
+        if not custom_text: return hist, "❌ Text fehlt"
+        content_to_add = custom_text
 
-        # 2. Storage Box
-        elif attach_type == "Storage Box Datei" and sb_files:
-            files_list = sb_files if isinstance(sb_files, list) else [sb_files]
-            for f_path in files_list:
-                if not f_path.startswith("/"): f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
-                if os.path.exists(f_path):
-                    local_temp = copy_storage_file_to_temp(f_path)
-                    f, d = process_file_path(local_temp, "Cloud")
-                    full_content_to_add += f
-                    display_content_to_add += d
-                    status_msg.append(os.path.basename(f_path))
-                    try: os.remove(local_temp)
-                    except: pass
-
-        # 3. Transcript
-        elif attach_type == "Transkript":
-            if not attach_id: return hist, "❌ ID fehlt"
-            db = get_db()
-            trans = db.query(Transcription).filter(Transcription.id == int(attach_id), Transcription.user_id == user_id).first()
-            db.close()
-            if trans: 
-                full_content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
-                display_content_to_add = f"**[Transkript #{trans.id} angehängt]** ({len(trans.original_text)} Zeichen)"
-                status_msg.append(f"Transkript {trans.id}")
-
-        # 4. Vision
-        elif attach_type == "Vision-Ergebnis":
-            if not attach_id: return hist, "❌ ID fehlt"
-            db = get_db()
-            vis = db.query(VisionResult).filter(VisionResult.id == int(attach_id), VisionResult.user_id == user_id).first()
-            db.close()
-            if vis: 
-                full_content_to_add = f"[Vision #{vis.id}]\n\n{vis.result}"
-                display_content_to_add = f"**[Vision #{vis.id} angehängt]**"
-                status_msg.append(f"Vision {vis.id}")
-
-        # 5. Custom Text
-        elif attach_type == "Eigener Text":
-            if custom_text: 
-                full_content_to_add = custom_text
-                display_content_to_add = custom_text # Custom text is usually short enough
-                status_msg.append("Eigener Text")
-
-    except Exception as e:
-        logger.exception(f"Attachment Error: {e}")
-        return hist, f"🔥 Fehler: {str(e)}"
-
-    # Update Chat History
     if not hist: hist = []
+    if content_to_add:
+        if len(content_to_add) > 100000: # Truncate safety
+            content_to_add = content_to_add[:100000] + "\n... [Gekürzt]"
+        hist.append({"role": "user", "content": content_to_add})
+        return hist, f"✅ '{filename_label or 'Inhalt'}' angehängt"
     
-    if full_content_to_add:
-        # We append a dictionary with 'content' for the LLM
-        # BUT we render 'display_content_to_add' for the user
-        # Note: Standard Gradio Chatbot displays 'content' by default. 
-        # To support different display vs payload, we trick it:
-        # We add the display version to the visible history, 
-        # but the wrapper `run_chat` needs to look at a separate "state" or we rely on the fact 
-        # that we are passing the whole history to the LLM.
-        
-        # SIMPLE FIX: Just add the payload. The <details> tag in `display_content_to_add` 
-        # is Markdown, so it should render fine in the bot AND be readable by the LLM 
-        # (LLMs understand HTML tags often, or we use the full text).
-        
-        # Actually, best approach for Gradio Chatbot (type="messages"):
-        # Just use the full text. If it crashes, it's a browser limit.
-        # Use the truncated version if > 50k chars for UI stability?
-        
-        # Let's try adding the FULL text but wrap it in the Markdown <details> block
-        # so the browser doesn't try to render 100 pages of text at once visible.
-        
-        final_msg_content = ""
-        if len(full_content_to_add) > 2000:
-             # Wrap big content in collapsible detail
-             final_msg_content = f"<details><summary>📎 Angehängter Inhalt ({len(full_content_to_add)} Zeichen)</summary>\n\n{full_content_to_add}\n\n</details>"
-        else:
-             final_msg_content = full_content_to_add
-            
-        hist.append({"role": "user", "content": final_msg_content})
-        return hist, f"✅ Angehängt: {', '.join(status_msg)}"
-    
-    return hist, "❌ Nichts ausgewählt"
+    return hist, "❌ Nichts zum Anhängen"
 
 def get_user_prompt_choices(user_state):
     """Get list of user's custom prompt names for dropdown"""
@@ -3508,6 +3426,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 label="Modell", 
                                 scale=4
                             )
+                            c_model = gr.Dropdown(PROVIDERS["Scaleway"]["chat_models"], value=PROVIDERS["Scaleway"]["chat_models"][0], label="Modell", scale=4)
                             c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=60)
 
                         c_badge = gr.HTML(value=PROVIDERS["Scaleway"]["badge"])
@@ -3623,9 +3542,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 outputs=[chat_load_status, old_chats, c_history_state]
                             )
 
-                        # 3. Attachments & Prompts
+                        # 3. Attachments & Prompts (Closed)
                         with gr.Accordion("📎 Inhalt & Prompts", open=False):
                             
+                            # Custom Prompts
                             gr.Markdown("**📝 Vorlagen**")
                             with gr.Row():
                                 c_prompt_select = gr.Dropdown(choices=[], label="Vorlage wählen", scale=2)
@@ -3634,42 +3554,33 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             
                             gr.Markdown("---")
                             
+                            # Content Attachments
                             gr.Markdown("**📎 Anhang**")
-                            gr.Markdown("_Hinweis: Mehrere Dateien möglich. Inhalte werden extrahiert (OCR/Text)._", visible=True)
-                            
                             attach_type = gr.Radio(
                                 ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"],
                                 value="Transkript",
                                 label="Typ"
                             )
                             
-                            attach_id = gr.Number(label="ID", precision=0, visible=True)
-                            attach_custom = gr.Textbox(label="Text", lines=3, visible=False)
+                            # Dynamic inputs
+                            attach_id = gr.Number(label="ID (Transkript/Vision)", precision=0, visible=True)
+                            attach_custom = gr.Textbox(label="Text einfügen", lines=3, visible=False)
+                            attach_file = gr.File(label="Datei wählen", visible=False)
                             
-                            attach_file = gr.File(
-                                label="Dateien wählen", 
-                                visible=False, 
-                                file_count="multiple", 
-                                type="filepath"
-                            )
-                            
+                            # STORAGE BOX BROWSER FOR CHAT
                             with gr.Group(visible=False) as sb_group:
                                 gr.Markdown("Dateien auf Server:")
                                 attach_sb_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*",
-                                    height=200,
-                                    file_count="multiple"
+                                    height=200
                                 )
-                                sb_refresh_btn = gr.Button("🔄", size="sm")
+                                sb_refresh_btn = gr.Button("🔄 Aktualisieren", size="sm")
 
-                            with gr.Row():
-                                attach_btn = gr.Button("➕ Anhängen", variant="secondary")
-                                undo_attach_btn = gr.Button("↩️ Rückgängig", variant="stop")
-                            
+                            attach_btn = gr.Button("➕ An Chat anhängen", variant="secondary")
                             attach_status = gr.Markdown("")
 
-                            # Toggle Logic
+                            # Toggle visibility
                             def toggle_attach_inputs(atype):
                                 return (
                                     gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]),
@@ -3684,22 +3595,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 [attach_id, attach_custom, attach_file, sb_group]
                             )
                             
-                            def refresh_chat_sb(): return gr.update(value=None)
+                            # Refresh Logic for Chat
+                            def refresh_chat_sb():
+                                return gr.update(value=None)
                             sb_refresh_btn.click(refresh_chat_sb, outputs=attach_sb_browser)
-                            
-                            # Attach Event
-                            attach_btn.click(
-                                attach_content_to_chat, 
-                                inputs=[c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser, session_state], 
-                                outputs=[c_bot, attach_status]
-                            )
-                            
-                            # Undo Event
-                            undo_attach_btn.click(
-                                undo_last_attachment,
-                                inputs=[c_bot],
-                                outputs=[c_bot, attach_status]
-                            )
 
                 # --- EVENT WIRING ---
 
@@ -5254,7 +5153,7 @@ if __name__ == "__main__":
         app, 
         host="0.0.0.0", 
         port=7860, 
-        timeout_graceful_shutdown=1,
+        timeout_graceful_shutdown=1, # <--- THE FIX
         log_level="info"
     )
     server = uvicorn.Server(config)

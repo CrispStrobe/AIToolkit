@@ -3088,54 +3088,38 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
         return hist, "❌ Bitte anmelden"
     
     user_id = user_state["id"]
-    full_content_to_add = ""
-    display_content_to_add = "" # Shorter version for UI
+    content_to_add = ""
     status_msg = []
 
     # Helper to process a single file path
     def process_file_path(path, source_label):
         fname = os.path.basename(path)
         extracted = UniversalExtractor.extract(path)
-        
-        # Limit extracted text size for the model context (e.g. 150k chars)
-        if len(extracted) > 150000:
-            extracted = extracted[:150000] + "\n... [Gekürzt wegen Länge]"
-            
-        full_block = f"\n\n=== 📄 Datei: {fname} ({source_label}) ===\n{extracted}\n"
-        
-        # Creating a collapsible summary for the UI to prevent rendering crash
-        # Gradio supports Markdown, so we use <details>
-        display_block = f"""
-<details>
-<summary>📄 Datei: {fname} ({len(extracted)} Zeichen)</summary>
-
-{extracted[:1000]} 
-
-... (Text ausgeblendet, aber an KI gesendet) ...
-</details>
-"""
-        return full_block, display_block
+        return f"\n\n=== 📄 Datei: {fname} ({source_label}) ===\n{extracted}\n"
 
     try:
-        # 1. Browser Upload
+        # 1. Browser Upload (Multiple)
         if attach_type == "Datei uploaden" and uploaded_files:
+            # Ensure it's a list
             files_list = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
+            
             for file_obj in files_list:
-                f, d = process_file_path(file_obj.name, "Upload")
-                full_content_to_add += f
-                display_content_to_add += d
+                # Gradio passes file paths in .name
+                content_to_add += process_file_path(file_obj.name, "Upload")
                 status_msg.append(os.path.basename(file_obj.name))
 
-        # 2. Storage Box
+        # 2. Storage Box (Multiple)
         elif attach_type == "Storage Box Datei" and sb_files:
+            # Ensure it's a list
             files_list = sb_files if isinstance(sb_files, list) else [sb_files]
+            
             for f_path in files_list:
-                if not f_path.startswith("/"): f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+                if not f_path.startswith("/"):
+                    f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+                
                 if os.path.exists(f_path):
                     local_temp = copy_storage_file_to_temp(f_path)
-                    f, d = process_file_path(local_temp, "Cloud")
-                    full_content_to_add += f
-                    display_content_to_add += d
+                    content_to_add += process_file_path(local_temp, "Cloud")
                     status_msg.append(os.path.basename(f_path))
                     try: os.remove(local_temp)
                     except: pass
@@ -3147,8 +3131,7 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
             trans = db.query(Transcription).filter(Transcription.id == int(attach_id), Transcription.user_id == user_id).first()
             db.close()
             if trans: 
-                full_content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
-                display_content_to_add = f"**[Transkript #{trans.id} angehängt]** ({len(trans.original_text)} Zeichen)"
+                content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
                 status_msg.append(f"Transkript {trans.id}")
 
         # 4. Vision
@@ -3158,56 +3141,31 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
             vis = db.query(VisionResult).filter(VisionResult.id == int(attach_id), VisionResult.user_id == user_id).first()
             db.close()
             if vis: 
-                full_content_to_add = f"[Vision #{vis.id}]\n\n{vis.result}"
-                display_content_to_add = f"**[Vision #{vis.id} angehängt]**"
+                content_to_add = f"[Vision #{vis.id}]\n\n{vis.result}"
                 status_msg.append(f"Vision {vis.id}")
 
         # 5. Custom Text
         elif attach_type == "Eigener Text":
             if custom_text: 
-                full_content_to_add = custom_text
-                display_content_to_add = custom_text # Custom text is usually short enough
+                content_to_add = custom_text
                 status_msg.append("Eigener Text")
 
     except Exception as e:
         logger.exception(f"Attachment Error: {e}")
         return hist, f"🔥 Fehler: {str(e)}"
 
-    # Update Chat History
+    # Append to Chat
     if not hist: hist = []
     
-    if full_content_to_add:
-        # We append a dictionary with 'content' for the LLM
-        # BUT we render 'display_content_to_add' for the user
-        # Note: Standard Gradio Chatbot displays 'content' by default. 
-        # To support different display vs payload, we trick it:
-        # We add the display version to the visible history, 
-        # but the wrapper `run_chat` needs to look at a separate "state" or we rely on the fact 
-        # that we are passing the whole history to the LLM.
-        
-        # SIMPLE FIX: Just add the payload. The <details> tag in `display_content_to_add` 
-        # is Markdown, so it should render fine in the bot AND be readable by the LLM 
-        # (LLMs understand HTML tags often, or we use the full text).
-        
-        # Actually, best approach for Gradio Chatbot (type="messages"):
-        # Just use the full text. If it crashes, it's a browser limit.
-        # Use the truncated version if > 50k chars for UI stability?
-        
-        # Let's try adding the FULL text but wrap it in the Markdown <details> block
-        # so the browser doesn't try to render 100 pages of text at once visible.
-        
-        final_msg_content = ""
-        if len(full_content_to_add) > 2000:
-             # Wrap big content in collapsible detail
-             final_msg_content = f"<details><summary>📎 Angehängter Inhalt ({len(full_content_to_add)} Zeichen)</summary>\n\n{full_content_to_add}\n\n</details>"
-        else:
-             final_msg_content = full_content_to_add
+    if content_to_add:
+        # Safety truncate if huge
+        if len(content_to_add) > 150000:
+            content_to_add = content_to_add[:150000] + "\n\n[... Inhalt gekürzt (Max Limit) ...]"
             
-        hist.append({"role": "user", "content": final_msg_content})
+        hist.append({"role": "user", "content": content_to_add})
         return hist, f"✅ Angehängt: {', '.join(status_msg)}"
     
     return hist, "❌ Nichts ausgewählt"
-
 def get_user_prompt_choices(user_state):
     """Get list of user's custom prompt names for dropdown"""
     if not user_state or not user_state.get("id"): return []
@@ -5254,7 +5212,7 @@ if __name__ == "__main__":
         app, 
         host="0.0.0.0", 
         port=7860, 
-        timeout_graceful_shutdown=1,
+        timeout_graceful_shutdown=1, # <--- THE FIX
         log_level="info"
     )
     server = uvicorn.Server(config)
