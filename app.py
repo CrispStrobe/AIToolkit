@@ -1259,6 +1259,7 @@ def get_default_model_for_user(user_id, provider):
 
 # API Keys (aus Environment oder direkt hier eintragen)
 API_KEYS = {
+    "GLADIA": os.environ.get("GLADIA_API_KEY", "your_key"),
     "SCALEWAY": os.environ.get("SCALEWAY_API_KEY", "your_key"),
     "NEBIUS": os.environ.get("NEBIUS_API_KEY", "your_key"),
     "MISTRAL": os.environ.get("MISTRAL_API_KEY", "your_key"),
