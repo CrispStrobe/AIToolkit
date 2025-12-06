@@ -2849,93 +2849,280 @@ def select_chat_row(evt: gr.SelectData, state_data):
         logger.error(f"Selection error: {e}")
     return None
 
+# ==========================================
+# 📄 UNIVERSAL CONTENT EXTRACTOR (Enhanced & Debuggable)
+# ==========================================
+import mimetypes
+import chardet
+import shutil
+import subprocess
+import traceback  # NEW: For detailed error logging
+from io import StringIO
+
+# Try imports and log immediately what is missing
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    from docx import Document
+    import fitz  # PyMuPDF
+    import pandas as pd
+    from pypdf import PdfReader # NEW: Pure Python fallback
+except ImportError as e:
+    logger.warning(f"⚠️ Missing extraction library: {e}. Functionality will be limited.")
+
+class UniversalExtractor:
+    @staticmethod
+    def extract(filepath):
+        """Determines file type and extracts text content using robust methods + fallbacks"""
+        if not filepath or not os.path.exists(filepath):
+            return "❌ Datei nicht gefunden."
+            
+        mime_type, _ = mimetypes.guess_type(filepath)
+        ext = os.path.splitext(filepath)[1].lower()
+        filename = os.path.basename(filepath)
+        
+        logger.info(f"🔍 Extracting: {filename} (Type: {ext})")
+        
+        try:
+            # 1. Images (OCR)
+            if (mime_type and mime_type.startswith('image/')) or ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff']:
+                return UniversalExtractor._extract_image(filepath)
+            
+            # 2. PDF (Chain: PyMuPDF -> PyPDF -> CLI -> OCR)
+            elif ext == '.pdf':
+                return UniversalExtractor._extract_pdf(filepath)
+            
+            # 3. Modern Word (.docx)
+            elif ext == '.docx':
+                try: return UniversalExtractor._extract_docx(filepath)
+                except Exception as e:
+                    logger.warning(f"Docx-Lib failed: {e}, trying CLI...")
+                    return UniversalExtractor._extract_with_cli_tool(filepath)
+
+            # 4. Excel (.xls, .xlsx, .csv)
+            elif ext in ['.xls', '.xlsx', '.csv']:
+                return UniversalExtractor._extract_excel(filepath)
+
+            # 5. Ebooks & Legacy Docs (.epub, .mobi, .doc, .odt, .rtf)
+            elif ext in ['.epub', '.mobi', '.azw', '.azw3', '.fb2', '.doc', '.odt', '.rtf', '.html']:
+                return UniversalExtractor._extract_with_cli_tool(filepath)
+                
+            # 6. Text/Code
+            else:
+                return UniversalExtractor._extract_plain_text(filepath)
+                
+        except Exception as e:
+            # LOG THE FULL ERROR TRACE
+            logger.error(f"🔥 Critical Extraction Error for {filename}: {str(e)}")
+            logger.error(traceback.format_exc()) 
+            return f"[Systemfehler beim Lesen von {filename}: {str(e)}]"
+
+    # --- INTERNAL HANDLERS ---
+
+    @staticmethod
+    def _extract_with_cli_tool(input_path):
+        """Uses ebook-converter, calibre, or pandoc"""
+        tool = shutil.which("ebook-converter") or shutil.which("ebook-convert") or shutil.which("pandoc")
+        
+        if not tool:
+            logger.warning("No CLI converter tool found (ebook-converter/calibre/pandoc)")
+            return "[Kein Konverter installiert]"
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
+                out_path = tmp.name
+
+            cmd = [tool, input_path, out_path]
+            if "pandoc" in tool:
+                cmd = [tool, input_path, "-t", "plain", "-o", out_path]
+
+            logger.info(f"Running CLI: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode != 0:
+                logger.error(f"CLI stderr: {result.stderr}")
+                # Don't return error yet, file might still exist
+                
+            if os.path.exists(out_path):
+                with open(out_path, 'r', encoding='utf-8', errors='replace') as f:
+                    text = f.read()
+                os.remove(out_path)
+                if text.strip(): return text
+
+            return f"[CLI Konvertierung fehlgeschlagen: {result.stderr}]"
+
+        except Exception as e:
+            logger.error(f"CLI Tool Error: {e}")
+            return f"[CLI Fehler: {str(e)}]"
+
+    @staticmethod
+    def _extract_image(path):
+        try:
+            # Check if tesseract is installed
+            if not shutil.which("tesseract"):
+                return "[Fehler: 'tesseract' ist nicht installiert. sudo apt install tesseract-ocr]"
+                
+            text = pytesseract.image_to_string(Image.open(path), lang='deu+eng')
+            return f"[OCR-Ergebnis]:\n{text}" if text.strip() else "[Kein Text im Bild erkannt]"
+        except Exception as e:
+            logger.error(f"OCR Error: {e}")
+            return f"[OCR Fehler: {str(e)}]"
+
+    @staticmethod
+    def _extract_pdf(path):
+        """Chain of Responsibility for PDFs"""
+        errors = []
+        
+        # Method A: PyMuPDF (Fastest & Best Layout)
+        try:
+            text = ""
+            with fitz.open(path) as doc:
+                for page in doc: text += page.get_text() + "\n"
+            if len(text.strip()) > 50: 
+                return text
+            else:
+                errors.append("PyMuPDF: Text too short (Scanned?)")
+        except Exception as e:
+            errors.append(f"PyMuPDF Error: {e}")
+            logger.warning(f"PyMuPDF failed: {e}")
+
+        # Method B: PyPDF (Pure Python Fallback)
+        try:
+            reader = PdfReader(path)
+            text = ""
+            for page in reader.pages:
+                text += (page.extract_text() or "") + "\n"
+            if len(text.strip()) > 50:
+                return f"[Extracted via PyPDF]\n{text}"
+            else:
+                errors.append("PyPDF: Text too short")
+        except Exception as e:
+            errors.append(f"PyPDF Error: {e}")
+
+        # Method C: CLI Tool (ebook-converter)
+        try:
+            text = UniversalExtractor._extract_with_cli_tool(path)
+            if "Fehler" not in text and len(text) > 50:
+                return f"[Extracted via CLI]\n{text}"
+        except Exception as e:
+             errors.append(f"CLI Error: {e}")
+
+        # Method D: OCR (Last Resort for Scans)
+        logger.info("All PDF text methods failed. Attempting OCR...")
+        try:
+            return UniversalExtractor._extract_scanned_pdf(path)
+        except Exception as e:
+            errors.append(f"OCR Error: {e}")
+            
+        logger.error(f"PDF Extraction completely failed. Log: {errors}")
+        return f"[PDF konnte nicht gelesen werden. Errors: {'; '.join(errors)}]"
+
+    @staticmethod
+    def _extract_scanned_pdf(path):
+        try:
+            text = "[HINWEIS: OCR Scan Modus]\n"
+            # Only do first 5 pages to prevent server timeout/hang
+            images = convert_from_path(path, first_page=1, last_page=5) 
+            for i, img in enumerate(images):
+                text += f"\n--- Seite {i+1} ---\n"
+                text += pytesseract.image_to_string(img, lang='deu+eng')
+            return text
+        except Exception as e:
+            logger.error(f"Scan extraction error: {e}")
+            raise e
+
+    @staticmethod
+    def _extract_docx(path):
+        doc = Document(path)
+        return "\n".join([p.text for p in doc.paragraphs])
+
+    @staticmethod
+    def _extract_excel(path):
+        try:
+            if path.endswith('.csv'): df = pd.read_csv(path)
+            else: df = pd.read_excel(path)
+            return df.to_markdown(index=False)
+        except Exception as e:
+            return f"[Excel Fehler: {str(e)}]"
+
+    @staticmethod
+    def _extract_plain_text(path):
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read(50000)
+                enc = chardet.detect(raw)['encoding'] or 'utf-8'
+            with open(path, 'r', encoding=enc, errors='replace') as f:
+                content = f.read()
+            if "\0" in content: # Binary fallback
+                return UniversalExtractor._extract_with_cli_tool(path)
+            return content
+        except Exception as e:
+            return f"[Text-Lese-Fehler: {str(e)}]"
+
 def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_file, sb_files, user_state):
-    """Attach content to chat using user_state"""
-    # 1. Security Check
+    """Attach content using UniversalExtractor"""
     if not user_state or not user_state.get("id"):
         return hist, "❌ Bitte anmelden"
     
     user_id = user_state["id"]
     content_to_add = ""
+    filename_label = ""
 
-    # 2. Handle File Upload (Browser)
+    # 1. File Upload (Browser)
     if attach_type == "Datei uploaden" and uploaded_file:
         try:
-            filename = os.path.basename(uploaded_file.name)
-            # Simple check for text files
-            if filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.py', '.js', '.html', '.css', '.xml', '.yaml')):
-                with open(uploaded_file.name, "r", encoding="utf-8", errors='ignore') as f:
-                    file_content = f.read()
-                content_to_add = f"[Datei Inhalt: {filename}]\n\n{file_content}"
-            else:
-                content_to_add = f"[Datei hochgeladen: {filename}] (Inhalt konnte nicht als Text extrahiert werden, aber Datei liegt vor.)"
+            filename_label = os.path.basename(uploaded_file.name)
+            extracted_text = UniversalExtractor.extract(uploaded_file.name)
+            content_to_add = f"[Datei: {filename_label}]\n\n{extracted_text}"
         except Exception as e:
-            return hist, f"❌ Fehler beim Lesen der Datei: {str(e)}"
+            return hist, f"❌ Fehler: {str(e)}"
 
-    # 3. Handle Storage Box File
+    # 2. Storage Box
     elif attach_type == "Storage Box Datei" and sb_files:
         try:
-            # FileExplorer returns list of files
             f_path = sb_files[0] if isinstance(sb_files, list) else sb_files
-            
-            # Sanitize path
             if not f_path.startswith("/"):
                 f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
             
-            filename = os.path.basename(f_path)
-            
-            # We try to read text files directly
-            if filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.html', '.py', '.js')):
-                with open(f_path, "r", encoding="utf-8", errors='ignore') as f:
-                    content = f.read()
-                content_to_add = f"[Datei aus Cloud: {filename}]\n\n{content}"
-            else:
-                content_to_add = f"[Datei aus Cloud: {filename}] (Pfad: {f_path})"
-        except Exception as e:
-            return hist, f"❌ Lesefehler: {str(e)}"
+            filename_label = os.path.basename(f_path)
+            if os.path.exists(f_path):
+                local_temp = copy_storage_file_to_temp(f_path)
+                extracted_text = UniversalExtractor.extract(local_temp)
+                content_to_add = f"[Datei: {filename_label}]\n\n{extracted_text}"
+                try: os.remove(local_temp)
+                except: pass
+            else: return hist, "❌ Datei nicht gefunden"
+        except Exception as e: return hist, f"❌ Lesefehler: {str(e)}"
 
-    # 4. Handle Transcript (FIXED: Uses user_id)
+    # 3. Transcript
     elif attach_type == "Transkript":
         if not attach_id: return hist, "❌ ID fehlt"
         db = get_db()
-        # Query using user_id from state
-        trans = db.query(Transcription).filter(
-            Transcription.id == int(attach_id), 
-            Transcription.user_id == user_id
-        ).first()
+        trans = db.query(Transcription).filter(Transcription.id == int(attach_id), Transcription.user_id == user_id).first()
         db.close()
-        
-        if trans: 
-            content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
-        else: 
-            return hist, "❌ Transkript nicht gefunden"
+        if trans: content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
+        else: return hist, "❌ Nicht gefunden"
 
-    # 5. Handle Vision (FIXED: Uses user_id)
+    # 4. Vision
     elif attach_type == "Vision-Ergebnis":
         if not attach_id: return hist, "❌ ID fehlt"
         db = get_db()
-        # Query using user_id from state
-        vision = db.query(VisionResult).filter(
-            VisionResult.id == int(attach_id), 
-            VisionResult.user_id == user_id
-        ).first()
+        vis = db.query(VisionResult).filter(VisionResult.id == int(attach_id), VisionResult.user_id == user_id).first()
         db.close()
-        
-        if vision: 
-            content_to_add = f"[Vision #{vision.id}]\n\n{vision.result}"
-        else: 
-            return hist, "❌ Vision nicht gefunden"
+        if vis: content_to_add = f"[Vision #{vis.id}]\n\n{vis.result}"
+        else: return hist, "❌ Nicht gefunden"
 
-    # 6. Handle Custom Text
+    # 5. Custom Text
     elif attach_type == "Eigener Text":
         if not custom_text: return hist, "❌ Text fehlt"
         content_to_add = custom_text
 
-    # Add to chat history
     if not hist: hist = []
     if content_to_add:
+        if len(content_to_add) > 100000: # Truncate safety
+            content_to_add = content_to_add[:100000] + "\n... [Gekürzt]"
         hist.append({"role": "user", "content": content_to_add})
-        return hist, f"✅ {attach_type} angehängt"
+        return hist, f"✅ '{filename_label or 'Inhalt'}' angehängt"
     
     return hist, "❌ Nichts zum Anhängen"
 
