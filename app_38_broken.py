@@ -6,10 +6,8 @@
 # (at your option) any later version.
 
 # /var/www/transkript_app/app.py
-
 import gradio as gr
 import os
-from typing import Tuple, List, Dict, Optional
 
 # --- FORCE FFMPEG PATH ---
 # Explicitly tell Python where to find the tools
@@ -204,8 +202,8 @@ class UserSettings(Base):
     
     # Attachment & Chunking Settings
     auto_chunk_enabled = Column(Boolean, default=True)
-    chunk_size = Column(Integer, default=4000)
-    chunk_overlap = Column(Integer, default=200)
+    chunk_size = Column(Integer, default=4000)  # in tokens
+    chunk_overlap = Column(Integer, default=200)  # in tokens
     
     # Chat Settings
     auto_truncate_history = Column(Boolean, default=True)
@@ -218,7 +216,8 @@ class UserSettings(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    user = relationship("User", back_populates="settings")
+    # Relationship
+    user = relationship("User", backref="settings")
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -518,7 +517,7 @@ def update_user_settings(user_id: int, **kwargs):
         return False, f"🔥 Fehler: {str(e)}"
     finally:
         db.close()
-
+        
 def delete_generated_image(img_id: int, user_id: int):
     """Delete a generated image safely"""
     db = get_db()
@@ -1960,7 +1959,7 @@ def get_model_context_limit(provider: str, model: str) -> int:
     
     return defaults.get(provider, 4096)
 
-def check_content_fits_context(content: str, provider: str, model: str, reserve_tokens: int = 1000) -> Tuple[bool, int, int]:
+def check_content_fits_context(content: str, provider: str, model: str, reserve_tokens: int = 1000) -> tuple[bool, int, int]:
     """
     Check if content fits within model's context window.
     
@@ -1969,11 +1968,11 @@ def check_content_fits_context(content: str, provider: str, model: str, reserve_
     """
     estimated = estimate_tokens(content)
     limit = get_model_context_limit(provider, model)
-    usable_limit = limit - reserve_tokens
+    usable_limit = limit - reserve_tokens  # Reserve space for response
     
     return (estimated <= usable_limit, estimated, limit)
 
-def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 200) -> List[str]:
+def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 200) -> list[str]:
     """
     Split text into overlapping chunks that fit within token limits.
     
@@ -1985,9 +1984,10 @@ def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 
     Returns:
         List of text chunks
     """
-    max_chars = max_tokens * 4
+    max_chars = max_tokens * 4  # Convert tokens to rough character count
     overlap_chars = overlap * 4
     
+    # Split by paragraphs first
     paragraphs = text.split('\n\n')
     chunks = []
     current_chunk = []
@@ -1998,12 +1998,13 @@ def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 
         
         if current_size + para_size <= max_chars:
             current_chunk.append(para)
-            current_size += para_size + 2
+            current_size += para_size + 2  # +2 for newlines
         else:
             if current_chunk:
                 chunk_text = '\n\n'.join(current_chunk)
                 chunks.append(chunk_text)
                 
+                # Start new chunk with overlap from previous
                 if overlap_chars > 0 and chunks:
                     overlap_text = chunks[-1][-overlap_chars:]
                     current_chunk = [overlap_text, para]
@@ -2012,10 +2013,12 @@ def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 
                     current_chunk = [para]
                     current_size = para_size
             else:
+                # Single paragraph too large - split by sentences
                 sentences = para.split('. ')
                 current_chunk = [sentences[0]]
                 current_size = len(sentences[0])
     
+    # Add final chunk
     if current_chunk:
         chunks.append('\n\n'.join(current_chunk))
     

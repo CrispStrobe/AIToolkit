@@ -6,10 +6,8 @@
 # (at your option) any later version.
 
 # /var/www/transkript_app/app.py
-
 import gradio as gr
 import os
-from typing import Tuple, List, Dict, Optional
 
 # --- FORCE FFMPEG PATH ---
 # Explicitly tell Python where to find the tools
@@ -105,7 +103,7 @@ class User(Base):
     generated_images = relationship("GeneratedImage", back_populates="user", cascade="all, delete-orphan")
     custom_prompts = relationship("CustomPrompt", back_populates="user", cascade="all, delete-orphan")
     model_preferences = relationship("UserModelPreference", back_populates="user", cascade="all, delete-orphan")
-    settings = relationship("UserSettings", uselist=False, back_populates="user", cascade="all, delete-orphan")
+    
 class ChatHistory(Base):
     __tablename__ = "chat_history"
 
@@ -194,32 +192,7 @@ class UserModelPreference(Base):
     __table_args__ = (
         UniqueConstraint('user_id', 'provider', 'model_id', name='_user_provider_model_uc'),
     )
-
-class UserSettings(Base):
-    """Store user preferences for app behavior"""
-    __tablename__ = "user_settings"
     
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
-    
-    # Attachment & Chunking Settings
-    auto_chunk_enabled = Column(Boolean, default=True)
-    chunk_size = Column(Integer, default=4000)
-    chunk_overlap = Column(Integer, default=200)
-    
-    # Chat Settings
-    auto_truncate_history = Column(Boolean, default=True)
-    show_truncation_warning = Column(Boolean, default=True)
-    
-    # Display Preferences
-    show_token_counts = Column(Boolean, default=False)
-    compact_mode = Column(Boolean, default=False)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    user = relationship("User", back_populates="settings")
-
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -475,50 +448,6 @@ def delete_vision_result(vision_id: int, user_id: int):
     finally:
         db.close()
 
-
-def get_user_settings(user_id: int):
-    """Get or create user settings"""
-    db = get_db()
-    try:
-        settings = db.query(UserSettings).filter(UserSettings.user_id == user_id).first()
-        
-        if not settings:
-            # Create default settings
-            settings = UserSettings(user_id=user_id)
-            db.add(settings)
-            db.commit()
-            db.refresh(settings)
-        
-        return settings
-    finally:
-        db.close()
-
-def update_user_settings(user_id: int, **kwargs):
-    """Update user settings"""
-    db = SessionLocal()
-    try:
-        settings = db.query(UserSettings).filter(UserSettings.user_id == user_id).first()
-        
-        if not settings:
-            settings = UserSettings(user_id=user_id)
-            db.add(settings)
-        
-        # Update provided fields
-        for key, value in kwargs.items():
-            if hasattr(settings, key):
-                setattr(settings, key, value)
-        
-        settings.updated_at = datetime.utcnow()
-        db.commit()
-        
-        return True, "✅ Einstellungen gespeichert"
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error updating settings: {e}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
 def delete_generated_image(img_id: int, user_id: int):
     """Delete a generated image safely"""
     db = get_db()
@@ -590,32 +519,6 @@ def get_user_generated_images(user_id: int, limit: int = 50):
     ).order_by(GeneratedImage.timestamp.desc()).limit(limit).all()
     db.close()
     return results
-
-def ensure_database_schema():
-    """Ensure database schema is up to date"""
-    try:
-        # This creates tables that don't exist
-        Base.metadata.create_all(bind=engine)
-        
-        # Check for UserSettings table specifically
-        db = SessionLocal()
-        try:
-            # Try to query UserSettings - will fail if table doesn't exist
-            db.query(UserSettings).first()
-            logger.info("✅ Database schema is up to date")
-        except Exception as e:
-            logger.warning(f"UserSettings table issue: {e}")
-            # Force recreation
-            UserSettings.__table__.create(bind=engine, checkfirst=True)
-            logger.info("✅ Created UserSettings table")
-        finally:
-            db.close()
-            
-    except Exception as e:
-        logger.exception(f"Database schema check failed: {e}")
-
-# Auto-Migration
-ensure_database_schema()
 
 # Initialize default users
 create_default_users()
@@ -1262,18 +1165,12 @@ API_KEYS = {
     "SCALEWAY": os.environ.get("SCALEWAY_API_KEY", "your_key"),
     "NEBIUS": os.environ.get("NEBIUS_API_KEY", "your_key"),
     "MISTRAL": os.environ.get("MISTRAL_API_KEY", "your_key"),
+    "GLADIA": os.environ.get("GLADIA_API_KEY", "your_key"),
     "OPENROUTER": os.environ.get("OPENROUTER_API_KEY", "your_key"),
     "GROQ": os.environ.get("GROQ_API_KEY", "your_key"),
     "POE": os.environ.get("POE_API_KEY", "your_poe_key_here"),
     "DEEPGRAM": os.environ.get("DEEPGRAM_API_KEY", "your_key"), 
-    "ASSEMBLYAI": os.environ.get("ASSEMBLYAI_API_KEY", "your_key"),
-    "OPENAI": os.environ.get("OPENAI_API_KEY", "your_key"),
-    "COHERE": os.environ.get("COHERE_API_KEY", "your_key"),
-    "TOGETHER": os.environ.get("TOGETHER_API_KEY", "your_key"),
-    "OVH": os.environ.get("OVH_API_KEY", "your_key"),
-    "CEREBRAS": os.environ.get("CEREBRAS_API_KEY", "your_key"),
-    "GOOGLEAI": os.environ.get("GOOGLEAI_API_KEY", "your_key"),
-    "ANTHROPIC": os.environ.get("ANTHROPIC_API_KEY", "your_key"),
+    "ASSEMBLYAI": os.environ.get("ASSEMBLYAI_API_KEY", "your_key"), 
 }
 
 # Provider-Datenbank (Modelle, Endpoints, Compliance)
@@ -1281,307 +1178,60 @@ PROVIDERS = {
     "Scaleway": {
         "base_url": "https://api.scaleway.ai/v1",
         "key_name": "SCALEWAY",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
-        "chat_models": [
-            "gpt-oss-120b", 
-            "mistral-small-3.2-24b-instruct-2506", 
-            "gemma-3-27b-it", 
-            "qwen3-235b-a22b-instruct-2507", 
-            "llama-3.3-70b-instruct", 
-            "deepseek-r1-distill-llama-70b"
-        ],
+        "badge": "🇫🇷 <span style='color:green'><b>DSGVO-Konform</b> (Frankreich)</span>",
+        "chat_models": ["gpt-oss-120b", "mistral-small-3.2-24b-instruct-2506", "gemma-3-27b-it", "qwen3-235b-a22b-instruct-2507", "llama-3.3-70b-instruct", "deepseek-r1-distill-llama-70b"],
         "vision_models": ["pixtral-12b-2409", "mistral-small-3.1-24b-instruct-2503"],
         "audio_models": ["whisper-large-v3"],
         "image_models": ["pixtral-12b-2409"],
-        "context_limits": {
-            "gpt-oss-120b": 32768,
-            "mistral-small-3.2-24b-instruct-2506": 32768,
-            "gemma-3-27b-it": 96000,
-            "qwen3-235b-a22b-instruct-2507": 131072,
-            "llama-3.3-70b-instruct": 131072,
-            "deepseek-r1-distill-llama-70b": 8192,
-            "pixtral-12b-2409": 32768,
-            "mistral-small-3.1-24b-instruct-2503": 96000,
-            "whisper-large-v3": 16384,
-        }
     },
-    
     "Nebius": {
         "base_url": "https://api.tokenfactory.nebius.com/v1",
         "key_name": "NEBIUS",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
-        "chat_models": [
-            "deepseek-ai/DeepSeek-R1-0528",
-            "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
-            "openai/gpt-oss-120b",
-            "moonshotai/Kimi-K2-Instruct",
-            "moonshotai/Kimi-K2-Thinking",
-            "zai-org/GLM-4.5",
-            "meta-llama/Llama-3.3-70B-Instruct"
-        ],
-        "image_models": ["black-forest-labs/flux-schnell", "black-forest-labs/flux-dev"],
-        "context_limits": {
-            "deepseek-ai/DeepSeek-R1-0528": 163840,
-            "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": 131072,
-            "openai/gpt-oss-120b": 32768,
-            "moonshotai/Kimi-K2-Instruct": 128000,
-            "moonshotai/Kimi-K2-Thinking": 128000,
-            "zai-org/GLM-4.5": 128000,
-            "meta-llama/Llama-3.3-70B-Instruct": 131072,
-            "black-forest-labs/flux-schnell": 4096,
-            "black-forest-labs/flux-dev": 4096,
-        }
+        "badge": "🇪🇺 <span style='color:green'><b>DSGVO-Konform</b> (EU-Rechenzentren)</span>",
+        "chat_models": ["deepseek-ai/DeepSeek-R1-0528", "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1", "openai/gpt-oss-120b", "moonshotai/Kimi-K2-Instruct", "moonshotai/Kimi-K2-Thinking", "zai-org/GLM-4.5", "meta-llama/Llama-3.3-70B-Instruct"],
+        "image_models": ["black-forest-labs/flux-schnell", "black-forest-labs/flux-dev"]
     },
-    
     "Mistral": {
         "base_url": "https://api.mistral.ai/v1",
         "key_name": "MISTRAL",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
-        "chat_models": [
-            "mistral-large-latest",
-            "mistral-medium-2508",
-            "magistral-medium-2509",
-            "open-mistral-nemo-2407"
-        ],
+        "badge": "🇫🇷 <span style='color:green'><b>DSGVO-Konform</b> (Frankreich)</span>",
+        "chat_models": ["mistral-large-latest", "mistral-medium-2508", "magistral-medium-2509", "open-mistral-nemo-2407"],
         "vision_models": ["pixtral-large-2411", "pixtral-12b-2409", "mistral-ocr-latest"],
-        "audio_models": ["voxtral-mini-latest"],
-        "context_limits": {
-            "mistral-large-latest": 128000,
-            "mistral-medium-2508": 128000,
-            "magistral-medium-2509": 128000,
-            "open-mistral-nemo-2407": 128000,
-            "pixtral-large-2411": 128000,
-            "pixtral-12b-2409": 32768,
-            "mistral-ocr-latest": 32768,
-            "voxtral-mini-latest": 16384,
-        }
+        "audio_models": ["voxtral-mini-latest"]
     },
-    
     "Deepgram": {
         "base_url": "https://api.eu.deepgram.com/v1",
         "key_name": "DEEPGRAM",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
-        "audio_models": ["nova-2-general", "nova-3-general", "nova-2"],
-        "context_limits": {
-            "nova-2-general": 16384,
-            "nova-3-general": 16384,
-            "nova-2": 16384,
-        }
+        "badge": "🇪🇺 <span style='color:green'><b>DSGVO-Konform</b> (EU-Rechenzentren)</span>",
+        "audio_models": ["nova-2-general", "nova-3-general", "nova-2"], 
     },
-    
     "AssemblyAI": {
         "base_url": "https://api.eu.assemblyai.com/v2",
         "key_name": "ASSEMBLYAI",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
+        "badge": "🇪🇺 <span style='color:green'><b>DSGVO-Konform</b> (EU-Rechenzentren)</span>",
         "audio_models": ["universal", "slam-1"],
-        "context_limits": {
-            "universal": 16384,
-            "slam-1": 16384,
-        }
     },
-    
     "OpenRouter": {
         "base_url": "https://openrouter.ai/api/v1",
         "key_name": "OPENROUTER",
-        "badge": "🇺🇸 <b>US-Server</b> (Daten verlassen EU)",
-        "chat_models": [
-            # 1M+ Context
-            "google/gemini-2.0-pro-exp-02-05:free",
-            "google/gemini-2.0-flash-thinking-exp:free",
-            "google/gemini-2.0-flash-exp:free",
-            "google/gemini-2.5-pro-exp-03-25:free",
-            "google/gemini-flash-1.5-8b-exp",
-            # 100K+ Context
-            "deepseek/deepseek-r1-zero:free",
-            "deepseek/deepseek-r1:free",
-            "deepseek/deepseek-v3-base:free",
-            "deepseek/deepseek-chat-v3-0324:free",
-            "deepseek/deepseek-chat:free",
-            "google/gemma-3-4b-it:free",
-            "google/gemma-3-12b-it:free",
-            "qwen/qwen2.5-vl-72b-instruct:free",
-            "nvidia/llama-3.1-nemotron-70b-instruct:free",
-            "meta-llama/llama-3.2-1b-instruct:free",
-            "meta-llama/llama-3.2-11b-vision-instruct:free",
-            "meta-llama/llama-3.1-8b-instruct:free",
-            "mistralai/mistral-nemo:free",
-            # 64K-100K Context
-            "mistralai/mistral-small-3.1-24b-instruct:free",
-            "google/gemma-3-27b-it:free",
-            "qwen/qwen2.5-vl-3b-instruct:free",
-            "qwen/qwen-2.5-vl-7b-instruct:free",
-            # 32K-64K Context
-            "google/learnlm-1.5-pro-experimental:free",
-            "qwen/qwq-32b:free",
-            "google/gemini-2.0-flash-thinking-exp-1219:free",
-            "bytedance-research/ui-tars-72b:free",
-            "google/gemma-3-1b-it:free",
-            "mistralai/mistral-small-24b-instruct-2501:free",
-            "qwen/qwen-2.5-coder-32b-instruct:free",
-            "qwen/qwen-2.5-72b-instruct:free",
-            # 8K-32K Context
-            "meta-llama/llama-3.2-3b-instruct:free",
-            "qwen/qwq-32b-preview:free",
-            "deepseek/deepseek-r1-distill-qwen-32b:free",
-            "qwen/qwen2.5-vl-32b-instruct:free",
-            "deepseek/deepseek-r1-distill-llama-70b:free",
-            "qwen/qwen-2-7b-instruct:free",
-            "google/gemma-2-9b-it:free",
-            "mistralai/mistral-7b-instruct:free",
-            "microsoft/phi-3-mini-128k-instruct:free",
-            "meta-llama/llama-3-8b-instruct:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            # 4K Context
-            "huggingfaceh4/zephyr-7b-beta:free",
-        ],
-        "vision_models": [
-            "google/gemini-2.0-pro-exp-02-05:free",
-            "google/gemini-2.0-flash-thinking-exp:free",
-            "google/gemini-2.0-flash-exp:free",
-            "google/gemini-2.5-pro-exp-03-25:free",
-            "google/gemini-flash-1.5-8b-exp",
-            "qwen/qwen2.5-vl-72b-instruct:free",
-            "meta-llama/llama-3.2-11b-vision-instruct:free",
-            "mistralai/mistral-small-3.1-24b-instruct:free",
-            "google/gemma-3-27b-it:free",
-            "qwen/qwen2.5-vl-3b-instruct:free",
-            "qwen/qwen-2.5-vl-7b-instruct:free",
-            "bytedance-research/ui-tars-72b:free",
-            "qwen/qwen2.5-vl-32b-instruct:free",
-        ],
-        "audio_models": [
-            "google/gemini-2.0-flash-lite-001",
-            "mistralai/voxtral-small-24b-2507",
-            "google/gemini-2.5-flash-lite"
-        ],
-        "image_models": [
-            "google/gemini-2.5-flash-image",
-            "openai/gpt-5-image-mini",
-            "google/gemini-3-pro-image-preview",
-            "black-forest-labs/flux.2-pro",
-            "black-forest-labs/flux.2-flex"
-        ],
-        "context_limits": {
-            # 1M+ Context
-            "google/gemini-2.0-pro-exp-02-05:free": 2000000,
-            "google/gemini-2.0-flash-thinking-exp:free": 1048576,
-            "google/gemini-2.0-flash-exp:free": 1048576,
-            "google/gemini-2.5-pro-exp-03-25:free": 1000000,
-            "google/gemini-flash-1.5-8b-exp": 1000000,
-            # 100K+ Context
-            "deepseek/deepseek-r1-zero:free": 163840,
-            "deepseek/deepseek-r1:free": 163840,
-            "deepseek/deepseek-v3-base:free": 131072,
-            "deepseek/deepseek-chat-v3-0324:free": 131072,
-            "deepseek/deepseek-chat:free": 131072,
-            "google/gemma-3-4b-it:free": 131072,
-            "google/gemma-3-12b-it:free": 131072,
-            "qwen/qwen2.5-vl-72b-instruct:free": 131072,
-            "nvidia/llama-3.1-nemotron-70b-instruct:free": 131072,
-            "meta-llama/llama-3.2-1b-instruct:free": 131072,
-            "meta-llama/llama-3.2-11b-vision-instruct:free": 131072,
-            "meta-llama/llama-3.1-8b-instruct:free": 131072,
-            "mistralai/mistral-nemo:free": 128000,
-            # 64K-100K Context
-            "mistralai/mistral-small-3.1-24b-instruct:free": 96000,
-            "google/gemma-3-27b-it:free": 96000,
-            "qwen/qwen2.5-vl-3b-instruct:free": 64000,
-            "qwen/qwen-2.5-vl-7b-instruct:free": 64000,
-            # 32K-64K Context
-            "google/learnlm-1.5-pro-experimental:free": 40960,
-            "qwen/qwq-32b:free": 40000,
-            "google/gemini-2.0-flash-thinking-exp-1219:free": 40000,
-            "bytedance-research/ui-tars-72b:free": 32768,
-            "google/gemma-3-1b-it:free": 32768,
-            "mistralai/mistral-small-24b-instruct-2501:free": 32768,
-            "qwen/qwen-2.5-coder-32b-instruct:free": 32768,
-            "qwen/qwen-2.5-72b-instruct:free": 32768,
-            # 8K-32K Context
-            "meta-llama/llama-3.2-3b-instruct:free": 20000,
-            "qwen/qwq-32b-preview:free": 16384,
-            "deepseek/deepseek-r1-distill-qwen-32b:free": 16000,
-            "qwen/qwen2.5-vl-32b-instruct:free": 8192,
-            "deepseek/deepseek-r1-distill-llama-70b:free": 8192,
-            "qwen/qwen-2-7b-instruct:free": 8192,
-            "google/gemma-2-9b-it:free": 8192,
-            "mistralai/mistral-7b-instruct:free": 8192,
-            "microsoft/phi-3-mini-128k-instruct:free": 8192,
-            "meta-llama/llama-3-8b-instruct:free": 8192,
-            "meta-llama/llama-3.3-70b-instruct:free": 8000,
-            # 4K Context
-            "huggingfaceh4/zephyr-7b-beta:free": 4096,
-            # Audio/Image
-            "google/gemini-2.0-flash-lite-001": 1000000,
-            "mistralai/voxtral-small-24b-2507": 32768,
-            "google/gemini-2.5-flash-lite": 1000000,
-            "google/gemini-2.5-flash-image": 1000000,
-            "openai/gpt-5-image-mini": 128000,
-            "google/gemini-3-pro-image-preview": 1000000,
-            "black-forest-labs/flux.2-pro": 4096,
-            "black-forest-labs/flux.2-flex": 4096,
-        }
+        "badge": "🇺🇸 <span style='color:orange'><b>US-Server</b> (Daten verlassen EU)</span>",
+        "chat_models": ["z-ai/glm-4.5-air:free", "tngtech/deepseek-r1t2-chimera:free", "qwen/qwen3-235b-a22b:free", "x-ai/grok-4.1-fast:free", "google/gemini-3-pro-preview"],
+        "vision_models": ["x-ai/grok-4.1-fast:free", "amazon/nova-2-lite-v1:free", "nvidia/nemotron-nano-12b-v2-vl:free", "google/gemma-3-27b-it:free", "google/gemini-2.0-flash-exp:free", "google/gemma-3-27b-it:free"],
+        "audio_models": ["google/gemini-2.0-flash-lite-001", "mistralai/voxtral-small-24b-2507", "mistralai/voxtral-small-24b-2507", "google/gemini-2.5-flash-lite"],
+        "image_models": ["google/gemini-2.5-flash-image", "openai/gpt-5-image-mini", "google/gemini-3-pro-image-preview", "black-forest-labs/flux.2-pro", "black-forest-labs/flux.2-flex"]
     },
-    
     "Groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "key_name": "GROQ",
-        "badge": "🇺🇸 <b>US-Server</b> (Nicht DSGVO, Schnell, z.T. kostenlos)",
-        "chat_models": [
-            "deepseek-r1-distill-llama-70b",
-            "deepseek-r1-distill-qwen-32b",
-            "gemma2-9b-it",
-            "llama-3.1-8b-instant",
-            "llama-3.2-1b-preview",
-            "llama-3.2-3b-preview",
-            "llama-3.2-11b-vision-preview",
-            "llama-3.2-90b-vision-preview",
-            "llama-3.3-70b-specdec",
-            "llama-3.3-70b-versatile",
-            "llama-guard-3-8b",
-            "llama3-8b-8192",
-            "llama3-70b-8192",
-            "mistral-saba-24b",
-            "qwen-2.5-32b",
-            "qwen-2.5-coder-32b",
-            "qwen-qwq-32b",
-        ],
-        "audio_models": [
-            "distil-whisper-large-v3-en",
-            "whisper-large-v3",
-            "whisper-large-v3-turbo"
-        ],
-        "vision_models": [
-            "llama-3.2-11b-vision-preview",
-            "llama-3.2-90b-vision-preview"
-        ],
-        "context_limits": {
-            "deepseek-r1-distill-llama-70b": 8192,
-            "deepseek-r1-distill-qwen-32b": 8192,
-            "gemma2-9b-it": 8192,
-            "llama-3.1-8b-instant": 131072,
-            "llama-3.2-1b-preview": 131072,
-            "llama-3.2-3b-preview": 131072,
-            "llama-3.2-11b-vision-preview": 131072,
-            "llama-3.2-90b-vision-preview": 131072,
-            "llama-3.3-70b-specdec": 131072,
-            "llama-3.3-70b-versatile": 131072,
-            "llama-guard-3-8b": 8192,
-            "llama3-8b-8192": 8192,
-            "llama3-70b-8192": 8192,
-            "mistral-saba-24b": 32768,
-            "qwen-2.5-32b": 32768,
-            "qwen-2.5-coder-32b": 32768,
-            "qwen-qwq-32b": 32768,
-            "distil-whisper-large-v3-en": 16384,
-            "whisper-large-v3": 16384,
-            "whisper-large-v3-turbo": 16384,
-        }
+        "badge": "🇺🇸 <span style='color:orange'><b>US-Server</b> (Daten verlassen EU)</span>",
+        "chat_models": ["openai/gpt-oss-120b", "moonshotai/kimi-k2-instruct-0905", "meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.3-70b-versatile", "qwen/qwen3-32b"],
+        "audio_models": ["whisper-large-v3-turbo"],
+        "vision_models": ["meta-llama/llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-maverick-17b-128e-instruct"]
     },
-    
     "Poe": {
         "base_url": "https://api.poe.com/v1",
         "key_name": "POE",
-        "badge": "🌐 <b>Poe Official API</b> (Universal)",
+        "badge": "🌐 <span style='color:blue'><b>Poe Official API</b> (Universal)</span>",
         "chat_models": [
             "gpt-5.1-instant",
             "claude-sonnet-4.5",
@@ -1610,262 +1260,14 @@ PROVIDERS = {
             "elevenlabs-v3",
             "sonic-3.0"
         ],
-        "video_models": [
+        "video_models": [ # Neu für Poe!
             "kling-2.5-turbo-pro",
             "runway-gen-4-turbo",
             "veo-3.1"
         ],
         "supports_system": True,
-        "supports_streaming": True,
-        "context_limits": {
-            "gpt-5.1-instant": 128000,
-            "claude-sonnet-4.5": 200000,
-            "gemini-3-pro": 2000000,
-            "gpt-5.1": 128000,
-            "gpt-4o": 128000,
-            "claude-3.5-sonnet": 200000,
-            "deepseek-r1": 163840,
-            "grok-4": 131072,
-            "gpt-image-1": 4096,
-            "flux-pro-1.1-ultra": 4096,
-            "ideogram-v3": 4096,
-            "dall-e-3": 4096,
-            "playground-v3": 4096,
-            "elevenlabs-v3": 4096,
-            "sonic-3.0": 4096,
-            "kling-2.5-turbo-pro": 4096,
-            "runway-gen-4-turbo": 4096,
-            "veo-3.1": 4096,
-        }
-    },
-    
-    "OpenAI": {
-        "base_url": "https://api.openai.com/v1",
-        "key_name": "OPENAI",
-        "badge": "🇺🇸 <b>US-Server</b> (OpenAI Official)",
-        "chat_models": [
-            "gpt-3.5-turbo",
-            "gpt-3.5-turbo-0125",
-            "gpt-4",
-            "gpt-4-turbo",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o1-preview",
-            "o1-mini"
-        ],
-        "vision_models": [
-            "gpt-4-turbo",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o1-preview",
-            "o1-mini"
-        ],
-        "context_limits": {
-            "gpt-3.5-turbo": 16385,
-            "gpt-3.5-turbo-0125": 16385,
-            "gpt-3.5-turbo-instruct": 4096,
-            "gpt-4": 8192,
-            "gpt-4-turbo": 128000,
-            "gpt-4o": 128000,
-            "gpt-4o-mini": 128000,
-            "o1-preview": 128000,
-            "o1-mini": 128000,
-        }
-    },
-    
-    "Cohere": {
-        "base_url": "https://api.cohere.ai/v1",
-        "key_name": "COHERE",
-        "badge": "🇺🇸 <b>US-Server</b> (Cohere Official)",
-        "chat_models": [
-            "command-r-plus-08-2024",
-            "command-r-plus",
-            "command-r-08-2024",
-            "command-r",
-            "command",
-            "c4ai-aya-expanse-8b",
-            "c4ai-aya-expanse-32b",
-        ],
-        "context_limits": {
-            "command-r-plus-08-2024": 131072,
-            "command-r-plus-04-2024": 131072,
-            "command-r-plus": 131072,
-            "command-r-08-2024": 131072,
-            "command-r-03-2024": 131072,
-            "command-r": 131072,
-            "command": 4096,
-            "command-nightly": 131072,
-            "command-light": 4096,
-            "command-light-nightly": 4096,
-            "c4ai-aya-expanse-8b": 8192,
-            "c4ai-aya-expanse-32b": 131072,
-        }
-    },
-    
-    "Together": {
-        "base_url": "https://api.together.xyz/v1",
-        "key_name": "TOGETHER",
-        "badge": "🇺🇸 <b>US-Server</b> (Together AI)",
-        "chat_models": [
-            "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-            "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        ],
-        "vision_models": ["meta-llama/Llama-Vision-Free"],
-        "context_limits": {
-            "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": 131072,
-            "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free": 8192,
-            "meta-llama/Llama-Vision-Free": 8192,
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free": 8192,
-        }
-    },
-    
-    "OVH": {
-        "base_url": "https://llama-3-1-70b-instruct.endpoints.kepler.ai.cloud.ovh.net/api/openai_compat/v1",
-        "key_name": "OVH",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (OVH AI Endpoints)",
-        "chat_models": [
-            "ovh/codestral-mamba-7b-v0.1",
-            "ovh/deepseek-r1-distill-llama-70b",
-            "ovh/llama-3.1-70b-instruct",
-            "ovh/llama-3.1-8b-instruct",
-            "ovh/llama-3.3-70b-instruct",
-            "ovh/mistral-7b-instruct-v0.3",
-            "ovh/mistral-nemo-2407",
-            "ovh/mixtral-8x7b-instruct",
-            "ovh/qwen2.5-coder-32b-instruct",
-        ],
-        "vision_models": [
-            "ovh/llava-next-mistral-7b",
-            "ovh/qwen2.5-vl-72b-instruct"
-        ],
-        "context_limits": {
-            "ovh/codestral-mamba-7b-v0.1": 131072,
-            "ovh/deepseek-r1-distill-llama-70b": 8192,
-            "ovh/llama-3.1-70b-instruct": 131072,
-            "ovh/llama-3.1-8b-instruct": 131072,
-            "ovh/llama-3.3-70b-instruct": 131072,
-            "ovh/llava-next-mistral-7b": 8192,
-            "ovh/mistral-7b-instruct-v0.3": 32768,
-            "ovh/mistral-nemo-2407": 131072,
-            "ovh/mixtral-8x7b-instruct": 32768,
-            "ovh/qwen2.5-coder-32b-instruct": 32768,
-            "ovh/qwen2.5-vl-72b-instruct": 131072,
-        }
-    },
-    
-    "Cerebras": {
-        "base_url": "https://api.cerebras.ai/v1",
-        "key_name": "CEREBRAS",
-        "badge": "🇺🇸 <b>US-Server</b> (Cerebras Fast Inference)",
-        "chat_models": [
-            "llama3.1-8b",
-            "llama-3.3-70b"
-        ],
-        "context_limits": {
-            "llama3.1-8b": 8192,
-            "llama-3.3-70b": 8192,
-        }
-    },
-    
-    "GoogleAI": {
-        "base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "key_name": "GOOGLEAI",
-        "badge": "🇺🇸 <b>US-Server</b> (Google AI Studio)",
-        "chat_models": [
-            "gemini-1.0-pro",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-2.0-pro",
-            "gemini-2.5-pro"
-        ],
-        "vision_models": [
-            "gemini-1.5-pro",
-            "gemini-1.0-pro",
-            "gemini-1.5-flash",
-            "gemini-2.0-pro",
-            "gemini-2.5-pro"
-        ],
-        "context_limits": {
-            "gemini-1.0-pro": 32768,
-            "gemini-1.5-flash": 1000000,
-            "gemini-1.5-pro": 1000000,
-            "gemini-2.0-pro": 2000000,
-            "gemini-2.5-pro": 2000000,
-        }
-    },
-    
-    "Anthropic": {
-        "base_url": "https://api.anthropic.com/v1",
-        "key_name": "ANTHROPIC",
-        "badge": "🇺🇸 <b>US-Server</b> (Anthropic Official)",
-        "chat_models": [
-            "claude-3-7-sonnet-20250219",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20240307",
-            "claude-3-opus-20240229",
-        ],
-        "vision_models": [
-            "claude-3-7-sonnet-20250219",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20240307",
-            "claude-3-opus-20240229",
-        ],
-        "context_limits": {
-            "claude-3-7-sonnet-20250219": 128000,
-            "claude-3-5-sonnet-20241022": 200000,
-            "claude-3-5-haiku-20240307": 200000,
-            "claude-3-5-sonnet-20240620": 200000,
-            "claude-3-opus-20240229": 200000,
-            "claude-3-haiku-20240307": 200000,
-            "claude-3-sonnet-20240229": 200000,
-        }
-    },
-    
-    "HuggingFace": {
-        "base_url": "https://api-inference.huggingface.co/models",
-        "key_name": "HUGGINGFACE",
-        "badge": "🌐 <b>HuggingFace Inference</b> (Various Locations)",
-        "chat_models": [
-            "microsoft/phi-3-mini-4k-instruct",
-            "microsoft/Phi-3-mini-128k-instruct",
-            "HuggingFaceH4/zephyr-7b-beta",
-            "deepseek-ai/DeepSeek-Coder-V2-Instruct",
-            "mistralai/Mistral-7B-Instruct-v0.3",
-            "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
-            "microsoft/Phi-3.5-mini-instruct",
-            "google/gemma-2-2b-it",
-            "Qwen/Qwen2.5-7B-Instruct",
-            "tiiuae/falcon-7b-instruct",
-            "Qwen/QwQ-32B-preview",
-        ],
-        "vision_models": [
-            "Qwen/Qwen2.5-VL-7B-Instruct",
-            "Qwen/qwen2.5-vl-3b-instruct",
-            "Qwen/qwen2.5-vl-32b-instruct",
-            "Qwen/qwen2.5-vl-72b-instruct",
-        ],
-        "context_limits": {
-            "microsoft/phi-3-mini-4k-instruct": 4096,
-            "microsoft/Phi-3-mini-128k-instruct": 131072,
-            "HuggingFaceH4/zephyr-7b-beta": 8192,
-            "deepseek-ai/DeepSeek-Coder-V2-Instruct": 8192,
-            "mistralai/Mistral-7B-Instruct-v0.3": 32768,
-            "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO": 32768,
-            "microsoft/Phi-3.5-mini-instruct": 4096,
-            "google/gemma-2-2b-it": 2048,
-            "openai-community/gpt2": 1024,
-            "microsoft/phi-2": 2048,
-            "TinyLlama/TinyLlama-1.1B-Chat-v1.0": 2048,
-            "Qwen/Qwen2.5-7B-Instruct": 131072,
-            "tiiuae/falcon-7b-instruct": 8192,
-            "Qwen/QwQ-32B-preview": 32768,
-            "Qwen/Qwen2.5-VL-7B-Instruct": 64000,
-            "Qwen/qwen2.5-vl-3b-instruct": 64000,
-            "Qwen/qwen2.5-vl-32b-instruct": 8192,
-            "Qwen/qwen2.5-vl-72b-instruct": 131072,
-        }
-    },
+        "supports_streaming": True
+    }
 }
 
 def get_compliance_html(provider):
@@ -1931,161 +1333,18 @@ def logout_user():
     return f"👋 Auf Wiedersehen!", gr.update(visible=False), gr.update(visible=True), empty_state
 
 # ==========================================
-# TOKEN MANAGEMENT & CHUNKING
-# ==========================================
-
-def estimate_tokens(text: str) -> int:
-    """Rough token estimation: ~4 characters per token on average"""
-    return len(text) // 4
-
-def get_model_context_limit(provider: str, model: str) -> int:
-    """Get context window size for a specific model"""
-    provider_data = PROVIDERS.get(provider, {})
-    
-    # Check if provider has model-specific limits
-    if "context_limits" in provider_data:
-        return provider_data["context_limits"].get(model, 4096)
-    
-    # Default limits by provider
-    defaults = {
-        "Scaleway": 32000,
-        "Nebius": 128000,
-        "Mistral": 128000,
-        "OpenRouter": 128000,
-        "Groq": 8192,
-        "Poe": 128000,
-        "Deepgram": 16384,  # Audio context
-        "AssemblyAI": 16384
-    }
-    
-    return defaults.get(provider, 4096)
-
-def check_content_fits_context(content: str, provider: str, model: str, reserve_tokens: int = 1000) -> Tuple[bool, int, int]:
-    """
-    Check if content fits within model's context window.
-    
-    Returns:
-        (fits: bool, estimated_tokens: int, max_tokens: int)
-    """
-    estimated = estimate_tokens(content)
-    limit = get_model_context_limit(provider, model)
-    usable_limit = limit - reserve_tokens
-    
-    return (estimated <= usable_limit, estimated, limit)
-
-def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 200) -> List[str]:
-    """
-    Split text into overlapping chunks that fit within token limits.
-    
-    Args:
-        text: Input text to split
-        max_tokens: Maximum tokens per chunk (in characters: tokens * 4)
-        overlap: Character overlap between chunks
-        
-    Returns:
-        List of text chunks
-    """
-    max_chars = max_tokens * 4
-    overlap_chars = overlap * 4
-    
-    paragraphs = text.split('\n\n')
-    chunks = []
-    current_chunk = []
-    current_size = 0
-    
-    for para in paragraphs:
-        para_size = len(para)
-        
-        if current_size + para_size <= max_chars:
-            current_chunk.append(para)
-            current_size += para_size + 2
-        else:
-            if current_chunk:
-                chunk_text = '\n\n'.join(current_chunk)
-                chunks.append(chunk_text)
-                
-                if overlap_chars > 0 and chunks:
-                    overlap_text = chunks[-1][-overlap_chars:]
-                    current_chunk = [overlap_text, para]
-                    current_size = len(overlap_text) + para_size + 2
-                else:
-                    current_chunk = [para]
-                    current_size = para_size
-            else:
-                sentences = para.split('. ')
-                current_chunk = [sentences[0]]
-                current_size = len(sentences[0])
-    
-    if current_chunk:
-        chunks.append('\n\n'.join(current_chunk))
-    
-    return chunks
-
-# ==========================================
 # 🛠️ HELPER FUNCTIONS
 # ==========================================
 
-def is_provider_implemented(provider_name):
-    """Check if a provider is fully implemented"""
-    implemented_providers = {
-        "Scaleway": True,
-        "Nebius": True,
-        "Mistral": True,
-        "OpenRouter": True,
-        "Groq": True,
-        "Poe": True,
-        "Deepgram": True,
-        "AssemblyAI": True,
-        # New providers - mark as not implemented yet
-        "OpenAI": False,
-        "Cohere": False,
-        "Together": False,
-        "OVH": False,
-        "Cerebras": False,
-        "GoogleAI": False,
-        "Anthropic": False,
-        "HuggingFace": False,  
-    }
-    return implemented_providers.get(provider_name, False)
-
-def get_provider_status(provider_name):
-    """Get status message for provider"""
-    if is_provider_implemented(provider_name):
-        return ""
-    return "⚠️ In Entwicklung - Noch nicht verfügbar"
-
 def get_client(provider_name, api_key_override=None):
     """Factory: Erstellt einen OpenAI-Client für JEDEN Provider"""
-    
-    # Check if implemented
-    if not is_provider_implemented(provider_name):
-        raise NotImplementedError(
-            f"Provider '{provider_name}' ist noch nicht implementiert. "
-            f"Bitte wählen Sie einen anderen Provider."
-        )
-    
     conf = PROVIDERS.get(provider_name)
-    if not conf:
-        raise ValueError(f"Unbekannter Provider: {provider_name}")
+    if not conf: raise ValueError(f"Unbekannter Provider: {provider_name}")
 
     key = api_key_override if api_key_override else API_KEYS.get(conf["key_name"])
-    if not key or key == "your_key":
-        raise ValueError(
-            f"Kein API Key für {provider_name} gefunden. "
-            f"Bitte in Umgebungsvariablen oder Einstellungen konfigurieren."
-        )
+    if not key: raise ValueError(f"Kein API Key für {provider_name} gefunden.")
 
     return openai.OpenAI(base_url=conf["base_url"], api_key=key)
-
-def get_provider_choices_with_status():
-    """Get provider choices with implementation status"""
-    choices = []
-    for provider_name in PROVIDERS.keys():
-        if is_provider_implemented(provider_name):
-            choices.append(provider_name)
-        else:
-            choices.append(f"{provider_name} (⚠️ Bald verfügbar)")
-    return choices
 
 def call_poe_sync(messages, model, api_key):
     """
@@ -2357,7 +1616,6 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 # ==========================================
 
 def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens, user_state):
-    """Enhanced chat with automatic context window management"""
     # --- SECURITY CHECK ---
     if not user_state or not user_state.get("id"):
         yield "⛔ Nicht autorisiert. Bitte neu anmelden."
@@ -2368,61 +1626,20 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
 
     import re
     import json
-
-    # Clean provider name (remove status suffix)
-    clean_provider = provider.replace(" ⚠️", "").strip()
-    
-    # Check if provider is implemented
-    if not is_provider_implemented(clean_provider):
-        yield f"⚠️ **{clean_provider} ist noch nicht verfügbar**\n\nBitte wählen Sie einen der folgenden Provider:\n\n" + \
-              "\n".join(f"- {p}" for p in PROVIDERS.keys() if is_provider_implemented(p))
-        return
     
     try:
-        # === NEW: Context Window Check ===
-        context_limit = get_model_context_limit(provider, model)
-        reserve_for_response = 1000  # Reserve tokens for model's response
-        usable_limit = context_limit - reserve_for_response
+        client = get_client(provider, key)
         
-        # Build initial message list
+        # 1. Build Messages
         messages = []
         if system_prompt and system_prompt.strip():
             messages.append({"role": "system", "content": str(system_prompt)})
-        
-        # Calculate token usage
-        system_tokens = estimate_tokens(system_prompt) if system_prompt else 0
-        new_message_tokens = estimate_tokens(message)
-        
-        # Add history with automatic truncation if needed
-        history_tokens = 0
-        history_messages = []
-        
-        for msg in reversed(history):  # Start from most recent
-            msg_content = str(msg["content"]) if msg.get("content") else ""
-            msg_tokens = estimate_tokens(msg_content)
             
-            total_so_far = system_tokens + history_tokens + msg_tokens + new_message_tokens
+        for msg in history:
+            content = str(msg["content"]) if msg.get("content") else ""
+            messages.append({"role": msg["role"], "content": content})
             
-            if total_so_far <= usable_limit:
-                history_messages.insert(0, {"role": msg["role"], "content": msg_content})
-                history_tokens += msg_tokens
-            else:
-                # Context limit reached - stop adding older messages
-                logger.info(f"Context limit reached. Truncated {len(history) - len(history_messages)} messages.")
-                break
-        
-        messages.extend(history_messages)
         messages.append({"role": "user", "content": str(message)})
-        
-        # Warn user if history was truncated
-        truncated_count = len(history) - len(history_messages)
-        warning_prefix = ""
-        if truncated_count > 0:
-            warning_prefix = f"⚠️ *{truncated_count} ältere Nachrichten ausgeblendet (Context-Limit)*\n\n"
-        
-        # === END: Context Window Check ===
-        
-        client = get_client(provider, key)
         
         # 2. Base Parameters
         params = {
@@ -2493,8 +1710,7 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
                 if new_reasoning:
                     reasoning_buffer += new_reasoning
                     display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                    yield warning_prefix + display_thought + full_response
-                    warning_prefix = ""  # Only show warning once
+                    yield display_thought + full_response
                     continue
 
                 # --- B. Capture Content ---
@@ -2510,32 +1726,18 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
                     if is_thinking:
                         reasoning_buffer += val
                         display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                        yield warning_prefix + display_thought + full_response
-                        warning_prefix = ""
+                        yield display_thought + full_response
                     else:
                         full_response += val
                         if reasoning_buffer:
                             display_thought = f"<details><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
-                            yield warning_prefix + display_thought + full_response
+                            yield display_thought + full_response
                         else:
-                            yield warning_prefix + full_response
-                        warning_prefix = ""
+                            yield full_response
                 
-    except NotImplementedError as e:
-        yield f"⚠️ {str(e)}"
-        return
-    except ValueError as e:
-        yield f"❌ Konfigurationsfehler: {str(e)}"
-        return
     except Exception as e:
         # Catch specific errors to prevent connection drop
         err_str = str(e)
-        
-        # Handle context length errors specifically
-        if any(phrase in err_str.lower() for phrase in ["context length", "maximum context", "too many tokens"]):
-            yield f"🔥 Context-Limit überschritten! Bitte Chat zurücksetzen oder weniger Text senden.\n\nDetails: {str(e)}"
-            return
-        
         if "unexpected tokens" in err_str: # Scaleway fix
              try:
                  match = re.search(r'\[.*\]', err_str)
@@ -3385,16 +2587,6 @@ footer {
 
 # --- CHAT UI UPDATE ---
 def update_c_ui(prov, force_all=False, user_state=None):
-    # Remove suffix if present
-    clean_prov = prov.replace(" ⚠️", "").strip()
-
-    # Check implementation
-    if not is_provider_implemented(clean_prov):
-        return (
-            gr.update(choices=[], value=None),
-            f"⚠️ {clean_prov} ist noch nicht verfügbar. Bitte wählen Sie einen anderen Provider."
-        )
-    
     p_data = PROVIDERS.get(prov, {})
     badge = p_data.get("badge", "")
     api_key = API_KEYS.get(p_data.get("key_name"))
@@ -3890,244 +3082,131 @@ def undo_last_attachment(hist):
             
     return hist, "⚠️ Letzte Nachricht war kein Anhang"
 
-def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_files, 
-                          sb_files, user_state):
-    """
-    Attach content to chat with automatic chunking support.
-    Uses saved user settings for chunking behavior.
-    """
+def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_files, sb_files, user_state):
+    """Attach multiple files content to chat"""
     if not user_state or not user_state.get("id"):
         return hist, "❌ Bitte anmelden"
     
     user_id = user_state["id"]
-    
-    # Load user settings
-    settings = get_user_settings(user_id)
-    auto_chunk = settings.auto_chunk_enabled
-    chunk_size = settings.chunk_size
-    chunk_overlap = settings.chunk_overlap
-    
     full_content_to_add = ""
-    status_messages = []  # Consistent variable name
+    display_content_to_add = "" # Shorter version for UI
+    status_msg = []
 
-    def process_text_content(text, label, source_type="text"):
-        """
-        Process any text content with optional chunking.
-        
-        Args:
-            text: The text content to process
-            label: Display label (e.g., filename, "Transkript #123")
-            source_type: Type of source ("file", "transcript", "vision", "custom")
-        
-        Returns:
-            (full_block, status_msg)
-        """
-        if not text or not text.strip():
-            return "", f"❌ {label}: Leer"
-        
-        estimated_tokens = estimate_tokens(text)
-        
-        # Check if chunking is needed
-        if auto_chunk and estimated_tokens > chunk_size:
-            chunks = split_content_into_chunks(text, chunk_size, chunk_overlap)
-            
-            # Create formatted output with chunks
-            full_block = f"\n\n=== 📎 {label} - {len(chunks)} Teile ===\n"
-            for i, chunk in enumerate(chunks, 1):
-                full_block += f"\n--- Teil {i}/{len(chunks)} ---\n{chunk}\n"
-            
-            status = f"📄 {label}: {len(chunks)} Teile ({estimated_tokens:,} tokens)"
-            return full_block, status
-        
-        else:
-            # No chunking needed - but still truncate if extremely long
-            truncated = False
-            if len(text) > 150000:
-                text = text[:150000] + "\n... [Gekürzt wegen Länge]"
-                truncated = True
-            
-            full_block = f"\n\n=== 📎 {label} ===\n{text}\n"
-            
-            if truncated:
-                status = f"📄 {label}: OK ({estimated_tokens:,} tokens, gekürzt)"
-            else:
-                status = f"📄 {label}: OK ({estimated_tokens:,} tokens)"
-            
-            return full_block, status
-
+    # Helper to process a single file path
     def process_file_path(path, source_label):
-        """Extract and process file content"""
-        try:
-            fname = os.path.basename(path)
+        fname = os.path.basename(path)
+        extracted = UniversalExtractor.extract(path)
+        
+        # Limit extracted text size for the model context (e.g. 150k chars)
+        if len(extracted) > 150000:
+            extracted = extracted[:150000] + "\n... [Gekürzt wegen Länge]"
             
-            # Extract content
-            extracted = UniversalExtractor.extract(path)
-            
-            if not extracted or extracted.startswith("❌") or extracted.startswith("["):
-                # Extraction failed or returned error
-                return "", f"❌ {fname}: Konnte nicht verarbeitet werden"
-            
-            # Process extracted text
-            return process_text_content(extracted, f"Datei: {fname} ({source_label})", "file")
-            
-        except Exception as e:
-            logger.error(f"Error processing file {path}: {e}")
-            return "", f"❌ {os.path.basename(path)}: Fehler bei Verarbeitung"
+        full_block = f"\n\n=== 📄 Datei: {fname} ({source_label}) ===\n{extracted}\n"
+        
+        # Creating a collapsible summary for the UI to prevent rendering crash
+        # Gradio supports Markdown, so we use <details>
+        display_block = f"""
+<details>
+<summary>📄 Datei: {fname} ({len(extracted)} Zeichen)</summary>
+
+{extracted[:1000]} 
+
+... (Text ausgeblendet, aber an KI gesendet) ...
+</details>
+"""
+        return full_block, display_block
 
     try:
-        # === 1. UPLOADED FILES ===
+        # 1. Browser Upload
         if attach_type == "Datei uploaden" and uploaded_files:
             files_list = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
-            
             for file_obj in files_list:
-                if hasattr(file_obj, 'name') and file_obj.name:
-                    content_block, status_msg = process_file_path(file_obj.name, "Upload")
-                    full_content_to_add += content_block
-                    status_messages.append(status_msg)
-                else:
-                    status_messages.append("❌ Ungültige Datei")
+                f, d = process_file_path(file_obj.name, "Upload")
+                full_content_to_add += f
+                display_content_to_add += d
+                status_msg.append(os.path.basename(file_obj.name))
 
-        # === 2. STORAGE BOX FILES ===
+        # 2. Storage Box
         elif attach_type == "Storage Box Datei" and sb_files:
             files_list = sb_files if isinstance(sb_files, list) else [sb_files]
-            
             for f_path in files_list:
-                try:
-                    # Normalize path
-                    if not f_path.startswith("/"): 
-                        f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
-                    
-                    if not os.path.exists(f_path):
-                        status_messages.append(f"❌ {os.path.basename(f_path)}: Nicht gefunden")
-                        continue
-                    
-                    # Copy to temp for processing
+                if not f_path.startswith("/"): f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+                if os.path.exists(f_path):
                     local_temp = copy_storage_file_to_temp(f_path)
-                    content_block, status_msg = process_file_path(local_temp, "Cloud")
-                    full_content_to_add += content_block
-                    status_messages.append(status_msg)
-                    
-                    # Cleanup
-                    try: 
-                        os.remove(local_temp)
-                    except: 
-                        pass
-                        
-                except Exception as e:
-                    logger.error(f"Storage box file error: {e}")
-                    status_messages.append(f"❌ {os.path.basename(f_path)}: Fehler")
+                    f, d = process_file_path(local_temp, "Cloud")
+                    full_content_to_add += f
+                    display_content_to_add += d
+                    status_msg.append(os.path.basename(f_path))
+                    try: os.remove(local_temp)
+                    except: pass
 
-        # === 3. TRANSCRIPT ===
+        # 3. Transcript
         elif attach_type == "Transkript":
-            if not attach_id:
-                return hist, "❌ Transkript-ID fehlt"
-            
-            try:
-                db = get_db()
-                trans = db.query(Transcription).filter(
-                    Transcription.id == int(attach_id), 
-                    Transcription.user_id == user_id
-                ).first()
-                db.close()
-                
-                if trans and trans.original_text:
-                    content_block, status_msg = process_text_content(
-                        trans.original_text,
-                        f"Transkript #{trans.id}",
-                        "transcript"
-                    )
-                    full_content_to_add = content_block
-                    status_messages.append(status_msg)
-                else:
-                    return hist, f"❌ Transkript #{attach_id} nicht gefunden"
-                    
-            except Exception as e:
-                logger.error(f"Transcript attachment error: {e}")
-                return hist, f"❌ Fehler beim Laden des Transkripts: {str(e)}"
+            if not attach_id: return hist, "❌ ID fehlt"
+            db = get_db()
+            trans = db.query(Transcription).filter(Transcription.id == int(attach_id), Transcription.user_id == user_id).first()
+            db.close()
+            if trans: 
+                full_content_to_add = f"[Transkript #{trans.id}]\n\n{trans.original_text}"
+                display_content_to_add = f"**[Transkript #{trans.id} angehängt]** ({len(trans.original_text)} Zeichen)"
+                status_msg.append(f"Transkript {trans.id}")
 
-        # === 4. VISION RESULT ===
+        # 4. Vision
         elif attach_type == "Vision-Ergebnis":
-            if not attach_id:
-                return hist, "❌ Vision-ID fehlt"
-            
-            try:
-                db = get_db()
-                vis = db.query(VisionResult).filter(
-                    VisionResult.id == int(attach_id), 
-                    VisionResult.user_id == user_id
-                ).first()
-                db.close()
-                
-                if vis and vis.result:
-                    content_block, status_msg = process_text_content(
-                        vis.result,
-                        f"Vision #{vis.id}",
-                        "vision"
-                    )
-                    full_content_to_add = content_block
-                    status_messages.append(status_msg)
-                else:
-                    return hist, f"❌ Vision-Ergebnis #{attach_id} nicht gefunden"
-                    
-            except Exception as e:
-                logger.error(f"Vision attachment error: {e}")
-                return hist, f"❌ Fehler beim Laden des Vision-Ergebnisses: {str(e)}"
+            if not attach_id: return hist, "❌ ID fehlt"
+            db = get_db()
+            vis = db.query(VisionResult).filter(VisionResult.id == int(attach_id), VisionResult.user_id == user_id).first()
+            db.close()
+            if vis: 
+                full_content_to_add = f"[Vision #{vis.id}]\n\n{vis.result}"
+                display_content_to_add = f"**[Vision #{vis.id} angehängt]**"
+                status_msg.append(f"Vision {vis.id}")
 
-        # === 5. CUSTOM TEXT ===
+        # 5. Custom Text
         elif attach_type == "Eigener Text":
-            if not custom_text or not custom_text.strip():
-                return hist, "❌ Kein Text eingegeben"
-            
-            try:
-                content_block, status_msg = process_text_content(
-                    custom_text,
-                    "Eigener Text",
-                    "custom"
-                )
-                full_content_to_add = content_block
-                status_messages.append(status_msg)
-                
-            except Exception as e:
-                logger.error(f"Custom text attachment error: {e}")
-                return hist, f"❌ Fehler beim Verarbeiten des Textes: {str(e)}"
-
-        else:
-            return hist, "❌ Ungültiger Anhang-Typ oder keine Daten"
+            if custom_text: 
+                full_content_to_add = custom_text
+                display_content_to_add = custom_text # Custom text is usually short enough
+                status_msg.append("Eigener Text")
 
     except Exception as e:
         logger.exception(f"Attachment Error: {e}")
-        return hist, f"🔥 Kritischer Fehler: {str(e)}"
+        return hist, f"🔥 Fehler: {str(e)}"
 
-    # === UPDATE CHAT HISTORY ===
-    if not hist:
-        hist = []
+    # Update Chat History
+    if not hist: hist = []
     
-    if full_content_to_add and full_content_to_add.strip():
-        # Decide on display format based on length
-        content_length = len(full_content_to_add)
+    if full_content_to_add:
+        # We append a dictionary with 'content' for the LLM
+        # BUT we render 'display_content_to_add' for the user
+        # Note: Standard Gradio Chatbot displays 'content' by default. 
+        # To support different display vs payload, we trick it:
+        # We add the display version to the visible history, 
+        # but the wrapper `run_chat` needs to look at a separate "state" or we rely on the fact 
+        # that we are passing the whole history to the LLM.
         
-        if content_length > 2000:
-            # Use collapsible details for long content
-            final_msg_content = (
-                f"<details><summary>📎 Angehängter Inhalt "
-                f"({content_length:,} Zeichen)</summary>\n\n"
-                f"{full_content_to_add}\n\n</details>"
-            )
+        # SIMPLE FIX: Just add the payload. The <details> tag in `display_content_to_add` 
+        # is Markdown, so it should render fine in the bot AND be readable by the LLM 
+        # (LLMs understand HTML tags often, or we use the full text).
+        
+        # Actually, best approach for Gradio Chatbot (type="messages"):
+        # Just use the full text. If it crashes, it's a browser limit.
+        # Use the truncated version if > 50k chars for UI stability?
+        
+        # Let's try adding the FULL text but wrap it in the Markdown <details> block
+        # so the browser doesn't try to render 100 pages of text at once visible.
+        
+        final_msg_content = ""
+        if len(full_content_to_add) > 2000:
+             # Wrap big content in collapsible detail
+             final_msg_content = f"<details><summary>📎 Angehängter Inhalt ({len(full_content_to_add)} Zeichen)</summary>\n\n{full_content_to_add}\n\n</details>"
         else:
-            final_msg_content = full_content_to_add
-        
-        # Add to history
+             final_msg_content = full_content_to_add
+            
         hist.append({"role": "user", "content": final_msg_content})
-        
-        # Create status message
-        if status_messages:
-            status = "✅ Angehängt:\n" + "\n".join(f"  • {msg}" for msg in status_messages)
-        else:
-            status = "✅ Inhalt angehängt"
-        
-        return hist, status
+        return hist, f"✅ Angehängt: {', '.join(status_msg)}"
     
-    return hist, "❌ Kein Inhalt zum Anhängen gefunden"
+    return hist, "❌ Nichts ausgewählt"
 
 def get_user_prompt_choices(user_state):
     """Get list of user's custom prompt names for dropdown"""
@@ -4415,11 +3494,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     with gr.Column(scale=3):
                         # Top Bar
                         with gr.Row():
-                            chat_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
-                            chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
+                            chat_providers = [k for k, v in PROVIDERS.items() if "chat_models" in v]
                             
                             c_prov = gr.Dropdown(
-                                choices=chat_providers_implemented,  # Only show implemented ones
+                                choices=chat_providers, 
                                 value="Scaleway", 
                                 label="Anbieter", 
                                 scale=2
@@ -5780,231 +4858,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             inputs=[pref_provider],
                             outputs=[selected_models_display, selected_models_state, save_prefs_status]
                         )
-                    
-                    
-                    with gr.TabItem("⚙️ Einstellungen") as settings_tab:  # <-- Add 'as settings_tab'
-                        gr.Markdown("### 🎛️ Persönliche Einstellungen")
-                        
-                        with gr.Group():
-                            gr.Markdown("#### 📎 Dateianhänge & Chunking")
-                            
-                            setting_auto_chunk = gr.Checkbox(
-                                value=True,
-                                label="Automatisches Chunking für große Dateien",
-                                info="Teilt große Dateien automatisch in kleinere Stücke"
-                            )
-                            
-                            setting_chunk_size = gr.Slider(
-                                minimum=1000,
-                                maximum=32000,
-                                value=4000,
-                                step=1000,
-                                label="Chunk-Größe (in Tokens)",
-                                info="Größe jedes Teils bei automatischer Teilung"
-                            )
-                            
-                            setting_overlap = gr.Slider(
-                                minimum=0,
-                                maximum=500,
-                                value=200,
-                                step=50,
-                                label="Überlappung zwischen Chunks",
-                                info="Wie viele Tokens zwischen Teilen überlappen"
-                            )
-                            
-                            gr.Markdown("---")
-                            gr.Markdown("#### 💬 Chat-Verhalten")
-                            
-                            setting_auto_truncate = gr.Checkbox(
-                                value=True,
-                                label="Automatisches Kürzen bei Context-Limit",
-                                info="Entfernt alte Nachrichten automatisch wenn Context voll"
-                            )
-                            
-                            setting_show_warning = gr.Checkbox(
-                                value=True,
-                                label="Warnung bei gekürztem Verlauf anzeigen",
-                                info="Zeigt Info-Meldung wenn Nachrichten entfernt wurden"
-                            )
-                            
-                            setting_show_tokens = gr.Checkbox(
-                                value=False,
-                                label="Token-Zähler anzeigen",
-                                info="Zeigt geschätzte Token-Anzahl in Status-Nachrichten"
-                            )
-                        
-                        with gr.Group():
-                            gr.Markdown("#### 🤖 Modell-Context-Limits prüfen")
-                            
-                            with gr.Row():
-                                check_provider = gr.Dropdown(
-                                    choices=list(PROVIDERS.keys()),
-                                    value="Scaleway",
-                                    label="Provider"
-                                )
-                                check_model = gr.Dropdown(
-                                    choices=[],
-                                    label="Modell"
-                                )
-                            
-                            check_btn = gr.Button("📊 Context-Limit prüfen")
-                            limit_display = gr.Markdown("")
-                        
-                        with gr.Row():
-                            save_settings_btn = gr.Button("💾 Einstellungen speichern", variant="primary", size="lg")
-                            reset_settings_btn = gr.Button("🔄 Auf Standard zurücksetzen", variant="secondary", size="lg")
-                        
-                        settings_status = gr.Markdown("")
-
-                    # Wire up the event handlers
-
-                    # 1. Load user settings when tab is opened
-                    def load_user_settings_ui(user_state):
-                        """Load settings from database"""
-                        if not user_state or not user_state.get("id"):
-                            # Return defaults
-                            return [True, 4000, 200, True, True, False, ""]
-                        
-                        try:
-                            settings = get_user_settings(user_state["id"])
-                            return [
-                                settings.auto_chunk_enabled,
-                                settings.chunk_size,
-                                settings.chunk_overlap,
-                                settings.auto_truncate_history,
-                                settings.show_truncation_warning,
-                                settings.show_token_counts,
-                                ""  # Clear status
-                            ]
-                        except Exception as e:
-                            logger.error(f"Error loading settings: {e}")
-                            return [True, 4000, 200, True, True, False, f"⚠️ Fehler beim Laden: {str(e)}"]
-
-                    settings_tab.select(
-                        load_user_settings_ui,
-                        inputs=[session_state],
-                        outputs=[
-                            setting_auto_chunk,
-                            setting_chunk_size,
-                            setting_overlap,
-                            setting_auto_truncate,
-                            setting_show_warning,
-                            setting_show_tokens,
-                            settings_status
-                        ]
-                    )
-
-                    # 2. Update model dropdown when provider changes
-                    def update_check_model_dropdown(provider):
-                        """Update model choices based on provider"""
-                        models = PROVIDERS.get(provider, {}).get("chat_models", [])
-                        if models:
-                            return gr.update(choices=models, value=models[0])
-                        return gr.update(choices=[], value=None)
-
-                    check_provider.change(
-                        update_check_model_dropdown,
-                        inputs=[check_provider],
-                        outputs=[check_model]
-                    )
-
-                    # 3. Show context limit info
-                    def show_limit_info(provider, model):
-                        """Display context limit information for selected model"""
-                        if not model:
-                            return "❌ Bitte Modell auswählen"
-                        
-                        try:
-                            limit = get_model_context_limit(provider, model)
-                            char_estimate = limit * 4
-                            
-                            info = f"""
-                    ### 📊 Context-Limit für `{model}`
-
-                    - **Token-Limit:** {limit:,} Tokens
-                    - **Zeichen (ca.):** {char_estimate:,} Zeichen
-                    - **Reserviert für Antwort:** ~1,000 Tokens
-                    - **Nutzbar für Eingabe:** ~{(limit - 1000):,} Tokens
-
-                    💡 **Tipp:** Bei großen Dokumenten automatisches Chunking aktivieren!
-                    """
-                            return info
-                        except Exception as e:
-                            return f"❌ Fehler: {str(e)}"
-
-                    check_btn.click(
-                        show_limit_info,
-                        inputs=[check_provider, check_model],
-                        outputs=[limit_display]
-                    )
-
-                    # 4. Save settings to database
-                    def save_user_settings_ui(auto_chunk, chunk_size, overlap, auto_trunc, 
-                                            show_warn, show_tokens, user_state):
-                        """Save settings to database"""
-                        if not user_state or not user_state.get("id"):
-                            return "❌ Bitte anmelden"
-                        
-                        try:
-                            success, msg = update_user_settings(
-                                user_state["id"],
-                                auto_chunk_enabled=bool(auto_chunk),
-                                chunk_size=int(chunk_size),
-                                chunk_overlap=int(overlap),
-                                auto_truncate_history=bool(auto_trunc),
-                                show_truncation_warning=bool(show_warn),
-                                show_token_counts=bool(show_tokens)
-                            )
-                            return msg
-                        except Exception as e:
-                            logger.error(f"Error saving settings: {e}")
-                            return f"🔥 Fehler beim Speichern: {str(e)}"
-
-                    save_settings_btn.click(
-                        save_user_settings_ui,
-                        inputs=[
-                            setting_auto_chunk,
-                            setting_chunk_size,
-                            setting_overlap,
-                            setting_auto_truncate,
-                            setting_show_warning,
-                            setting_show_tokens,
-                            session_state
-                        ],
-                        outputs=[settings_status]
-                    )
-
-                    # 5. Reset to defaults
-                    def reset_to_defaults(user_state):
-                        """Reset settings to default values"""
-                        if not user_state or not user_state.get("id"):
-                            return [True, 4000, 200, True, True, False, "❌ Bitte anmelden"]
-                        
-                        try:
-                            # Delete user settings to trigger default creation
-                            db = SessionLocal()
-                            db.query(UserSettings).filter(UserSettings.user_id == user_state["id"]).delete()
-                            db.commit()
-                            db.close()
-                            
-                            return [True, 4000, 200, True, True, False, "✅ Auf Standard zurückgesetzt"]
-                        except Exception as e:
-                            logger.error(f"Error resetting settings: {e}")
-                            return [True, 4000, 200, True, True, False, f"🔥 Fehler: {str(e)}"]
-
-                    reset_settings_btn.click(
-                        reset_to_defaults,
-                        inputs=[session_state],
-                        outputs=[
-                            setting_auto_chunk,
-                            setting_chunk_size,
-                            setting_overlap,
-                            setting_auto_truncate,
-                            setting_show_warning,
-                            setting_show_tokens,
-                            settings_status
-                        ]
-                    )
                         
             # --- TAB 6: USER MANAGEMENT (ADMIN ONLY) ---
             with gr.TabItem("👥 Benutzerverwaltung", visible=False) as admin_tab:
@@ -6344,46 +5197,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
         handle_logout,
         outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab, session_state]
     )
-
-# ==========================================
-# 🚀 STARTUP SEQUENCE
-# ==========================================
-
-def initialize_application():
-    """Complete application initialization"""
-    
-    print("=" * 60)
-    print("🚀 KI SUITE - STARTUP")
-    print("=" * 60)
-    
-    # 1. Database Schema
-    print("\n1️⃣ Checking database schema...")
-    ensure_database_schema()
-    
-    # 2. Default Users
-    print("\n2️⃣ Checking default users...")
-    create_default_users()
-    
-    # 3. Provider Status
-    print("\n3️⃣ Provider status:")
-    for provider in PROVIDERS.keys():
-        status = "✅ Ready" if is_provider_implemented(provider) else "⚠️ Not implemented"
-        print(f"   {provider}: {status}")
-    
-    # 4. API Keys Check
-    print("\n4️⃣ API Keys status:")
-    for key_name, key_value in API_KEYS.items():
-        if key_value and key_value != "your_key":
-            print(f"   {key_name}: ✅ Configured")
-        else:
-            print(f"   {key_name}: ⚠️ Not configured")
-    
-    print("\n" + "=" * 60)
-    print("✅ Initialization complete!")
-    print("=" * 60 + "\n")
-
-# Call this before launching
-initialize_application()
 
 # ==========================================
 # 🚀 LAUNCH CONFIGURATION
