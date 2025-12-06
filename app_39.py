@@ -1935,13 +1935,8 @@ def logout_user():
 # ==========================================
 
 def estimate_tokens(text: str) -> int:
-    """
-    Conservative token estimation.
-    English is ~4 chars/token, but code/German is closer to 2.5-3.
-    We use 3 chars/token as a safe buffer to prevent API errors.
-    """
-    if not text: return 0
-    return len(str(text)) // 3
+    """Rough token estimation: ~4 characters per token on average"""
+    return len(text) // 4
 
 def get_model_context_limit(provider: str, model: str) -> int:
     """Get context window size for a specific model"""
@@ -1977,52 +1972,6 @@ def check_content_fits_context(content: str, provider: str, model: str, reserve_
     usable_limit = limit - reserve_tokens
     
     return (estimated <= usable_limit, estimated, limit)
-
-def prune_messages(messages: list, model_limit: int, max_output_tokens: int = 1000) -> list:
-    """
-    Smartly trims conversation history to fit within the context window.
-    Strategy: Always keep System Prompt + Latest User Message. Drop oldest history first.
-    """
-    # 1. Calculate safe budget (Input Limit = Total Limit - Output Reserve - Safety Buffer)
-    safe_input_limit = model_limit - max_output_tokens - 200
-    if safe_input_limit < 500: safe_input_limit = 500 # Emergency minimum
-
-    current_tokens = 0
-    kept_indices = []
-    
-    # 2. Always keep System Prompt (usually index 0)
-    if messages and messages[0]["role"] == "system":
-        t = estimate_tokens(messages[0]["content"])
-        current_tokens += t
-        kept_indices.append(0)
-    
-    # 3. Always keep Latest User Message (the prompt)
-    if len(messages) > 1:
-        last_idx = len(messages) - 1
-        if last_idx not in kept_indices:
-            t = estimate_tokens(messages[last_idx]["content"])
-            current_tokens += t
-            kept_indices.append(last_idx)
-
-    # 4. Fill remaining budget with history (Newest -> Oldest)
-    # We iterate backwards from the message before the last one
-    remaining_indices = [i for i in range(len(messages)) if i not in kept_indices]
-    remaining_indices.reverse() # Start from newest history
-
-    for i in remaining_indices:
-        msg_tokens = estimate_tokens(messages[i]["content"])
-        
-        if current_tokens + msg_tokens <= safe_input_limit:
-            current_tokens += msg_tokens
-            kept_indices.append(i)
-        else:
-            # Context full, stop adding history
-            break
-            
-    # 5. Reconstruct list in original order
-    pruned_messages = [messages[i] for i in sorted(kept_indices)]
-    
-    return pruned_messages
 
 def split_content_into_chunks(text: str, max_tokens: int = 4000, overlap: int = 200) -> List[str]:
     """
@@ -2408,7 +2357,7 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 # ==========================================
 
 def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens, user_state):
-    """Enhanced chat with strict context window enforcement"""
+    """Enhanced chat with automatic context window management"""
     # --- SECURITY CHECK ---
     if not user_state or not user_state.get("id"):
         yield "⛔ Nicht autorisiert. Bitte neu anmelden."
@@ -2420,58 +2369,69 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
     import re
     import json
 
-    # Clean provider name
+    # Clean provider name (remove status suffix)
     clean_provider = provider.replace(" ⚠️", "").strip()
     
     # Check if provider is implemented
     if not is_provider_implemented(clean_provider):
-        yield f"⚠️ **{clean_provider} ist noch nicht verfügbar**"
+        yield f"⚠️ **{clean_provider} ist noch nicht verfügbar**\n\nBitte wählen Sie einen der folgenden Provider:\n\n" + \
+              "\n".join(f"- {p}" for p in PROVIDERS.keys() if is_provider_implemented(p))
         return
     
     try:
-        # 1. Build Full Message List
-        raw_messages = []
-        if system_prompt and system_prompt.strip():
-            raw_messages.append({"role": "system", "content": str(system_prompt)})
-        
-        # Add history
-        for msg in history:
-            content = str(msg["content"]) if msg.get("content") else ""
-            raw_messages.append({"role": msg["role"], "content": content})
-            
-        # Add current message
-        raw_messages.append({"role": "user", "content": str(message)})
-
-        # 2. ENFORCE CONTEXT LIMITS (Pruning)
+        # === NEW: Context Window Check ===
         context_limit = get_model_context_limit(provider, model)
+        reserve_for_response = 1000  # Reserve tokens for model's response
+        usable_limit = context_limit - reserve_for_response
         
-        # Determine max output (Reasoning models need more space)
-        max_output = 4096 
-        if r_tokens > 0: max_output = int(r_tokens)
+        # Build initial message list
+        messages = []
+        if system_prompt and system_prompt.strip():
+            messages.append({"role": "system", "content": str(system_prompt)})
         
-        # Prune messages using our helper
-        final_messages = prune_messages(raw_messages, context_limit, max_output)
+        # Calculate token usage
+        system_tokens = estimate_tokens(system_prompt) if system_prompt else 0
+        new_message_tokens = estimate_tokens(message)
         
-        # Calculate stats for logging
-        original_len = len(raw_messages)
-        final_len = len(final_messages)
-        truncated_count = original_len - final_len
+        # Add history with automatic truncation if needed
+        history_tokens = 0
+        history_messages = []
         
+        for msg in reversed(history):  # Start from most recent
+            msg_content = str(msg["content"]) if msg.get("content") else ""
+            msg_tokens = estimate_tokens(msg_content)
+            
+            total_so_far = system_tokens + history_tokens + msg_tokens + new_message_tokens
+            
+            if total_so_far <= usable_limit:
+                history_messages.insert(0, {"role": msg["role"], "content": msg_content})
+                history_tokens += msg_tokens
+            else:
+                # Context limit reached - stop adding older messages
+                logger.info(f"Context limit reached. Truncated {len(history) - len(history_messages)} messages.")
+                break
+        
+        messages.extend(history_messages)
+        messages.append({"role": "user", "content": str(message)})
+        
+        # Warn user if history was truncated
+        truncated_count = len(history) - len(history_messages)
         warning_prefix = ""
         if truncated_count > 0:
-            warning_prefix = f"⚠️ *Context-Limit ({context_limit} T): {truncated_count} alte Nachrichten entfernt.*\n\n"
-
-        # 3. Initialize Client
+            warning_prefix = f"⚠️ *{truncated_count} ältere Nachrichten ausgeblendet (Context-Limit)*\n\n"
+        
+        # === END: Context Window Check ===
+        
         client = get_client(provider, key)
         
-        # 4. Base Parameters
+        # 2. Base Parameters
         params = {
             "model": model,
-            "messages": final_messages, # Use the pruned list!
+            "messages": messages,
             "stream": True
         }
         
-        # 5. Provider-Specific Logic (Reasoning, Tokens, Temp)
+        # 3. Provider-Specific Reasoning Logic
         extra_body = {}
         
         if provider == "OpenRouter":
@@ -2505,7 +2465,7 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
         if extra_body:
             params["extra_body"] = extra_body
 
-        # 6. Execute Stream
+        # 4. Execute
         stream = client.chat.completions.create(**params)
         
         full_response = ""
@@ -2534,7 +2494,7 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
                     reasoning_buffer += new_reasoning
                     display_thought = f"<details open><summary>💭 Gedankengang ({len(reasoning_buffer)} zeichen)</summary>\n\n{reasoning_buffer}\n</details>\n\n"
                     yield warning_prefix + display_thought + full_response
-                    warning_prefix = "" 
+                    warning_prefix = ""  # Only show warning once
                     continue
 
                 # --- B. Capture Content ---
@@ -2561,13 +2521,19 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
                             yield warning_prefix + full_response
                         warning_prefix = ""
                 
+    except NotImplementedError as e:
+        yield f"⚠️ {str(e)}"
+        return
+    except ValueError as e:
+        yield f"❌ Konfigurationsfehler: {str(e)}"
+        return
     except Exception as e:
         # Catch specific errors to prevent connection drop
         err_str = str(e)
         
-        # Handle context length errors nicely
+        # Handle context length errors specifically
         if any(phrase in err_str.lower() for phrase in ["context length", "maximum context", "too many tokens"]):
-            yield f"🔥 **Kritischer Fehler: Context-Limit.**\n\nTrotz automatischer Kürzung war die Anfrage zu groß. Bitte laden Sie eine kürzere Datei hoch oder starten Sie den Chat neu.\n\nTechnischer Fehler: {str(e)}"
+            yield f"🔥 Context-Limit überschritten! Bitte Chat zurücksetzen oder weniger Text senden.\n\nDetails: {str(e)}"
             return
         
         if "unexpected tokens" in err_str: # Scaleway fix
