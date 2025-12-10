@@ -34,6 +34,7 @@ from io import BytesIO
 import asyncio
 import re
 import hashlib
+from bs4 import BeautifulSoup
 
 logging.basicConfig(
     level=logging.INFO,  # Global level INFO to stop library spam
@@ -626,17 +627,45 @@ create_default_users()
 # ==========================================
 STORAGE_MOUNT_POINT = "/mnt/akademie_storage"
 
-def ensure_user_storage_dirs(username):
-    """Creates /shared and /username folders on the Storage Box"""
-    if not os.path.exists(STORAGE_MOUNT_POINT):
-        return False # Mount not active
+def get_user_storage_path(username):
+    """
+    Returns the user-specific storage path.
+    Creates directory if it doesn't exist.
+    """
+    if not username:
+        logger.warning("get_user_storage_path called without username")
+        return None
         
-    shared_path = os.path.join(STORAGE_MOUNT_POINT, "shared")
     user_path = os.path.join(STORAGE_MOUNT_POINT, username)
     
-    os.makedirs(shared_path, exist_ok=True)
-    os.makedirs(user_path, exist_ok=True)
-    return True
+    # Create directory with proper permissions
+    try:
+        os.makedirs(user_path, exist_ok=True)
+        logger.info(f"✅ User storage path ready: {user_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to create storage path for {username}: {e}")
+        return None
+    
+    return user_path
+
+def ensure_user_storage_dirs(username):
+    """
+    Creates user-specific storage directory.
+    Called at login time.
+    """
+    if not username:
+        logger.warning("ensure_user_storage_dirs called without username")
+        return False
+    
+    user_path = get_user_storage_path(username)
+    
+    if user_path and os.path.exists(user_path):
+        logger.info(f"✅ Storage directory verified for user '{username}': {user_path}")
+        return True
+    
+    logger.error(f"❌ Storage directory creation failed for user '{username}'")
+    return False
+
 
 def copy_storage_file_to_temp(file_path):
     """
@@ -663,12 +692,19 @@ def copy_storage_file_to_temp(file_path):
     return local_dest
 
 def get_storage_root(user_state=None):
-    """Returns valid root for FileExplorer based on login"""
-    if user_state and user_state.get("id"):
-        # Ensure folders exist
-        ensure_user_storage_dirs(user_state.get("username"))
-        return STORAGE_MOUNT_POINT
-    return None
+    """
+    Returns the user-specific storage root path.
+    NO LONGER returns global mount point.
+    """
+    if not user_state or not user_state.get("username"):
+        logger.warning("get_storage_root called without valid user_state")
+        return None
+    
+    username = user_state.get("username")
+    user_path = get_user_storage_path(username)
+    
+    logger.debug(f"get_storage_root for '{username}': {user_path}")
+    return user_path
 
 # ==========================================
 # AUDIO HELPERS
@@ -3765,19 +3801,25 @@ class UniversalExtractor:
             # 3. Modern Word
             elif ext == '.docx':
                 if HAS_DOCX:
-                    try: return UniversalExtractor._extract_docx(filepath)
-                    except Exception as e: logger.warning(f"Docx error: {e}")
+                    try: 
+                        return UniversalExtractor._extract_docx(filepath)
+                    except Exception as e: 
+                        logger.warning(f"Docx extraction failed: {e}")
                 return UniversalExtractor._extract_with_cli_tool(filepath)
 
             # 4. Excel
             elif ext in ['.xls', '.xlsx', '.csv']:
                 return UniversalExtractor._extract_excel(filepath)
 
-            # 5. Ebooks & Legacy Docs
-            elif ext in ['.epub', '.mobi', '.azw3', '.fb2', '.doc', '.odt', '.rtf', '.html', '.txt']:
+            # 5. HTML (NEW: Multiple fallbacks)
+            elif ext in ['.html', '.htm']:
+                return UniversalExtractor._extract_html(filepath)
+
+            # 6. Ebooks & Legacy Docs
+            elif ext in ['.epub', '.mobi', '.azw3', '.fb2', '.doc', '.odt', '.rtf']:
                 return UniversalExtractor._extract_with_cli_tool(filepath)
                 
-            # 6. Text/Code Fallback
+            # 7. Text/Code Fallback
             else:
                 return UniversalExtractor._extract_plain_text(filepath)
                 
@@ -3787,9 +3829,70 @@ class UniversalExtractor:
             return f"[Systemfehler: {str(e)}]"
 
     @staticmethod
+    def _extract_html(path):
+        """
+        Extract text from HTML with multiple fallback methods.
+        Priority: BeautifulSoup > CLI tools > Plain text
+        """
+        logger.info(f"Attempting HTML extraction: {path}")
+        
+        # Method 1: BeautifulSoup (Most reliable)
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                html_content = f.read()
+            
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style", "meta", "link"]):
+                script.decompose()
+            
+            # Get text
+            text = soup.get_text(separator='\n', strip=True)
+            
+            # Clean up whitespace
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            
+            if len(text.strip()) > 50:
+                logger.info(f"✅ BeautifulSoup extraction successful: {len(text)} chars")
+                return f"[HTML extracted via BeautifulSoup]:\n\n{text}"
+            else:
+                logger.warning("BeautifulSoup returned minimal text, trying fallback...")
+                
+        except Exception as e:
+            logger.warning(f"BeautifulSoup extraction failed: {e}")
+        
+        # Method 2: CLI tools (ebook-convert, pandoc)
+        try:
+            cli_result = UniversalExtractor._extract_with_cli_tool(path)
+            if cli_result and not cli_result.startswith("[") and len(cli_result.strip()) > 50:
+                logger.info(f"✅ CLI extraction successful: {len(cli_result)} chars")
+                return cli_result
+            logger.warning("CLI extraction returned minimal/error text")
+        except Exception as e:
+            logger.warning(f"CLI extraction failed: {e}")
+        
+        # Method 3: Plain text fallback (last resort)
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                raw_html = f.read()
+            
+            if len(raw_html.strip()) > 100:
+                logger.warning("⚠️ Using raw HTML as fallback (not cleaned)")
+                return f"[Raw HTML - Cleaning failed]:\n\n{raw_html[:10000]}"
+                
+        except Exception as e:
+            logger.error(f"Even plain text reading failed: {e}")
+        
+        return "[❌ HTML konnte nicht verarbeitet werden. Datei möglicherweise beschädigt.]"
+
+    
+    @staticmethod
     def _extract_with_cli_tool(path):
-        """Uses ebook-converter, calibre, or pandoc"""
-        # Check common paths explicitly if not in PATH
+        """Uses ebook-converter, calibre, or pandoc with error handling"""
+        # Check common paths explicitly
         candidates = [
             "ebook-converter", 
             "/var/www/transkript_app/venv/bin/ebook-converter",
@@ -3805,7 +3908,7 @@ class UniversalExtractor:
         
         if not tool:
             logger.warning(f"CLI Tools missing. PATH: {os.environ.get('PATH')}")
-            return "[Kein Konverter (ebook-converter/pandoc) gefunden]"
+            return "[⚠️ Kein Konverter (ebook-converter/pandoc) gefunden. Installieren Sie: apt-get install calibre pandoc]"
 
         try:
             with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
@@ -3816,31 +3919,83 @@ class UniversalExtractor:
                 cmd = [tool, path, "-t", "plain", "-o", out_path]
 
             logger.info(f"Running CLI: {cmd}")
-            # Increase timeout for larger files
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             
+            # Run with timeout and capture stderr
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=120
+            )
+            
+            # Check for errors but be lenient (some tools return non-zero but still produce output)
             if result.returncode != 0:
-                logger.error(f"CLI Error: {result.stderr}")
+                logger.warning(f"CLI returned code {result.returncode}. Stderr: {result.stderr[:500]}")
                 
+                # Specific error: libxml2 version mismatch
+                if "libxml2" in result.stderr or "html5-parser" in result.stderr:
+                    logger.error("❌ ebook-convert has library conflict. Using fallback...")
+                    return f"[❌ ebook-convert Bibliothekskonflikt - Verwende alternative Methode]"
+
+            # Try to read output even if return code was non-zero
             if os.path.exists(out_path):
                 with open(out_path, 'r', encoding='utf-8', errors='replace') as f:
                     text = f.read()
                 os.remove(out_path)
-                if text.strip(): return text
+                
+                if text.strip():
+                    logger.info(f"✅ CLI extraction successful: {len(text)} chars")
+                    return text
 
-            return f"[CLI Konvertierung leer. Stderr: {result.stderr[:200]}]"
+            # If we got here, extraction failed
+            error_msg = result.stderr[:500] if result.stderr else "Unknown error"
+            logger.error(f"CLI extraction produced no output. Error: {error_msg}")
+            return f"[❌ CLI Konvertierung fehlgeschlagen: {error_msg}]"
 
+        except subprocess.TimeoutExpired:
+            logger.error("CLI tool timed out after 120 seconds")
+            return "[❌ Konvertierung Timeout (>120s). Datei zu groß?]"
         except Exception as e:
-            return f"[CLI Fehler: {str(e)}]"
+            logger.error(f"CLI tool exception: {e}")
+            logger.error(traceback.format_exc())
+            return f"[❌ CLI Fehler: {str(e)}]"
 
     @staticmethod
     def _extract_image(path):
-        if not HAS_OCR: return "[OCR Library 'pytesseract' fehlt]"
+        """Extract text from image with detailed error reporting"""
+        if not HAS_OCR:
+            return "[❌ OCR Library 'pytesseract' fehlt. Bitte installieren: pip install pytesseract]"
+        
         try:
-            if not shutil.which("tesseract"): return "[Systemfehler: 'tesseract' Binary fehlt]"
-            text = pytesseract.image_to_string(Image.open(path), lang='deu+eng')
-            return f"[OCR]:\n{text}" if text.strip() else "[Kein Text erkannt]"
-        except Exception as e: return f"[OCR Fehler: {e}]"
+            # Check if tesseract binary exists
+            if not shutil.which("tesseract"):
+                return "[❌ Systemfehler: 'tesseract' Binary fehlt. Bitte installieren: apt-get install tesseract-ocr tesseract-ocr-deu]"
+            
+            logger.info(f"Running OCR on: {path}")
+            
+            # Try to open image first
+            try:
+                img = Image.open(path)
+                logger.info(f"Image opened successfully: {img.size}, mode: {img.mode}")
+            except Exception as e:
+                return f"[❌ Bild konnte nicht geöffnet werden: {str(e)}]"
+            
+            # Run OCR
+            text = pytesseract.image_to_string(img, lang='deu+eng', config='--psm 1')
+            
+            logger.info(f"OCR complete. Text length: {len(text)}")
+            
+            if text.strip():
+                return f"[OCR Extraktion]:\n\n{text}"
+            else:
+                return "[⚠️ OCR: Kein Text im Bild erkannt. Bild könnte leer sein oder nur Grafiken enthalten.]"
+                
+        except pytesseract.TesseractNotFoundError:
+            return "[❌ Tesseract nicht gefunden. Bitte installieren: apt-get install tesseract-ocr tesseract-ocr-deu]"
+        except Exception as e:
+            logger.error(f"OCR error: {e}")
+            logger.error(traceback.format_exc())
+            return f"[❌ OCR Fehler: {str(e)}]"
 
     @staticmethod
     def _extract_pdf(path):
@@ -3998,9 +4153,31 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
             # Extract content
             extracted = UniversalExtractor.extract(path)
             
-            if not extracted or extracted.startswith("❌") or extracted.startswith("["):
+            # Better error detection: Check for actual error indicators
+            is_error = (
+                not extracted or 
+                extracted.startswith("❌") or 
+                extracted.startswith("[❌") or
+                extracted.startswith("[⚠️") or
+                (extracted.startswith("[") and "fehlt" in extracted.lower()) or
+                (extracted.startswith("[") and "error" in extracted.lower()) or
+                (extracted.startswith("[") and "nicht gefunden" in extracted.lower())
+            )
+            
+            if is_error:
                 # Extraction failed or returned error
+                logger.warning(f"Extraction failed for {fname}: {extracted[:200]}")
                 return "", f"❌ {fname}: Konnte nicht verarbeitet werden"
+            
+            # Check if we got actual content (not just headers)
+            # Remove common headers to check actual content
+            content_to_check = extracted
+            for header in ["[HTML extracted via BeautifulSoup]:", "[OCR Extraktion]:", "[OCR]:", "[PyPDF]:"]:
+                content_to_check = content_to_check.replace(header, "")
+            
+            if len(content_to_check.strip()) < 10:
+                logger.warning(f"Extracted content too short for {fname}: {len(content_to_check)} chars")
+                return "", f"❌ {fname}: Datei enthält zu wenig Text"
             
             # Process extracted text
             return process_text_content(extracted, f"Datei: {fname} ({source_label})", "file")
@@ -6351,19 +6528,39 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
             
 
     def handle_login(username, password):
-        # This logic creates the initial state
+        """Enhanced login with storage path initialization"""
         success, message, show_app, show_login, state_data = login_user(username, password)
         
         status_text = f"👤 Angemeldet als: **{state_data['username']}**" if success else "👤 Nicht angemeldet"
         show_admin_tab = state_data.get("is_admin", False)
         
+        # Storage root for file browsers (user-specific)
+        storage_root = None
+        
         if success:
             try:
-                ensure_user_storage_dirs(username)
+                # Create user storage directory
+                if ensure_user_storage_dirs(username):
+                    storage_root = get_user_storage_path(username)
+                    logger.info(f"🗂️ Storage root for {username}: {storage_root}")
+                else:
+                    logger.warning(f"⚠️ Could not initialize storage for {username}")
             except Exception as e:
-                logger.error(f"Could not create storage dirs: {e}")
+                logger.error(f"❌ Storage initialization error for {username}: {e}")
         
-        return message, show_app, show_login, status_text, gr.update(visible=True), gr.update(visible=show_admin_tab), state_data
+        # Return storage_root as an additional output to update FileExplorer components
+        return (
+            message,                        # login_message
+            show_app,                       # main_app visibility
+            show_login,                     # login_screen visibility
+            status_text,                    # login_status
+            gr.update(visible=True),        # logout_btn
+            gr.update(visible=show_admin_tab), # admin_tab
+            state_data,                     # session_state
+            gr.update(root_dir=storage_root) if storage_root else gr.update(), # t_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update(), # v_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update()  # attach_sb_browser
+        )
     
     def handle_logout():
         message, show_app, show_login, empty_state = logout_user()
@@ -6372,9 +6569,19 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
     login_btn.click(
         handle_login,
         inputs=[login_username, login_password],
-        outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab, session_state]
+        outputs=[
+            login_message, 
+            main_app, 
+            login_screen, 
+            login_status, 
+            logout_btn, 
+            admin_tab, 
+            session_state,
+            t_storage_browser,      # Add this - transcription tab
+            v_storage_browser,      # Add this - vision tab  
+            attach_sb_browser       # Add this - chat tab attachments
+        ]
     )
-
     logout_btn.click(
         handle_logout,
         outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab, session_state]
