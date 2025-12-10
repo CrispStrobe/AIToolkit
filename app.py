@@ -1401,10 +1401,10 @@ PROVIDERS = {
         "base_url": "https://api.eu.deepgram.com/v1",
         "key_name": "DEEPGRAM",
         "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
-        "audio_models": ["nova-2-general", "nova-3-general", "nova-2"],
+        "audio_models": ["nova-3-general", "nova-2-general", "nova-2"],
         "context_limits": {
-            "nova-2-general": 16384,
             "nova-3-general": 16384,
+            "nova-2-general": 16384,
             "nova-2": 16384,
         }
     },
@@ -2884,7 +2884,7 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
 
     # --- 2. BRANCH A: GLADIA (Native Long-File Support) ---
     if provider == "Gladia":
-        logger.info("Using Gladia Native V2 Flow")
+        logger.info("Using Gladia ...")
         
         api_key = key if key else API_KEYS.get("GLADIA", "")
         if not api_key:
@@ -4990,7 +4990,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             with gr.Row():
                                 t_prov = gr.Dropdown(
                                     choices=["Gladia", "Deepgram", "AssemblyAI", "Mistral", "Scaleway", "Groq"], 
-                                    value="Gladia", 
+                                    value="Deepgram", 
                                     label="Engine",
                                     scale=2
                                 )
