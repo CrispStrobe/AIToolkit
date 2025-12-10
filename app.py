@@ -1293,6 +1293,9 @@ def get_default_model_for_user(user_id, provider):
 # ⚙️ ZENTRALE KONFIGURATION
 # ==========================================
 
+DEFAULT_CHAT_PROVIDER = "Mistral"
+DEFAULT_CHAT_MODEL = "mistral-large-latest"
+
 # API Keys (aus Environment oder direkt hier eintragen)
 API_KEYS = {
     "GLADIA": os.environ.get("GLADIA_API_KEY", "your_key"),
@@ -3454,6 +3457,55 @@ footer {
 # UI HELPERS
 # ==========================================
 
+def update_transcript_chat_ui(prov, force_all=False, user_state=None):
+    """
+    Same logic as update_c_ui but for the transcript "Send to Chat" section
+    """
+    # Remove suffix if present
+    clean_prov = prov.replace(" ⚠️", "").strip()
+
+    # Check implementation
+    if not is_provider_implemented(clean_prov):
+        return (
+            gr.update(choices=[], value=None),
+            f"⚠️ {clean_prov} ist noch nicht verfügbar"
+        )
+    
+    p_data = PROVIDERS.get(prov, {})
+    badge = p_data.get("badge", "")
+    api_key = API_KEYS.get(p_data.get("key_name"))
+    
+    # 1. Fetch
+    models, error = fetch_available_models(prov, api_key)
+    choices = []
+    
+    if models:
+        # Filter for Chat types if Poe
+        if prov == "Poe":
+            choices = [(m["name"], m["id"]) for m in models if "Chat" in m.get("type", "Chat")]
+        else:
+            choices = [(m["name"], m["id"]) for m in models]
+    
+    # Fallback
+    if not choices:
+        choices = [(m, m) for m in p_data.get("chat_models", [])]
+
+    # 2. Filter via Helper
+    final_choices = get_filtered_model_choices(prov, choices, force_all, user_state)
+    
+    # 3. Smart default selection
+    default_val = None
+    if final_choices:
+        # Try to use DEFAULT_CHAT_MODEL if available
+        model_ids = [choice[1] for choice in final_choices]
+        if DEFAULT_CHAT_MODEL in model_ids:
+            default_val = DEFAULT_CHAT_MODEL
+        else:
+            default_val = final_choices[0][1]
+    
+    return gr.update(choices=final_choices, value=default_val), badge
+
+
 # --- CHAT UI UPDATE ---
 def update_c_ui(prov, force_all=False, user_state=None):
     # Remove suffix if present
@@ -4631,20 +4683,20 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
                             
                             c_prov = gr.Dropdown(
-                                choices=chat_providers_implemented,  # Only show implemented ones
-                                value="Scaleway", 
+                                choices=chat_providers_implemented,
+                                value=DEFAULT_CHAT_PROVIDER,  # ← NEW
                                 label="Anbieter", 
                                 scale=2
                             )
                             c_model = gr.Dropdown(
-                                choices=PROVIDERS["Scaleway"]["chat_models"], 
-                                value=PROVIDERS["Scaleway"]["chat_models"][0], # Ensure this is not None
+                                choices=PROVIDERS[DEFAULT_CHAT_PROVIDER]["chat_models"],  # ← NEW
+                                value=DEFAULT_CHAT_MODEL,  # ← NEW
                                 label="Modell", 
                                 scale=4
                             )
                             c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=60)
 
-                        c_badge = gr.HTML(value=PROVIDERS["Scaleway"]["badge"])
+                        c_badge = gr.HTML(value=PROVIDERS[DEFAULT_CHAT_PROVIDER]["badge"])
 
                         # UI Updates
                         c_prov.change(
@@ -5039,18 +5091,24 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 value="Veranstaltungsrückblick",
                                 label="📋 Prompt-Vorlage"
                             )
-                        with gr.Column(scale=1):
-                            chat_provider = gr.Dropdown(
-                                list(PROVIDERS.keys()),
-                                value="Scaleway",
-                                label="🤖 Chat Provider"
-                            )
-                        with gr.Column(scale=1):
-                            chat_model_for_transcript = gr.Dropdown(
-                                PROVIDERS["Scaleway"]["chat_models"],
-                                value=PROVIDERS["Scaleway"]["chat_models"][0],
-                                label="Modell"
-                            )
+                        with gr.Column(scale=2):
+                            with gr.Row():
+                                chat_provider = gr.Dropdown(
+                                    choices=[p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p] and is_provider_implemented(p)],
+                                    value=DEFAULT_CHAT_PROVIDER,
+                                    label="🤖 Provider",
+                                    scale=2
+                                )
+                                chat_model_for_transcript = gr.Dropdown(
+                                    choices=PROVIDERS[DEFAULT_CHAT_PROVIDER]["chat_models"],
+                                    value=DEFAULT_CHAT_MODEL,
+                                    label="Modell",
+                                    scale=3
+                                )
+                                chat_load_all_btn = gr.Button("🌍 Alle", scale=0, size="sm")
+                    
+                    # Badge display
+                    chat_badge = gr.HTML(value=PROVIDERS[DEFAULT_CHAT_PROVIDER]["badge"])
 
                     additional_notes = gr.Textbox(
                         label="📝 Zusätzliche Hinweise",
@@ -5069,23 +5127,29 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                 # --- LOGIC WIRING (Backend) ---
                 
-                # Chat Model Updates
-                def update_chat_model_dropdown(prov):
-                    ms = PROVIDERS.get(prov, {}).get("chat_models", [])
-                    return gr.update(choices=ms, value=ms[0] if ms else "")
-                chat_provider.change(update_chat_model_dropdown, chat_provider, chat_model_for_transcript)
+                # Chat Provider/Model Updates with filtering
+                chat_provider.change(
+                    fn=lambda p, s: update_transcript_chat_ui(p, force_all=False, user_state=s),
+                    inputs=[chat_provider, session_state],
+                    outputs=[chat_model_for_transcript, chat_badge]
+                )
+
+                chat_load_all_btn.click(
+                    fn=lambda p, s: update_transcript_chat_ui(p, force_all=True, user_state=s),
+                    inputs=[chat_provider, session_state],
+                    outputs=[chat_model_for_transcript, chat_badge]
+                )
 
                 # Custom Prompt Visibility
                 prompt_template.change(
-                    lambda t: gr.update(visible=(t == "Eigener Prompt")), 
-                    prompt_template, 
-                    custom_prompt_input
+                    fn=lambda t: gr.update(visible=(t == "Eigener Prompt")), 
+                    inputs=prompt_template, 
+                    outputs=custom_prompt_input
                 )
 
-                # Main Execution
-                # Mapping global inputs to the function arguments
+                # Main Transcription Execution
                 t_btn.click(
-                    run_and_save_transcription, 
+                    fn=run_and_save_transcription, 
                     inputs=[
                         t_audio, t_prov, t_model, 
                         t_lang, w_temp, w_prompt, 
@@ -5097,15 +5161,16 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     outputs=[t_log, t_orig, t_trsl]
                 )
 
+                # Manual Save
                 t_save_btn.click(
-                    manual_save_transcription,
-                    # Added session_state
+                    fn=manual_save_transcription,
                     inputs=[t_orig, t_trsl, t_prov, t_model, t_lang, session_state],
                     outputs=t_save_status
                 )
 
+                # Send to Chat Execution
                 send_to_chat_btn.click(
-                    send_transcript_to_chat,
+                    fn=send_transcript_to_chat,
                     inputs=[
                         t_orig,
                         prompt_template,
