@@ -5198,7 +5198,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp}", 
+                                    glob="**/*",
                                     height=300,
                                     label="Bilder durchsuchen"
                                 )
