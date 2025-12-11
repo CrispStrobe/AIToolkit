@@ -3411,6 +3411,32 @@ PWA_HEAD = """
 <script src="/static/pwa.js" defer></script>
 
 <style>
+/* 📱 MOBILE OPTIMIZATION */
+@media (max-width: 768px) {
+    .gradio-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    
+    /* Remove huge whitespace gaps */
+    .gap-4 { gap: 0.5rem !important; }
+    .pad-4 { padding: 0.5rem !important; }
+    
+    /* Force Chatbot to fill screen height */
+    #chat_window {
+        height: 75vh !important;
+        max-height: 80vh !important;
+    }
+    
+    /* Hide non-essential headers on mobile to save space */
+    h1, footer { display: none !important; }
+    
+    /* Compact tabs */
+    .tabs { margin-bottom: 0 !important; }
+}
+
 /* 🧠 Reasoning/Thinking Block Styling */
 .message-wrap details {
     background-color: #f9fafb;
@@ -3432,25 +3458,37 @@ PWA_HEAD = """
     outline: none;
 }
 
-.message-wrap details[open] summary {
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #e5e7eb;
-}
-
 body.dark .message-wrap details {
     background-color: #1f2937;
     border-color: #374151;
 }
-body.dark .message-wrap summary {
-    color: #9ca3af;
+</style>
+
+<script>
+// 💾 PERSISTENCE V2 - Using Strings for Safety
+function saveCredsV2(u, p) {
+    if (u && p) {
+        localStorage.setItem("ak_user", u);
+        localStorage.setItem("ak_pass", p);
+    }
 }
 
-/* 🚫 HIDE FOOTER (Built with Gradio) */
-footer {
-    display: none !important;
+function clearCredsV2() {
+    localStorage.removeItem("ak_user");
+    localStorage.removeItem("ak_pass");
 }
-</style>
+
+function getCredsV2() {
+    const u = localStorage.getItem("ak_user");
+    const p = localStorage.getItem("ak_pass");
+    
+    if (!u || !p) return ""; // Return empty string if missing
+    
+    // Return a JSON STRING, not an object. 
+    // This prevents Gradio from flattening/malforming the list.
+    return JSON.stringify([u, p]);
+}
+</script>
 """
 
 # ==========================================
@@ -6590,7 +6628,43 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 images_tab.select(fn=load_img_data, outputs=[images_history, img_state])
                 prompts_tab.select(fn=load_prompts_data, outputs=[saved_prompts, prompt_state])
                 
+    def attempt_auto_login(json_str):
+        """
+        Called by JS on page load. 
+        Input is a JSON string: '["user", "pass"]'
+        """
+        if not json_str or json_str == "":
+            # Normal state (first visit or logged out)
+            return (
+                "", gr.update(visible=False), gr.update(visible=True), 
+                "👤 Nicht angemeldet", gr.update(visible=False), 
+                gr.update(visible=False), {"id": None, "username": None, "is_admin": False},
+                gr.update(), gr.update(), gr.update()
+            )
+
+        print(f"🔄 Auto-login RAW data: {json_str}") # Debug
+
+        try:
+            creds = json.loads(json_str)
             
+            if not isinstance(creds, list) or len(creds) < 2:
+                print(f"❌ Auto-login failed: Invalid format {type(creds)}")
+                raise ValueError("Invalid format")
+                
+            username, password = creds[0], creds[1]
+            print(f"🔑 Authenticating stored user: {username}")
+            
+            # Call the existing login handler
+            return handle_login(username, password)
+            
+        except Exception as e:
+            print(f"❌ Auto-login error: {e}")
+            return (
+                "", gr.update(visible=False), gr.update(visible=True), 
+                "👤 Fehler beim Auto-Login", gr.update(visible=False), 
+                gr.update(visible=False), {"id": None, "username": None, "is_admin": False},
+                gr.update(), gr.update(), gr.update()
+            )
 
     def handle_login(username, password):
         """Enhanced login with storage path initialization"""
@@ -6635,22 +6709,50 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
         handle_login,
         inputs=[login_username, login_password],
         outputs=[
-            login_message, 
-            main_app, 
-            login_screen, 
-            login_status, 
-            logout_btn, 
-            admin_tab, 
-            session_state,
-            t_storage_browser,      # Add this - transcription tab
-            v_storage_browser,      # Add this - vision tab  
-            attach_sb_browser       # Add this - chat tab attachments
+            login_message, main_app, login_screen, login_status, 
+            logout_btn, admin_tab, session_state,
+            t_storage_browser, v_storage_browser, attach_sb_browser
         ]
+    ).then(
+        fn=None,
+        inputs=[login_username, login_password],
+        js="(u, p) => saveCredsV2(u, p)"  # Calls V2 function
     )
+
+    # 2. Logout Button Click
+    # Python logout + JS clears LocalStorage
     logout_btn.click(
         handle_logout,
-        outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab, session_state]
+        inputs=None,
+        outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab, session_state],
+        js="() => clearCredsV2()" # Calls V2 function
     )
+
+    # 3. AUTO-LOGIN ON LOAD (PWA Persistence)
+    # Hidden component to act as bridge between JS and Python
+    hidden_creds_bridge = gr.Textbox(visible=False, label="Creds Bridge")
+
+    # On App Load: JS reads LocalStorage -> Feeds into hidden_creds -> Triggers Python Login
+    demo.load(
+        fn=None,
+        inputs=None,
+        outputs=[hidden_creds_bridge],
+        js="async () => { await new Promise(r => setTimeout(r, 800)); return getCredsV2(); }"
+    )
+
+    # Python Trigger
+    hidden_creds_bridge.change(
+        fn=attempt_auto_login,
+        inputs=[hidden_creds_bridge],
+        outputs=[
+            login_message, main_app, login_screen, login_status, 
+            logout_btn, admin_tab, session_state,
+            t_storage_browser, v_storage_browser, attach_sb_browser
+        ]
+    )
+
+    # Assign ID for CSS Mobile Fix
+    c_bot.elem_id = "chat_window"
 
 # ==========================================
 # 🚀 STARTUP SEQUENCE
