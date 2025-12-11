@@ -1321,7 +1321,7 @@ PROVIDERS = {
     "Scaleway": {
         "base_url": "https://api.scaleway.ai/v1",
         "key_name": "SCALEWAY",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
+        "badge": "&#127467;&#127479; <b>DSGVO-Konform</b> (FR)",
         "chat_models": [
             "gpt-oss-120b", 
             "mistral-small-3.2-24b-instruct-2506", 
@@ -1349,7 +1349,7 @@ PROVIDERS = {
     "Gladia": {
         "base_url": "https://api.gladia.io/v2",
         "key_name": "GLADIA",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (France)",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
         "audio_models": ["gladia-v2"],
         "context_limits": {
             "gladia-v2": 1000000 
@@ -1370,6 +1370,7 @@ PROVIDERS = {
             "meta-llama/Llama-3.3-70B-Instruct"
         ],
         "image_models": ["black-forest-labs/flux-schnell", "black-forest-labs/flux-dev"],
+        "vision_models": ["google/gemma-3-27b-it", "Qwen/Qwen2.5-VL-72B-Instruct", "nvidia/Nemotron-Nano-V2-12b"],
         "context_limits": {
             "deepseek-ai/DeepSeek-R1-0528": 163840,
             "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": 131072,
@@ -1984,7 +1985,7 @@ def logout_user():
     """Logout function returns empty state"""
     # Return empty dictionary to reset session_state
     empty_state = {"id": None, "username": None, "is_admin": False}
-    return f"👋 Auf Wiedersehen!", gr.update(visible=False), gr.update(visible=True), empty_state
+    return f"👋", gr.update(visible=False), gr.update(visible=True), empty_state
 
 # ==========================================
 # TOKEN MANAGEMENT & CHUNKING
@@ -3427,91 +3428,23 @@ PWA_HEAD = """
 <script src="/static/pwa.js" defer></script>
 
 <style>
-/* --- ACCORDION COMPACTING (Fixed for your version) --- */
-
-/* 1. Target the Container (Grandparent) */
-/* Use :has() to target only blocks that have a label (Accordions) */
-.block:has(> .label-wrap) {
-    padding: 0 !important;       /* Kills the 'padded' class whitespace */
-    margin-bottom: 0 !important; /* Removes gap below the closed accordion */
-    border: none !important;     /* Optional: removes outer border */
-    overflow: hidden !important; /* Keeps corners tight */
-}
-
-/* 2. Target the Header/Label (Parent) */
-.block > .label-wrap { 
-    padding: 0px 8px !important; 
-    margin: 0 !important;
-    min-height: 32px !important; 
-    height: 32px !important; 
-    display: flex !important;
-    align-items: center !important;
-    background-color: transparent !important;
-    border: none !important;
-}
-
-/* 3. Target the Text Span */
-.block > .label-wrap > span {
-    margin: 0 !important;
-    padding: 0 !important;
-    font-size: 0.9rem !important;
-}
-
-/* 4. Fix the Arrow Icon */
-.block > .label-wrap .icon {
-    margin: 0 !important;
-    transform: scale(0.8);
-}
+/* --- ACCORDION COMPACTING --- */
+.block:has(> .label-wrap) { padding: 0 !important; margin-bottom: 0 !important; border: none !important; overflow: hidden !important; }
+.block > .label-wrap { padding: 0px 8px !important; margin: 0 !important; min-height: 32px !important; height: 32px !important; display: flex !important; align-items: center !important; background-color: transparent !important; border: none !important; }
+.block > .label-wrap > span { margin: 0 !important; padding: 0 !important; font-size: 0.9rem !important; }
+.block > .label-wrap .icon { margin: 0 !important; transform: scale(0.8); }
 
 /* --- HEADER ALIGNMENT --- */
-#user-status-row {
-    justify-content: flex-end !important; /* Force Right Alignment */
-    text-align: right !important;
-    padding-right: 10px !important;
-}
+#user-status-row { justify-content: flex-end !important; text-align: right !important; padding-right: 10px !important; }
 
-/* --- DESKTOP TWEAKS --- */
-label span { 
-    font-size: 0.85rem !important; 
-    font-weight: 600 !important; 
-    margin-bottom: 2px !important;
-    opacity: 1 !important; 
-}
-
-/* --- CHECKBOX FIX (Aggressive) --- */
-.transparent-checkbox { 
-    --background-fill-primary: transparent !important; 
-    --background-fill-secondary: transparent !important;
-    --block-background-fill: transparent !important;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* Target deep nested elements */
-.transparent-checkbox .block,
-.transparent-checkbox label,
-.transparent-checkbox span,
-.transparent-checkbox .wrap {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-}
-
-/* --- BADGE STYLING --- */
-/* Reset Gradio's default prose container for badges */
-.badge-col .prose { 
-    border: none !important; 
-    background: transparent !important; 
-    padding: 0 !important; 
-    margin: 0 !important;
-    box-shadow: none !important;
-}
+/* --- BADGE STYLING (Flag Fix) --- */
+/* Reset container */
+.badge-col .prose { border: none !important; background: transparent !important; padding: 0 !important; margin: 0 !important; box-shadow: none !important; }
 .badge-col { border: none !important; box-shadow: none !important; background: transparent !important; }
 
 .custom-badge {
-    font-family: "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", Arial, sans-serif;
+    /* Fonts prioritized for Emoji display */
+    font-family: "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Symbol", sans-serif;
     font-size: 0.85rem !important;
     line-height: 1.2 !important;
     white-space: nowrap !important; 
@@ -3528,62 +3461,58 @@ label span {
     box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
 
+/* --- ROW & CHECKBOX TRANSPARENCY FIX --- */
+/* Force the row itself to be transparent */
+.compact-row { 
+    gap: 8px !important; 
+    align-items: end !important; 
+    background: transparent !important; 
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+.compact-row .form { 
+    background: transparent !important; 
+    border: none !important; 
+}
+
+/* Aggressive Checkbox Background Removal */
+.transparent-checkbox,
+.transparent-checkbox .block,
+.transparent-checkbox label,
+.transparent-checkbox span,
+.transparent-checkbox .wrap {
+    background: transparent !important;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+
+/* --- DESKTOP TWEAKS --- */
+label span { font-size: 0.85rem !important; font-weight: 600 !important; margin-bottom: 2px !important; opacity: 1 !important; }
+
 /* 📱 MOBILE OPTIMIZATION */
 @media (max-width: 768px) {
     .gradio-container { padding: 0 !important; margin: 0 !important; width: 100% !important; overflow-x: hidden; }
-
-    /* 1. HEADER */
     .compact-header { padding: 2px 5px !important; gap: 0 !important; align-items: center; }
     .compact-header h3 { margin: 0 !important; font-size: 1.1rem !important; }
-
-    /* 2. TABS: Icon Only */
-    .icon-nav > .tab-nav > button {
-        display: block !important; 
-        font-size: 0 !important;      
-        padding: 12px 0 !important;
-        height: 50px !important;
-        text-align: center !important;
-    }
-    .icon-nav > .tab-nav > button::first-letter {
-        font-size: 1.5rem !important; 
-        visibility: visible !important;
-    }
-
-    /* 3. BUTTONS: Mobile Icon Only */
-    .mobile-icon-only {
-        display: block !important; 
-        font-size: 0 !important;        
-        width: 100% !important;
-        min-width: 40px !important;
-        height: 45px !important;
-        padding: 0 !important;
-        text-align: center !important;  
-        line-height: 45px !important;   
-    }
-    .mobile-icon-only::first-letter {
-        font-size: 1.4rem !important;   
-        visibility: visible !important;
-    }
+    .icon-nav > .tab-nav > button { display: block !important; font-size: 0 !important; padding: 12px 0 !important; height: 50px !important; text-align: center !important; }
+    .icon-nav > .tab-nav > button::first-letter { font-size: 1.5rem !important; visibility: visible !important; }
+    .mobile-icon-only { display: block !important; font-size: 0 !important; width: 100% !important; min-width: 40px !important; height: 45px !important; padding: 0 !important; text-align: center !important; line-height: 45px !important; }
+    .mobile-icon-only::first-letter { font-size: 1.4rem !important; visibility: visible !important; }
     #btn-send { background-color: #2563eb !important; }
     #btn-send::first-letter { color: white !important; }
     .btn-secondary::first-letter { color: #374151 !important; }
-
-    /* 4. LAYOUT */
     #chat_window { height: 60vh !important; }
     footer, h1 { display: none !important; }
     .custom-badge { font-size: 0.65rem !important; padding: 2px !important; height: auto !important; }
     
-    /* HIDE LABELS inside the Compact Row ONLY on Mobile */
-    .compact-row label span { display: none !important; }
-    .compact-row .form { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; }
-    
-    /* Force Alle/Badge to be visible */
+    /* Allow horizontal scrolling for the compact row on mobile */
     .compact-row { flex-wrap: nowrap !important; overflow-x: auto !important; }
 }
-
-/* Compact Row alignment (Desktop) */
-.compact-row { gap: 8px !important; align-items: end !important; }
-.compact-row .form { border: none !important; background: transparent !important; }
 </style>
 
 <script>
@@ -3690,9 +3619,6 @@ def update_c_ui(prov, force_all=False, user_state=None):
     #return gr.update(choices=final_choices, value=default_val), badge
     return gr.update(choices=final_choices, value=default_val), f"<div class='custom-badge'>{badge}</div>"
 
-# --- VISION UI UPDATE ---
-
-# --- VISION UI UPDATE ---
 def update_v_ui(prov, force_all=False, user_state=None):
     styled_badge = f"<div class='custom-badge'>{get_compliance_html(prov)}</div>"
 
@@ -3755,7 +3681,6 @@ def update_v_ui_old(prov, force_all=False, user_state=None):
     # Return Badge and Model Update
     return styled_badge, gr.update(choices=final_choices, value=default_val)
 
-# --- IMAGE UI UPDATE ---
 # --- IMAGE UI UPDATE ---
 def update_g_ui(prov, force_all=False, user_state=None):
     styled_badge = f"<div class='custom-badge'>{get_compliance_html(prov)}</div>"
@@ -3846,6 +3771,7 @@ def update_t_ui(prov, force_all=False):
         gr.update(visible=show_model_dropdown, choices=choices, value=default_val),
         gr.update(visible=is_whisper) 
     )
+    
 def update_t_ui_old(prov, force_all=False):
     # 1. Handle Badge Formatting
     raw_html = get_compliance_html(prov)
@@ -5331,19 +5257,17 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                     scale=2
                                 )
                                 
-                                t_diar = gr.Checkbox(
-                                    value=True, 
-                                    label="🎭 Sprecher erkennen",
-                                    scale=1,
-                                    container=False,
-                                    elem_classes="transparent-checkbox" # <--- Added Class
-                                )
-                            
-                                #t_badge = gr.HTML(value=get_compliance_html("Gladia"))
                                 with gr.Column(elem_classes="badge-col"):
-                                        t_badge = gr.HTML(
-                                            value=f"<div class='custom-badge'>{get_compliance_html('Deepgram')}</div>"
-                                        )
+                                    t_diar = gr.Checkbox(
+                                        value=True, 
+                                        label="🎭 Sprecher erkennen",
+                                        scale=1,
+                                        container=False,
+                                        elem_classes="transparent-checkbox" # <--- Added Class
+                                    )
+                                    t_badge = gr.HTML(
+                                        value=f"<div class='custom-badge'>{get_compliance_html('Deepgram')}</div>"
+                                    )
 
                         # --- SETTINGS ACCORDION ---
                         with gr.Accordion("⚙️ Einstellungen", open=False):
@@ -5449,7 +5373,8 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 chat_load_all_btn = gr.Button("🌍 Alle", scale=0, size="sm")
                     
                     # Badge display
-                    chat_badge = gr.HTML(value=PROVIDERS[DEFAULT_CHAT_PROVIDER]["badge"])
+                    with gr.Column(elem_classes="badge-col"):
+                        chat_badge = gr.HTML(value=f"<div class='custom-badge'>{get_compliance_html(DEFAULT_CHAT_PROVIDER)}</div>")
 
                     additional_notes = gr.Textbox(
                         label="📝 Zusätzliche Hinweise",
@@ -5588,7 +5513,8 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 v_load_all = gr.Button("🔄", scale=0, size="sm", variant="secondary")
                             
                             # Badge Row
-                            v_badge = gr.HTML(value=get_compliance_html("Scaleway"))
+                            with gr.Column(elem_classes="badge-col"):
+                                v_badge = gr.HTML(value=f"<div class='custom-badge'>{get_compliance_html('Scaleway')}</div>")
 
                         # Inputs
                         v_prompt = gr.Textbox(label="Frage", value="Beschreibe dieses Bild detailliert.", lines=2)
@@ -5647,7 +5573,8 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                 g_load_all = gr.Button("🔄", scale=0, size="sm", variant="secondary")
 
                             # Badge Row
-                            g_badge = gr.HTML(value=get_compliance_html("Nebius"))
+                            with gr.Column(elem_classes="badge-col"):
+                                g_badge = gr.HTML(value=f"<div class='custom-badge'>{get_compliance_html('Nebius')}</div>")
 
                         # --- SETTINGS ACCORDION ---
                         with gr.Accordion("⚙️ Einstellungen", open=False):
