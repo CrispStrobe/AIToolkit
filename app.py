@@ -1370,6 +1370,7 @@ PROVIDERS = {
             "meta-llama/Llama-3.3-70B-Instruct"
         ],
         "image_models": ["black-forest-labs/flux-schnell", "black-forest-labs/flux-dev"],
+        "vision_models": ["google/gemma-3-27b-it", "Qwen/Qwen2.5-VL-72B-Instruct", "nvidia/Nemotron-Nano-V2-12b"],
         "context_limits": {
             "deepseek-ai/DeepSeek-R1-0528": 163840,
             "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": 131072,
