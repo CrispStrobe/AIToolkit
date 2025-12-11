@@ -1349,7 +1349,7 @@ PROVIDERS = {
     "Gladia": {
         "base_url": "https://api.gladia.io/v2",
         "key_name": "GLADIA",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (France)",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
         "audio_models": ["gladia-v2"],
         "context_limits": {
             "gladia-v2": 1000000 
@@ -3512,12 +3512,13 @@ label span {
 .badge-col { border: none !important; box-shadow: none !important; background: transparent !important; }
 
 .custom-badge {
-    font-family: "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", Arial, sans-serif;
+    /* Put system emoji fonts FIRST for Windows compatibility */
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", Arial, sans-serif !important;
     font-size: 0.85rem !important;
     line-height: 1.2 !important;
     white-space: nowrap !important; 
-    background: #ffffff !important; /* Force White */
-    color: #000000 !important;      /* Force Black */
+    background: #ffffff !important;
+    color: #000000 !important;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     padding: 0 10px;
@@ -3527,6 +3528,10 @@ label span {
     align-items: center;
     justify-content: center;
     box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    
+    /* Critical for emoji rendering on Windows */
+    font-variant-emoji: emoji;
+    -webkit-font-smoothing: antialiased;
 }
 
 /* 📱 MOBILE OPTIMIZATION */
@@ -5331,20 +5336,20 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                     label="Engine",
                                     scale=2
                                 )
-                                
-                                t_diar = gr.Checkbox(
-                                    value=True, 
-                                    label="🎭 Sprecher erkennen",
-                                    scale=1,
-                                    container=False,
-                                    elem_classes="transparent-checkbox" # <--- Added Class
-                                )
-                            
-                                #t_badge = gr.HTML(value=get_compliance_html("Gladia"))
                                 with gr.Column(elem_classes="badge-col"):
-                                        t_badge = gr.HTML(
-                                            value=f"<div class='custom-badge'>{get_compliance_html('Deepgram')}</div>"
-                                        )
+                                    t_diar = gr.Checkbox(
+                                        value=True, 
+                                        label="🎭 Sprecher erkennen",
+                                        scale=1,
+                                        container=False,
+                                        elem_classes="transparent-checkbox" # <--- Added Class
+                                    )
+                            
+                                    # t_badge = gr.HTML(value=get_compliance_html("Gladia"))
+                                
+                                    t_badge = gr.HTML(
+                                        value=f"<div class='custom-badge'>{get_compliance_html('Deepgram')}</div>"
+                                    )
 
                         # --- SETTINGS ACCORDION ---
                         with gr.Accordion("⚙️ Einstellungen", open=False):
