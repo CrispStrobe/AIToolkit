@@ -3411,82 +3411,108 @@ PWA_HEAD = """
 <script src="/static/pwa.js" defer></script>
 
 <style>
+/* --- DESKTOP TWEAKS --- */
+/* Restore labels on desktop */
+label span { 
+    font-size: 0.85rem !important; 
+    font-weight: 600 !important; 
+    margin-bottom: 4px !important;
+    opacity: 1 !important; 
+}
+
+/* Badge Styling (Desktop & Mobile) */
+.badge-col .prose { border: none !important; background: transparent !important; padding: 0 !important; }
+.badge-col { border: none !important; box-shadow: none !important; }
+.custom-badge {
+    font-size: 0.75rem !important;
+    line-height: 1.2 !important;
+    white-space: normal !important;
+    word-break: break-word !important;
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px;
+    text-align: center;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 /* 📱 MOBILE OPTIMIZATION */
 @media (max-width: 768px) {
     .gradio-container {
-        padding: 0 !important;
-        margin: 0 !important;
+        padding: 0 !important; margin: 0 !important; width: 100% !important; overflow-x: hidden;
+    }
+
+    /* 1. HEADER */
+    .compact-header { padding: 4px !important; gap: 0 !important; align-items: center; }
+
+    /* 2. TABS: Icon Only (Only for .icon-nav class) */
+    .icon-nav > .tab-nav > button {
+        display: block !important; 
+        font-size: 0 !important;      /* Hide Text */
+        padding: 12px 0 !important;
+        height: 50px !important;
+        text-align: center !important;
+    }
+    .icon-nav > .tab-nav > button::first-letter {
+        font-size: 1.5rem !important; /* Show Icon */
+        visibility: visible !important;
+    }
+
+    /* 3. BUTTONS: The "Block" Fix */
+    /* We must use display:block for ::first-letter to work */
+    .mobile-icon-only {
+        display: block !important; 
+        font-size: 0 !important;        /* Hide Text */
         width: 100% !important;
-        max-width: 100% !important;
+        min-width: 40px !important;
+        height: 45px !important;
+        padding: 0 !important;
+        text-align: center !important;  /* Horizontal Align */
+        line-height: 45px !important;   /* Vertical Align */
+        overflow: hidden !important;
     }
     
-    /* Remove huge whitespace gaps */
-    .gap-4 { gap: 0.5rem !important; }
-    .pad-4 { padding: 0.5rem !important; }
-    
-    /* Force Chatbot to fill screen height */
-    #chat_window {
-        height: 75vh !important;
-        max-height: 80vh !important;
+    .mobile-icon-only::first-letter {
+        font-size: 1.4rem !important;   /* Visible Icon */
+        visibility: visible !important;
     }
+
+    /* Fix Colors on Mobile */
+    #btn-send { background-color: #2563eb !important; }
+    #btn-send::first-letter { color: white !important; } /* White Icon on Blue */
+    .btn-secondary::first-letter { color: #374151 !important; } /* Dark Icon on Gray */
+
+    /* 4. LAYOUT */
+    #chat_window { height: 60vh !important; }
+    footer, h1 { display: none !important; }
+    .custom-badge { font-size: 0.65rem !important; padding: 2px !important; }
     
-    /* Hide non-essential headers on mobile to save space */
-    h1, footer { display: none !important; }
-    
-    /* Compact tabs */
-    .tabs { margin-bottom: 0 !important; }
+    /* Restore Text for Settings/History Accordions */
+    .accordion button, .tab-item button {
+        color: inherit !important;
+        font-size: 0.9rem !important;
+        text-align: left !important;
+        display: flex !important;
+    }
 }
 
-/* 🧠 Reasoning/Thinking Block Styling */
-.message-wrap details {
-    background-color: #f9fafb;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 8px 12px;
-    margin-bottom: 12px;
-    font-size: 0.9em;
-}
-
-.message-wrap summary {
-    cursor: pointer;
-    font-weight: 600;
-    color: #6b7280;
-    user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    outline: none;
-}
-
-body.dark .message-wrap details {
-    background-color: #1f2937;
-    border-color: #374151;
-}
+/* Compact Row alignment */
+.compact-row { gap: 6px !important; align-items: end !important; }
+.compact-row .form { border: none !important; background: transparent !important; }
 </style>
 
 <script>
-// 💾 PERSISTENCE V2 - Using Strings for Safety
+// 💾 PERSISTENCE V2
 function saveCredsV2(u, p) {
-    if (u && p) {
-        localStorage.setItem("ak_user", u);
-        localStorage.setItem("ak_pass", p);
-    }
+    if (u && p) { localStorage.setItem("ak_user", u); localStorage.setItem("ak_pass", p); }
 }
-
-function clearCredsV2() {
-    localStorage.removeItem("ak_user");
-    localStorage.removeItem("ak_pass");
-}
-
+function clearCredsV2() { localStorage.removeItem("ak_user"); localStorage.removeItem("ak_pass"); }
 function getCredsV2() {
-    const u = localStorage.getItem("ak_user");
-    const p = localStorage.getItem("ak_pass");
-    
-    if (!u || !p) return ""; // Return empty string if missing
-    
-    // Return a JSON STRING, not an object. 
-    // This prevents Gradio from flattening/malforming the list.
-    return JSON.stringify([u, p]);
+    const u = localStorage.getItem("ak_user"); const p = localStorage.getItem("ak_pass");
+    return (u && p) ? JSON.stringify([u, p]) : ""; 
 }
 </script>
 """
@@ -4676,96 +4702,234 @@ def manual_save_transcription(original, translated, provider, model, lang, user_
 # ==========================================
 
 with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD) as demo:
-    
+        
     # 1. Define the Session "Backpack" (Stores data per browser tab)
     session_state = gr.State({"id": None, "username": None, "is_admin": False})
 
     # Set higher file size limits
     gr.set_static_paths(paths=["/var/www/transkript_app/static"])
 
-    # Login/Logout UI
-    with gr.Row():
-        gr.Markdown("# ⛪ KI Toolkit")
-        with gr.Column(scale=1):
-            login_status = gr.Markdown("👤 Nicht angemeldet")
-            logout_btn = gr.Button("🚪 Abmelden", visible=False, size="sm")
+    # === 1. COMPACT HEADER ===
+    with gr.Row(elem_classes="compact-header", equal_height=True):
+        with gr.Column(scale=10):
+            gr.Markdown("### ⛪ KI Toolkit")
+        
+        # WIDE COLUMN for User+Logout to fit text on Desktop
+        with gr.Column(scale=1, min_width=260): 
+            with gr.Row(equal_height=True, elem_classes="compact-row"):
+                login_status = gr.Markdown("👤", show_label=False)
+                # Mobile: icon only. Desktop: Full text "Abmelden"
+                logout_btn = gr.Button("🚪 Abmelden", size="sm", scale=0, min_width=40, elem_classes="mobile-icon-only btn-secondary")
 
-    # Login Screen (shown when not logged in)
+    # Login Screen (Unchanged)
     login_screen = gr.Column(visible=True)
     with login_screen:
         gr.Markdown("## 🔐 Anmeldung erforderlich")
         with gr.Row():
-            with gr.Column(scale=1):
-                pass
+            with gr.Column(scale=1): pass
             with gr.Column(scale=1):
                 login_username = gr.Textbox(label="Benutzername", placeholder="user123")
-                login_password = gr.Textbox(label="Passwort", type="password", placeholder="meinpasswort123")
+                login_password = gr.Textbox(label="Passwort", type="password", placeholder="***")
                 login_btn = gr.Button("🔓 Anmelden", variant="primary")
                 login_message = gr.Markdown("")
-            with gr.Column(scale=1):
-                pass
+            with gr.Column(scale=1): pass
 
-    # Main App (shown when logged in)
+    # Main App
     main_app = gr.Column(visible=False)
     with main_app:
 
-        with gr.Tabs():
+        # 'icon-nav' class restricts the "Icon Only" tabs to just this top level
+        with gr.Tabs(elem_classes="icon-nav"):
 
             # --- TAB 1: CHAT ---
             with gr.TabItem("💬 Chat", id="chat_tab") as chat_tab:
-                with gr.Row():
-                    with gr.Column(scale=3):
-                        # Top Bar
-                        with gr.Row():
-                            chat_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
-                            chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
+                
+                # 1. CONTROLS ROW
+                with gr.Row(variant="panel", equal_height=True, elem_classes="compact-row"):
+                    chat_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
+                    chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
+                    
+                    # Provider: Label is shown on Desktop
+                    c_prov = gr.Dropdown(
+                        choices=chat_providers_implemented,
+                        value=DEFAULT_CHAT_PROVIDER,
+                        label="Anbieter", show_label=True, container=False,
+                        scale=3, min_width=80
+                    )
+                    
+                    # Model: Label is shown on Desktop
+                    c_model = gr.Dropdown(
+                        choices=PROVIDERS[DEFAULT_CHAT_PROVIDER]["chat_models"],
+                        value=DEFAULT_CHAT_MODEL,
+                        label="Modell", show_label=True, container=False,
+                        scale=4, min_width=100
+                    )
+                    
+                    # "Alle" Button
+                    c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=40, elem_classes="mobile-icon-only btn-secondary")
+                    
+                    # Badge (Scale 3 for wrapping)
+                    with gr.Column(scale=3, min_width=100, elem_classes="badge-col"):
+                        c_badge = gr.HTML(
+                            value=f"<div class='custom-badge'>{get_compliance_html(DEFAULT_CHAT_PROVIDER)}</div>"
+                        )
+
+                    # Update logic
+                    c_prov.change(
+                        lambda p, s: update_c_ui(p, force_all=False, user_state=s),
+                        inputs=[c_prov, session_state], 
+                        outputs=[c_model, c_badge]
+                    )
+                    c_load_all.click(
+                        lambda p, s: update_c_ui(p, force_all=True, user_state=s), 
+                        inputs=[c_prov, session_state], 
+                        outputs=[c_model, c_badge]
+                    )
+
+                # 2. CHAT WINDOW
+                c_bot = gr.Chatbot(
+                    height=500, 
+                    type="messages", 
+                    show_copy_button=True,
+                    elem_id="chat_window"
+                )
+                
+                # 3. INPUT
+                c_msg = gr.Textbox(placeholder="Nachricht...", show_label=False, lines=3, max_lines=5)
+
+                # 4. ACTION BUTTONS
+                with gr.Row(equal_height=True, elem_classes="compact-row"):
+                    # ID 'btn-send' forces White text color on mobile
+                    c_btn = gr.Button("📤 Senden", variant="primary", scale=2, elem_id="btn-send", elem_classes="mobile-icon-only")
+                    
+                    # Class 'btn-secondary' forces Dark text color on mobile
+                    c_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1, min_width=40, elem_classes="mobile-icon-only btn-secondary")
+                    c_save_btn = gr.Button("💾 Speichern", scale=1, min_width=40, elem_classes="mobile-icon-only btn-secondary")
+                    c_clear_btn = gr.Button("🗑️ Neu", scale=1, min_width=40, elem_classes="mobile-icon-only btn-secondary")
+
+                c_save_status = gr.Markdown("")
+
+                # Right Sidebar (Settings & History)
+                # NO 'icon-nav' class here, so text will remain visible on mobile
+                with gr.Accordion("⚙️ Einstellungen & Verlauf", open=False):
+                    with gr.Tabs():
+                        # Settings Tab
+                        with gr.TabItem("⚙️ Config"):
+                            c_key = gr.Textbox(label="API Key (Optional)", type="password")
+                            c_sys = gr.Textbox(label="System Rolle", value="Du bist ein hilfreicher Assistent.", lines=2)
                             
-                            c_prov = gr.Dropdown(
-                                choices=chat_providers_implemented,
-                                value=DEFAULT_CHAT_PROVIDER,  # ← NEW
-                                label="Anbieter", 
-                                scale=2
+                            gr.Markdown("**🧠 Reasoning**")
+                            with gr.Row():
+                                c_reasoning_effort = gr.Dropdown(
+                                    choices=["default", "low", "medium", "high"],
+                                    value="default",
+                                    label="Effort",
+                                    scale=1
+                                )
+                                c_reasoning_tokens = gr.Slider(
+                                    0, 32000, value=0, step=1024,
+                                    label="Token Budget",
+                                    scale=2
+                                )
+                            c_temp = gr.Slider(0, 2, value=0.7, label="Temperatur", step=0.1)
+
+                        # History Tab
+                        with gr.TabItem("📚 Verlauf"):
+                            c_history_state = gr.State([]) 
+                            with gr.Row():
+                                refresh_chats_btn = gr.Button("🔄", size="sm", scale=0)
+                                delete_chat_btn = gr.Button("🗑️", variant="stop", size="sm", scale=0)
+                            
+                            old_chats = gr.Dataframe(
+                                headers=["ID", "Datum", "Titel", "Modell"], 
+                                value=[[None, "", "", ""]], 
+                                label="Gespeicherte Chats", 
+                                interactive=False, 
+                                height=200, 
+                                wrap=True
                             )
-                            c_model = gr.Dropdown(
-                                choices=PROVIDERS[DEFAULT_CHAT_PROVIDER]["chat_models"],  # ← NEW
-                                value=DEFAULT_CHAT_MODEL,  # ← NEW
-                                label="Modell", 
-                                scale=4
+                            
+                            with gr.Row():
+                                load_chat_id = gr.Number(label="ID", precision=0, scale=1)
+                                load_chat_btn = gr.Button("📥 Laden", variant="primary", scale=1)
+                            
+                            chat_load_status = gr.Markdown("")
+
+                            # History Events
+                            refresh_chats_btn.click(load_chat_list_with_state, inputs=[session_state], outputs=[old_chats, c_history_state])
+                            
+                            old_chats.select(select_chat_row, inputs=[c_history_state], outputs=[load_chat_id])
+                            
+                            load_chat_btn.click(load_single_chat, inputs=[load_chat_id, session_state], outputs=[c_bot, chat_load_status])
+                            
+                            delete_chat_btn.click(delete_chat, inputs=[load_chat_id, session_state], outputs=[chat_load_status, old_chats, c_history_state])
+
+                        # Attachments Tab
+                        with gr.TabItem("📎 Anhang"):
+                            gr.Markdown("**📝 Vorlagen**")
+                            with gr.Row():
+                                c_prompt_select = gr.Dropdown(choices=[], label="Vorlage", scale=2)
+                                c_prompt_refresh = gr.Button("🔄", scale=0, size="sm")
+                            c_insert_prompt_btn = gr.Button("⬇️ Einfügen", size="sm")
+                            
+                            gr.Markdown("---")
+                            
+                            attach_type = gr.Radio(
+                                ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"],
+                                value="Transkript",
+                                label="Typ"
                             )
-                            c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=60)
+                            
+                            attach_id = gr.Number(label="ID", precision=0, visible=True)
+                            attach_custom = gr.Textbox(label="Text", lines=3, visible=False)
+                            attach_file = gr.File(label="Datei", visible=False, file_count="multiple", type="filepath")
+                            
+                            with gr.Group(visible=False) as sb_group:
+                                attach_sb_browser = gr.FileExplorer(root_dir=STORAGE_MOUNT_POINT, glob="**/*", height=200)
+                                sb_refresh_btn = gr.Button("🔄", size="sm")
 
-                        c_badge = gr.HTML(value=PROVIDERS[DEFAULT_CHAT_PROVIDER]["badge"])
+                            with gr.Row():
+                                attach_btn = gr.Button("➕ Anhängen", variant="secondary")
+                                undo_attach_btn = gr.Button("↩️ Undo", variant="stop")
+                            
+                            attach_status = gr.Markdown("")
 
-                        # UI Updates
-                        c_prov.change(
-                            lambda p, s: update_c_ui(p, force_all=False, user_state=s), # You will need to update update_c_ui signature too
-                            inputs=[c_prov, session_state], 
-                            outputs=[c_model, c_badge]
-                        )
-                        c_load_all.click(
-                            lambda p, s: update_c_ui(p, force_all=True, user_state=s), 
-                            inputs=[c_prov, session_state], 
-                            outputs=[c_model, c_badge]
-                        )
+                            # Toggle Logic
+                            def toggle_attach_inputs(atype):
+                                return (
+                                    gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]),
+                                    gr.update(visible=atype == "Eigener Text"),
+                                    gr.update(visible=atype == "Datei uploaden"),
+                                    gr.update(visible=atype == "Storage Box Datei")
+                                )
+                            
+                            attach_type.change(toggle_attach_inputs, attach_type, [attach_id, attach_custom, attach_file, sb_group])
+                            
+                            def refresh_chat_sb(): return gr.update(value=None)
+                            sb_refresh_btn.click(refresh_chat_sb, outputs=attach_sb_browser)
+                            
+                            attach_btn.click(attach_content_to_chat, inputs=[c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser, session_state], outputs=[c_bot, attach_status])
+                            undo_attach_btn.click(undo_last_attachment, inputs=[c_bot], outputs=[c_bot, attach_status])
 
-                        # Chat Area
-                        c_bot = gr.Chatbot(
-                            height=500, 
-                            type="messages", 
-                            show_copy_button=True
-                        )
-                        c_msg = gr.Textbox(placeholder="Nachricht...", show_label=False, lines=3)
+                            # Prompt Logic
+                            c_prompt_refresh.click(get_user_prompt_choices, inputs=[session_state], outputs=c_prompt_select)
+                            c_insert_prompt_btn.click(insert_custom_prompt, inputs=[c_prompt_select, c_msg, session_state], outputs=[c_msg])
 
-                        with gr.Row():
-                            c_btn = gr.Button("📤 Senden", variant="primary", scale=2)
-                            c_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
-                            c_save_btn = gr.Button("💾 Speichern", scale=1)
-                            c_clear_btn = gr.Button("🗑️ Neu", scale=1)
+                # --- EVENT WIRING (Bottom of Chat Tab) ---
+                submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
+                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], c_bot
+                )
+                click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
+                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], c_bot
+                )
+                c_stop_btn.click(fn=None, cancels=[submit_event, click_event])
+                c_save_btn.click(save_chat, [c_bot, c_prov, c_model, session_state], c_save_status)
+                c_clear_btn.click(lambda: ([], ""), outputs=[c_bot, c_save_status])
 
-                        c_save_status = gr.Markdown("")
+                c_save_status = gr.Markdown("")
 
-                    # Right Sidebar
-                    with gr.Column(scale=1):
+                # Right Sidebar
+                with gr.Column(scale=1):
                         
                         # 1. Settings (Closed)
                         with gr.Accordion("⚙️ Einstellungen", open=False):
@@ -6670,7 +6834,10 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
         """Enhanced login with storage path initialization"""
         success, message, show_app, show_login, state_data = login_user(username, password)
         
-        status_text = f"👤 Angemeldet als: **{state_data['username']}**" if success else "👤 Nicht angemeldet"
+        # status_text = f"👤 Angemeldet als: **{state_data['username']}**" if success else "👤 Nicht angemeldet"
+        # SHORTER STATUS TEXT for mobile
+        status_text = f"👤 {state_data['username']}" if success else "👤"
+        
         show_admin_tab = state_data.get("is_admin", False)
         
         # Storage root for file browsers (user-specific)
