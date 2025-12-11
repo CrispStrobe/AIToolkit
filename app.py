@@ -3479,27 +3479,6 @@ label span {
     opacity: 1 !important; 
 }
 
-/* --- CHECKBOX FIX (Aggressive) --- */
-.transparent-checkbox { 
-    --background-fill-primary: transparent !important; 
-    --background-fill-secondary: transparent !important;
-    --block-background-fill: transparent !important;
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* Target deep nested elements */
-.transparent-checkbox .block,
-.transparent-checkbox label,
-.transparent-checkbox span,
-.transparent-checkbox .wrap {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-}
-
 /* --- BADGE STYLING --- */
 /* Reset Gradio's default prose container for badges */
 .badge-col .prose { 
@@ -3578,10 +3557,6 @@ label span {
     #chat_window { height: 60vh !important; }
     footer, h1 { display: none !important; }
     .custom-badge { font-size: 0.65rem !important; padding: 2px !important; height: auto !important; }
-    
-    /* HIDE LABELS inside the Compact Row ONLY on Mobile */
-    .compact-row label span { display: none !important; }
-    .compact-row .form { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; }
     
     /* Force Alle/Badge to be visible */
     .compact-row { flex-wrap: nowrap !important; overflow-x: auto !important; }
@@ -5336,13 +5311,13 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                                     label="Engine",
                                     scale=2
                                 )
-                                with gr.Column(elem_classes="badge-col"):
+                                with gr.Column(scale=0, min_width=210):
                                     t_diar = gr.Checkbox(
                                         value=True, 
-                                        label="🎭 Sprecher erkennen",
+                                        label="🎭 Sprecher",
                                         scale=1,
-                                        container=False,
-                                        elem_classes="transparent-checkbox" # <--- Added Class
+                                        # container=False,
+                                        # elem_classes="transparent-checkbox" # <--- Added Class
                                     )
                             
                                     # t_badge = gr.HTML(value=get_compliance_html("Gladia"))
@@ -6951,7 +6926,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                 gr.update(), gr.update(), gr.update()
             )
 
-        print(f"🔄 Auto-login RAW data: {json_str}") # Debug
+        # print(f"🔄 Auto-login RAW data: {json_str}") # Debug
 
         try:
             creds = json.loads(json_str)
