@@ -1321,7 +1321,7 @@ PROVIDERS = {
     "Scaleway": {
         "base_url": "https://api.scaleway.ai/v1",
         "key_name": "SCALEWAY",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
         "chat_models": [
             "gpt-oss-120b", 
             "mistral-small-3.2-24b-instruct-2506", 
@@ -1346,10 +1346,20 @@ PROVIDERS = {
         }
     },
     
+    "Gladia": {
+        "base_url": "https://api.gladia.io/v2",
+        "key_name": "GLADIA",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b> (France)",
+        "audio_models": ["gladia-v2"],
+        "context_limits": {
+            "gladia-v2": 1000000 
+        }
+    },
+    
     "Nebius": {
         "base_url": "https://api.tokenfactory.nebius.com/v1",
         "key_name": "NEBIUS",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
+        "badge": "🇪🇺 <b>DSGVO-Konform</b>",
         "chat_models": [
             "deepseek-ai/DeepSeek-R1-0528",
             "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
@@ -1376,7 +1386,7 @@ PROVIDERS = {
     "Mistral": {
         "base_url": "https://api.mistral.ai/v1",
         "key_name": "MISTRAL",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
         "chat_models": [
             "mistral-large-latest",
             "mistral-medium-2508",
@@ -1400,7 +1410,7 @@ PROVIDERS = {
     "Deepgram": {
         "base_url": "https://api.eu.deepgram.com/v1",
         "key_name": "DEEPGRAM",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
+        "badge": "🇪🇺 <b>DSGVO-Konform</b>",
         "audio_models": ["nova-3-general", "nova-2-general", "nova-2"],
         "context_limits": {
             "nova-3-general": 16384,
@@ -1412,7 +1422,7 @@ PROVIDERS = {
     "AssemblyAI": {
         "base_url": "https://api.eu.assemblyai.com/v2",
         "key_name": "ASSEMBLYAI",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
+        "badge": "🇪🇺 <b>DSGVO-Konform</b>",
         "audio_models": ["universal", "slam-1"],
         "context_limits": {
             "universal": 16384,
@@ -1423,7 +1433,7 @@ PROVIDERS = {
     "OpenRouter": {
         "base_url": "https://openrouter.ai/api/v1",
         "key_name": "OPENROUTER",
-        "badge": "🇺🇸 <b>US-Server</b> (Daten verlassen EU)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             # 1M+ Context
             "google/gemini-2.0-pro-exp-02-05:free",
@@ -1565,7 +1575,7 @@ PROVIDERS = {
     "Groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "key_name": "GROQ",
-        "badge": "🇺🇸 <b>US-Server</b> (Nicht DSGVO, Schnell, z.T. kostenlos)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             "deepseek-r1-distill-llama-70b",
             "deepseek-r1-distill-qwen-32b",
@@ -1621,7 +1631,7 @@ PROVIDERS = {
     "Poe": {
         "base_url": "https://api.poe.com/v1",
         "key_name": "POE",
-        "badge": "🌐 <b>Poe Official API</b> (Universal)",
+        "badge": "🌐 <b>US-Server</b>!",
         "chat_models": [
             "gpt-5.1-instant",
             "claude-sonnet-4.5",
@@ -1682,7 +1692,7 @@ PROVIDERS = {
     "OpenAI": {
         "base_url": "https://api.openai.com/v1",
         "key_name": "OPENAI",
-        "badge": "🇺🇸 <b>US-Server</b> (OpenAI Official)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             "gpt-3.5-turbo",
             "gpt-3.5-turbo-0125",
@@ -1716,7 +1726,7 @@ PROVIDERS = {
     "Cohere": {
         "base_url": "https://api.cohere.ai/v1",
         "key_name": "COHERE",
-        "badge": "🇺🇸 <b>US-Server</b> (Cohere Official)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             "command-r-plus-08-2024",
             "command-r-plus",
@@ -1745,7 +1755,7 @@ PROVIDERS = {
     "Together": {
         "base_url": "https://api.together.xyz/v1",
         "key_name": "TOGETHER",
-        "badge": "🇺🇸 <b>US-Server</b> (Together AI)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
             "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
@@ -1763,7 +1773,7 @@ PROVIDERS = {
     "OVH": {
         "base_url": "https://llama-3-1-70b-instruct.endpoints.kepler.ai.cloud.ovh.net/api/openai_compat/v1",
         "key_name": "OVH",
-        "badge": "🇫🇷 <b>DSGVO-Konform</b> (OVH AI Endpoints)",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
         "chat_models": [
             "ovh/codestral-mamba-7b-v0.1",
             "ovh/deepseek-r1-distill-llama-70b",
@@ -1797,7 +1807,7 @@ PROVIDERS = {
     "Cerebras": {
         "base_url": "https://api.cerebras.ai/v1",
         "key_name": "CEREBRAS",
-        "badge": "🇺🇸 <b>US-Server</b> (Cerebras Fast Inference)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             "llama3.1-8b",
             "llama-3.3-70b"
@@ -1811,7 +1821,7 @@ PROVIDERS = {
     "GoogleAI": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "key_name": "GOOGLEAI",
-        "badge": "🇺🇸 <b>US-Server</b> (Google AI Studio)",
+        "badge": "🇺🇸 <b>US-Server</b>?",
         "chat_models": [
             "gemini-1.0-pro",
             "gemini-1.5-flash",
@@ -1838,7 +1848,7 @@ PROVIDERS = {
     "Anthropic": {
         "base_url": "https://api.anthropic.com/v1",
         "key_name": "ANTHROPIC",
-        "badge": "🇺🇸 <b>US-Server</b> (Anthropic Official)",
+        "badge": "🇺🇸 <b>US-Server</b>!",
         "chat_models": [
             "claude-3-7-sonnet-20250219",
             "claude-3-5-sonnet-20241022",
@@ -1865,7 +1875,7 @@ PROVIDERS = {
     "HuggingFace": {
         "base_url": "https://api-inference.huggingface.co/models",
         "key_name": "HUGGINGFACE",
-        "badge": "🌐 <b>HuggingFace Inference</b> (Various Locations)",
+        "badge": "🌐 <b>US-Server</b>?",
         "chat_models": [
             "microsoft/phi-3-mini-4k-instruct",
             "microsoft/Phi-3-mini-128k-instruct",
@@ -1909,18 +1919,24 @@ PROVIDERS = {
 }
 
 def get_compliance_html(provider):
+    """Holt Badge-Text direkt aus der Provider-Config (Single Row)."""
+    p_data = PROVIDERS.get(provider, {})
+    return p_data.get("badge", "❓ Unbekannt")
+
+def get_compliance_html_raw(provider):
     """Gibt nur den Text/Icon zurück. Styling erfolgt im UI-Update."""
+    # Ensure emojis are first characters
     badges = {
-        "Scaleway": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
-        "Nebius": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)",
-        "Mistral": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
-        "Gladia": "🇫🇷 <b>DSGVO-Konform</b> (Frankreich)",
-        "OpenRouter": "🇺🇸 <b>US-Server</b> (Nicht DSGVO, z.T. kostenlos)",
-        "Groq": "🇺🇸 <b>US-Server</b> (Nicht DSGVO, Schnell, z.T. kostenlos)",
-        "Deepgram": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)", 
-        "AssemblyAI": "🇪🇺 <b>DSGVO-Konform</b> (EU-Rechenzentren)", 
+        "Scaleway": "&#127467;&#127479; <b>DSGVO</b><br>(France)",       # 🇫🇷
+        "Nebius": "&#127466;&#127482; <b>DSGVO</b><br>(EU-Host)",        # 🇪🇺
+        "Mistral": "&#127467;&#127479; <b>DSGVO</b><br>(France)",        # 🇫🇷
+        "Gladia": "&#127467;&#127479; <b>DSGVO</b><br>(France)",         # 🇫🇷
+        "OpenRouter": "&#127482;&#127480; <b>US-Host</b><br>(Non-EU)",   # 🇺🇸
+        "Groq": "&#127482;&#127480; <b>US-Host</b><br>(Fast)",           # 🇺🇸
+        "Deepgram": "&#127466;&#127482; <b>DSGVO</b><br>(EU-Host)",      # 🇪🇺
+        "AssemblyAI": "&#127466;&#127482; <b>DSGVO</b><br>(EU-Host)",    # 🇪🇺
     }
-    # Fix: Return raw string only. No <div> wrapper here.
+    # Using <br> allows nicer wrapping in the new small badge box
     return badges.get(provider, "❓ Unbekannt")
 
 # Gladia Spezial-Config
@@ -3411,110 +3427,175 @@ PWA_HEAD = """
 <script src="/static/pwa.js" defer></script>
 
 <style>
+/* --- ACCORDION COMPACTING (Fixed for your version) --- */
+
+/* 1. Target the Container (Grandparent) */
+/* Use :has() to target only blocks that have a label (Accordions) */
+.block:has(> .label-wrap) {
+    padding: 0 !important;       /* Kills the 'padded' class whitespace */
+    margin-bottom: 0 !important; /* Removes gap below the closed accordion */
+    border: none !important;     /* Optional: removes outer border */
+    overflow: hidden !important; /* Keeps corners tight */
+}
+
+/* 2. Target the Header/Label (Parent) */
+.block > .label-wrap { 
+    padding: 0px 8px !important; 
+    margin: 0 !important;
+    min-height: 32px !important; 
+    height: 32px !important; 
+    display: flex !important;
+    align-items: center !important;
+    background-color: transparent !important;
+    border: none !important;
+}
+
+/* 3. Target the Text Span */
+.block > .label-wrap > span {
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 0.9rem !important;
+}
+
+/* 4. Fix the Arrow Icon */
+.block > .label-wrap .icon {
+    margin: 0 !important;
+    transform: scale(0.8);
+}
+
+/* --- HEADER ALIGNMENT --- */
+#user-status-row {
+    justify-content: flex-end !important; /* Force Right Alignment */
+    text-align: right !important;
+    padding-right: 10px !important;
+}
+
 /* --- DESKTOP TWEAKS --- */
-/* Restore labels on desktop */
 label span { 
     font-size: 0.85rem !important; 
     font-weight: 600 !important; 
-    margin-bottom: 4px !important;
+    margin-bottom: 2px !important;
     opacity: 1 !important; 
 }
 
-/* Badge Styling (Desktop & Mobile) */
-.badge-col .prose { border: none !important; background: transparent !important; padding: 0 !important; }
-.badge-col { border: none !important; box-shadow: none !important; }
+/* --- CHECKBOX FIX (Aggressive) --- */
+.transparent-checkbox { 
+    --background-fill-primary: transparent !important; 
+    --background-fill-secondary: transparent !important;
+    --block-background-fill: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* Target deep nested elements */
+.transparent-checkbox .block,
+.transparent-checkbox label,
+.transparent-checkbox span,
+.transparent-checkbox .wrap {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+/* --- BADGE STYLING --- */
+/* Reset Gradio's default prose container for badges */
+.badge-col .prose { 
+    border: none !important; 
+    background: transparent !important; 
+    padding: 0 !important; 
+    margin: 0 !important;
+    box-shadow: none !important;
+}
+.badge-col { border: none !important; box-shadow: none !important; background: transparent !important; }
+
 .custom-badge {
-    font-size: 0.75rem !important;
+    font-family: "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji", Arial, sans-serif;
+    font-size: 0.85rem !important;
     line-height: 1.2 !important;
-    white-space: normal !important;
-    word-break: break-word !important;
-    background: #f3f4f6;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    padding: 6px;
+    white-space: nowrap !important; 
+    background: #ffffff !important; /* Force White */
+    color: #000000 !important;      /* Force Black */
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 0 10px;
     text-align: center;
-    height: 100%;
+    height: 42px; 
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
 
 /* 📱 MOBILE OPTIMIZATION */
 @media (max-width: 768px) {
-    .gradio-container {
-        padding: 0 !important; margin: 0 !important; width: 100% !important; overflow-x: hidden;
-    }
+    .gradio-container { padding: 0 !important; margin: 0 !important; width: 100% !important; overflow-x: hidden; }
 
     /* 1. HEADER */
-    .compact-header { padding: 4px !important; gap: 0 !important; align-items: center; }
+    .compact-header { padding: 2px 5px !important; gap: 0 !important; align-items: center; }
+    .compact-header h3 { margin: 0 !important; font-size: 1.1rem !important; }
 
-    /* 2. TABS: Icon Only (Only for .icon-nav class) */
+    /* 2. TABS: Icon Only */
     .icon-nav > .tab-nav > button {
         display: block !important; 
-        font-size: 0 !important;      /* Hide Text */
+        font-size: 0 !important;      
         padding: 12px 0 !important;
         height: 50px !important;
         text-align: center !important;
     }
     .icon-nav > .tab-nav > button::first-letter {
-        font-size: 1.5rem !important; /* Show Icon */
+        font-size: 1.5rem !important; 
         visibility: visible !important;
     }
 
-    /* 3. BUTTONS: The "Block" Fix */
-    /* We must use display:block for ::first-letter to work */
+    /* 3. BUTTONS: Mobile Icon Only */
     .mobile-icon-only {
         display: block !important; 
-        font-size: 0 !important;        /* Hide Text */
+        font-size: 0 !important;        
         width: 100% !important;
         min-width: 40px !important;
         height: 45px !important;
         padding: 0 !important;
-        text-align: center !important;  /* Horizontal Align */
-        line-height: 45px !important;   /* Vertical Align */
-        overflow: hidden !important;
+        text-align: center !important;  
+        line-height: 45px !important;   
     }
-    
     .mobile-icon-only::first-letter {
-        font-size: 1.4rem !important;   /* Visible Icon */
+        font-size: 1.4rem !important;   
         visibility: visible !important;
     }
-
-    /* Fix Colors on Mobile */
     #btn-send { background-color: #2563eb !important; }
-    #btn-send::first-letter { color: white !important; } /* White Icon on Blue */
-    .btn-secondary::first-letter { color: #374151 !important; } /* Dark Icon on Gray */
+    #btn-send::first-letter { color: white !important; }
+    .btn-secondary::first-letter { color: #374151 !important; }
 
     /* 4. LAYOUT */
     #chat_window { height: 60vh !important; }
     footer, h1 { display: none !important; }
-    .custom-badge { font-size: 0.65rem !important; padding: 2px !important; }
+    .custom-badge { font-size: 0.65rem !important; padding: 2px !important; height: auto !important; }
     
-    /* Restore Text for Settings/History Accordions */
-    .accordion button, .tab-item button {
-        color: inherit !important;
-        font-size: 0.9rem !important;
-        text-align: left !important;
-        display: flex !important;
-    }
+    /* HIDE LABELS inside the Compact Row ONLY on Mobile */
+    .compact-row label span { display: none !important; }
+    .compact-row .form { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; }
+    
+    /* Force Alle/Badge to be visible */
+    .compact-row { flex-wrap: nowrap !important; overflow-x: auto !important; }
 }
 
-/* Compact Row alignment */
-.compact-row { gap: 6px !important; align-items: end !important; }
+/* Compact Row alignment (Desktop) */
+.compact-row { gap: 8px !important; align-items: end !important; }
 .compact-row .form { border: none !important; background: transparent !important; }
 </style>
 
 <script>
 // 💾 PERSISTENCE V2
-function saveCredsV2(u, p) {
-    if (u && p) { localStorage.setItem("ak_user", u); localStorage.setItem("ak_pass", p); }
-}
+function saveCredsV2(u, p) { if (u && p) { localStorage.setItem("ak_user", u); localStorage.setItem("ak_pass", p); } }
 function clearCredsV2() { localStorage.removeItem("ak_user"); localStorage.removeItem("ak_pass"); }
 function getCredsV2() {
     const u = localStorage.getItem("ak_user"); const p = localStorage.getItem("ak_pass");
     return (u && p) ? JSON.stringify([u, p]) : ""; 
 }
 </script>
+
 """
 
 # ==========================================
@@ -3567,7 +3648,8 @@ def update_transcript_chat_ui(prov, force_all=False, user_state=None):
         else:
             default_val = final_choices[0][1]
     
-    return gr.update(choices=final_choices, value=default_val), badge
+    #return gr.update(choices=final_choices, value=default_val), badge
+    return gr.update(choices=final_choices, value=default_val), f"<div class='custom-badge'>{badge}</div>"
 
 
 # --- CHAT UI UPDATE ---
@@ -3605,10 +3687,34 @@ def update_c_ui(prov, force_all=False, user_state=None):
     final_choices = get_filtered_model_choices(prov, choices, force_all, user_state)
     
     default_val = final_choices[0][1] if final_choices else None
-    return gr.update(choices=final_choices, value=default_val), badge
+    #return gr.update(choices=final_choices, value=default_val), badge
+    return gr.update(choices=final_choices, value=default_val), f"<div class='custom-badge'>{badge}</div>"
+
+# --- VISION UI UPDATE ---
 
 # --- VISION UI UPDATE ---
 def update_v_ui(prov, force_all=False, user_state=None):
+    styled_badge = f"<div class='custom-badge'>{get_compliance_html(prov)}</div>"
+
+    p_data = PROVIDERS.get(prov, {})
+    api_key = API_KEYS.get(p_data.get("key_name"))
+    
+    # 2. Fetch Models
+    models, error = fetch_available_models(prov, api_key)
+    choices = []
+    
+    if models and prov == "Poe":
+        choices = [(m["name"], m["id"]) for m in models if "Vision" in m.get("type", "")]
+    elif not models or prov != "Poe":
+        choices = [(m, m) for m in p_data.get("vision_models", [])]
+
+    # 3. Filter via Helper
+    final_choices = get_filtered_model_choices(prov, choices, force_all, user_state)
+    default_val = final_choices[0][1] if final_choices else None
+    
+    return styled_badge, gr.update(choices=final_choices, value=default_val)
+
+def update_v_ui_old(prov, force_all=False, user_state=None):
     # 1. Handle Badge Styling (Dark background, White text)
     raw_html = get_compliance_html(prov)
     styled_badge = f"""
@@ -3650,7 +3756,30 @@ def update_v_ui(prov, force_all=False, user_state=None):
     return styled_badge, gr.update(choices=final_choices, value=default_val)
 
 # --- IMAGE UI UPDATE ---
+# --- IMAGE UI UPDATE ---
 def update_g_ui(prov, force_all=False, user_state=None):
+    styled_badge = f"<div class='custom-badge'>{get_compliance_html(prov)}</div>"
+
+    p_data = PROVIDERS.get(prov, {})
+    api_key = API_KEYS.get(p_data.get("key_name"))
+    
+    # 2. Fetch Models
+    models, error = fetch_available_models(prov, api_key)
+    choices = []
+    
+    if models and prov == "Poe":
+        choices = [(f"{m['name']}", m['id']) for m in models if m.get('type') in ["Bild-Gen", "Video-Gen"]]
+    
+    if not choices:
+        choices = [(m, m) for m in p_data.get("image_models", [])]
+        
+    # 3. Filter via Helper
+    final_choices = get_filtered_model_choices(prov, choices, force_all, user_state)
+    default_val = final_choices[0][1] if final_choices else None
+    
+    return styled_badge, gr.update(choices=final_choices, value=default_val)
+
+def update_g_ui_old(prov, force_all=False, user_state=None):
     # 1. Handle Badge Styling
     raw_html = get_compliance_html(prov)
     styled_badge = f"""
@@ -3694,6 +3823,30 @@ def update_g_ui(prov, force_all=False, user_state=None):
 # --- TRANSCRIPTION UI UPDATE ---
 # Signature: (badge, t_model_update, gladia_vis, whisper_vis, deepgram_vis, assemblyai_vis)
 def update_t_ui(prov, force_all=False):
+    # Retrieve badge text
+    badge_html = get_compliance_html(prov)
+    
+    # 2. Handle Models
+    is_whisper = prov in ["Mistral", "Scaleway", "Groq"]
+    show_model_dropdown = prov in ["Deepgram", "AssemblyAI"] or is_whisper
+    
+    choices = []
+    default_val = None
+
+    if show_model_dropdown:
+        p_data = PROVIDERS.get(prov, {})
+        raw_list = p_data.get("audio_models", [])
+        choices = [(m, m) for m in raw_list]
+        if choices:
+            default_val = choices[0][1]
+
+    # Return updates - Badge wrapped in the custom div
+    return (
+        f"<div class='custom-badge'>{badge_html}</div>",
+        gr.update(visible=show_model_dropdown, choices=choices, value=default_val),
+        gr.update(visible=is_whisper) 
+    )
+def update_t_ui_old(prov, force_all=False):
     # 1. Handle Badge Formatting
     raw_html = get_compliance_html(prov)
     
@@ -4711,15 +4864,20 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
     # === 1. COMPACT HEADER ===
     with gr.Row(elem_classes="compact-header", equal_height=True):
-        with gr.Column(scale=10):
+        
+        # Col 1: Title
+        with gr.Column(scale=4, min_width=100):
             gr.Markdown("### ⛪ KI Toolkit")
         
-        # WIDE COLUMN for User+Logout to fit text on Desktop
-        with gr.Column(scale=1, min_width=260): 
-            with gr.Row(equal_height=True, elem_classes="compact-row"):
+        # Col 2: User Status (Right Aligned via ID)
+        with gr.Column(scale=2, min_width=100): 
+            # Added ID here to target with CSS for right-alignment
+            with gr.Row(elem_id="user-status-row"):
                 login_status = gr.Markdown("👤", show_label=False)
-                # Mobile: icon only. Desktop: Full text "Abmelden"
-                logout_btn = gr.Button("🚪 Abmelden", size="sm", scale=0, min_width=40, elem_classes="mobile-icon-only btn-secondary")
+            
+        # Col 3: Logout Button
+        with gr.Column(scale=0, min_width=120):
+            logout_btn = gr.Button("🚪 Abmelden", size="sm", elem_classes="mobile-icon-only btn-secondary")
 
     # Login Screen (Unchanged)
     login_screen = gr.Column(visible=True)
@@ -4738,53 +4896,56 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
     main_app = gr.Column(visible=False)
     with main_app:
 
-        # 'icon-nav' class restricts the "Icon Only" tabs to just this top level
         with gr.Tabs(elem_classes="icon-nav"):
 
             # --- TAB 1: CHAT ---
             with gr.TabItem("💬 Chat", id="chat_tab") as chat_tab:
                 
-                # 1. CONTROLS ROW
-                with gr.Row(variant="panel", equal_height=True, elem_classes="compact-row"):
-                    chat_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
-                    chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
+                # 1. ACCORDION (Reduced height via CSS)
+                with gr.Accordion("⚙️ Modellauswahl & Status", open=False):
                     
-                    # Provider: Label is shown on Desktop
-                    c_prov = gr.Dropdown(
-                        choices=chat_providers_implemented,
-                        value=DEFAULT_CHAT_PROVIDER,
-                        label="Anbieter", show_label=True, container=False,
-                        scale=3, min_width=80
-                    )
-                    
-                    # Model: Label is shown on Desktop
-                    c_model = gr.Dropdown(
-                        choices=PROVIDERS[DEFAULT_CHAT_PROVIDER]["chat_models"],
-                        value=DEFAULT_CHAT_MODEL,
-                        label="Modell", show_label=True, container=False,
-                        scale=4, min_width=100
-                    )
-                    
-                    # "Alle" Button
-                    c_load_all = gr.Button("🌍 Alle", scale=0, size="sm", min_width=40, elem_classes="mobile-icon-only btn-secondary")
-                    
-                    # Badge (Scale 3 for wrapping)
-                    with gr.Column(scale=3, min_width=100, elem_classes="badge-col"):
-                        c_badge = gr.HTML(
-                            value=f"<div class='custom-badge'>{get_compliance_html(DEFAULT_CHAT_PROVIDER)}</div>"
+                    # 1.1 CONTROLS ROW (Inside Accordion)
+                    # Scales: Prov(3), Mod(4), Alle(1), Badge(2)
+                    with gr.Row(variant="panel", equal_height=True, elem_classes="compact-row"):
+                        chat_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
+                        chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
+                        
+                        # Provider
+                        c_prov = gr.Dropdown(
+                            choices=chat_providers_implemented,
+                            value=DEFAULT_CHAT_PROVIDER,
+                            label="Anbieter", show_label=True, container=True,
+                            scale=3, min_width=80
                         )
+                        
+                        # Model
+                        c_model = gr.Dropdown(
+                            choices=PROVIDERS[DEFAULT_CHAT_PROVIDER]["chat_models"],
+                            value=DEFAULT_CHAT_MODEL,
+                            label="Modell", show_label=True, container=True,
+                            scale=4, min_width=100
+                        )
+                        
+                        # "Alle" Button (Adjusted Scale)
+                        c_load_all = gr.Button("🌍 Alle", scale=1, min_width=50, elem_classes="mobile-icon-only btn-secondary")
+                        
+                        # Badge (Adjusted Scale)
+                        with gr.Column(scale=2, min_width=100, elem_classes="badge-col"):
+                            c_badge = gr.HTML(
+                                value=f"<div class='custom-badge'>{get_compliance_html(DEFAULT_CHAT_PROVIDER)}</div>"
+                            )
 
-                    # Update logic
-                    c_prov.change(
-                        lambda p, s: update_c_ui(p, force_all=False, user_state=s),
-                        inputs=[c_prov, session_state], 
-                        outputs=[c_model, c_badge]
-                    )
-                    c_load_all.click(
-                        lambda p, s: update_c_ui(p, force_all=True, user_state=s), 
-                        inputs=[c_prov, session_state], 
-                        outputs=[c_model, c_badge]
-                    )
+                        # Update logic
+                        c_prov.change(
+                            lambda p, s: update_c_ui(p, force_all=False, user_state=s),
+                            inputs=[c_prov, session_state], 
+                            outputs=[c_model, c_badge]
+                        )
+                        c_load_all.click(
+                            lambda p, s: update_c_ui(p, force_all=True, user_state=s), 
+                            inputs=[c_prov, session_state], 
+                            outputs=[c_model, c_badge]
+                        )
 
                 # 2. CHAT WINDOW
                 c_bot = gr.Chatbot(
@@ -4799,17 +4960,14 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                 # 4. ACTION BUTTONS
                 with gr.Row(equal_height=True, elem_classes="compact-row"):
-                    # ID 'btn-send' forces White text color on mobile
                     c_btn = gr.Button("📤 Senden", variant="primary", scale=2, elem_id="btn-send", elem_classes="mobile-icon-only")
-                    
-                    # Class 'btn-secondary' forces Dark text color on mobile
                     c_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1, min_width=40, elem_classes="mobile-icon-only btn-secondary")
                     c_save_btn = gr.Button("💾 Speichern", scale=1, min_width=40, elem_classes="mobile-icon-only btn-secondary")
                     c_clear_btn = gr.Button("🗑️ Neu", scale=1, min_width=40, elem_classes="mobile-icon-only btn-secondary")
 
                 c_save_status = gr.Markdown("")
 
-                # Right Sidebar (Settings & History)
+                # Settings Accordions
                 # NO 'icon-nav' class here, so text will remain visible on mobile
                 with gr.Accordion("⚙️ Einstellungen & Verlauf", open=False):
                     with gr.Tabs():
@@ -4928,166 +5086,141 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
 
                 c_save_status = gr.Markdown("")
 
-                # Right Sidebar
-                with gr.Column(scale=1):
-                        
-                        # 1. Settings (Closed)
-                        with gr.Accordion("⚙️ Einstellungen", open=False):
-                            c_key = gr.Textbox(label="API Key (Optional)", type="password")
-                            c_sys = gr.Textbox(label="System Rolle", value="Du bist ein hilfreicher Assistent.", lines=2)
-                            
-                            gr.Markdown("**🧠 Reasoning / Thinking Configuration**")
-                            with gr.Row():
-                                c_reasoning_effort = gr.Dropdown(
-                                    choices=["default", "low", "medium", "high"],
-                                    value="default",
-                                    label="Reasoning Effort",
-                                    info="Für OpenAI o-series & Scaleway."
-                                )
-                                c_reasoning_tokens = gr.Slider(
-                                    0, 32000, value=0, step=1024,
-                                    label="Reasoning Token Budget",
-                                    info="0 = Auto. Für Anthropic/OpenRouter/Mistral."
-                                )
-                            
-                            c_temp = gr.Slider(0, 2, value=0.7, label="Temperatur (Standard)", step=0.1)
-                            
+                # 2. History (Closed)
+                with gr.Accordion("📚 Alte Chats laden", open=False):
+                    c_history_state = gr.State([]) 
+                    
+                    with gr.Row():
+                        refresh_chats_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
+                        delete_chat_btn = gr.Button("🗑️ Löschen", variant="stop", size="sm")
+                    
+                    old_chats = gr.Dataframe(
+                        headers=["ID", "Datum", "Titel", "Modell"], 
+                        value=[[None, "", "", ""]], 
+                        label="Gespeicherte Chats", 
+                        interactive=False, 
+                        height=200, 
+                        wrap=True
+                    )
+                    
+                    with gr.Row():
+                        load_chat_id = gr.Number(label="Chat-ID", precision=0)
+                    
+                    load_chat_btn = gr.Button("📥 Chat laden", variant="primary")
+                    chat_load_status = gr.Markdown("")
 
-                        # 2. History (Closed)
-                        with gr.Accordion("📚 Alte Chats laden", open=False):
-                            c_history_state = gr.State([]) 
-                            
-                            with gr.Row():
-                                refresh_chats_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                                delete_chat_btn = gr.Button("🗑️ Löschen", variant="stop", size="sm")
-                            
-                            old_chats = gr.Dataframe(
-                                headers=["ID", "Datum", "Titel", "Modell"], 
-                                value=[[None, "", "", ""]], 
-                                label="Gespeicherte Chats", 
-                                interactive=False, 
-                                height=200, 
-                                wrap=True
-                            )
-                            
-                            with gr.Row():
-                                load_chat_id = gr.Number(label="Chat-ID", precision=0)
-                            
-                            load_chat_btn = gr.Button("📥 Chat laden", variant="primary")
-                            chat_load_status = gr.Markdown("")
+                    # --- Events for History ---
+                    
+                    # 1. Load list on click/tab select
+                    chat_tab.select(
+                        load_chat_list_with_state, 
+                        inputs=[session_state], 
+                        outputs=[old_chats, c_history_state]
+                    )
+                    refresh_chats_btn.click(
+                        load_chat_list_with_state, 
+                        inputs=[session_state],
+                        outputs=[old_chats, c_history_state]
+                    )
+                    
+                    # 2. Select row to get ID (Using State to avoid Index Errors)
+                    old_chats.select(
+                        select_chat_row, 
+                        inputs=[c_history_state], 
+                        outputs=[load_chat_id]
+                    )
+                    
+                    # 3. Load Chat Logic
+                    load_chat_btn.click(
+                        load_single_chat, 
+                        inputs=[load_chat_id], 
+                        outputs=[c_bot, chat_load_status]
+                    )
+                    
+                    # 4. Delete Logic (Now updates State + DataFrame to prevent 'backend' errors on next click)
+                    delete_chat_btn.click(
+                        delete_chat, 
+                        inputs=[load_chat_id], 
+                        outputs=[chat_load_status, old_chats, c_history_state]
+                    )
 
-                            # --- Events for History ---
-                            
-                            # 1. Load list on click/tab select
-                            chat_tab.select(
-                                load_chat_list_with_state, 
-                                inputs=[session_state], 
-                                outputs=[old_chats, c_history_state]
-                            )
-                            refresh_chats_btn.click(
-                                load_chat_list_with_state, 
-                                inputs=[session_state],
-                                outputs=[old_chats, c_history_state]
-                            )
-                            
-                            # 2. Select row to get ID (Using State to avoid Index Errors)
-                            old_chats.select(
-                                select_chat_row, 
-                                inputs=[c_history_state], 
-                                outputs=[load_chat_id]
-                            )
-                            
-                            # 3. Load Chat Logic
-                            load_chat_btn.click(
-                                load_single_chat, 
-                                inputs=[load_chat_id], 
-                                outputs=[c_bot, chat_load_status]
-                            )
-                            
-                            # 4. Delete Logic (Now updates State + DataFrame to prevent 'backend' errors on next click)
-                            delete_chat_btn.click(
-                                delete_chat, 
-                                inputs=[load_chat_id], 
-                                outputs=[chat_load_status, old_chats, c_history_state]
-                            )
+                # 3. Attachments & Prompts
+                with gr.Accordion("📎 Inhalt & Prompts", open=False):
+                    
+                    gr.Markdown("**📝 Vorlagen**")
+                    with gr.Row():
+                        c_prompt_select = gr.Dropdown(choices=[], label="Vorlage wählen", scale=2)
+                        c_prompt_refresh = gr.Button("🔄", scale=0, size="sm")
+                    c_insert_prompt_btn = gr.Button("⬇️ In Textfeld einfügen", size="sm")
+                    
+                    gr.Markdown("---")
+                    
+                    gr.Markdown("**📎 Anhang**")
+                    gr.Markdown("_Hinweis: Mehrere Dateien möglich. Inhalte werden extrahiert (OCR/Text)._", visible=True)
+                    
+                    attach_type = gr.Radio(
+                        ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"],
+                        value="Transkript",
+                        label="Typ"
+                    )
+                    
+                    attach_id = gr.Number(label="ID", precision=0, visible=True)
+                    attach_custom = gr.Textbox(label="Text", lines=3, visible=False)
+                    
+                    attach_file = gr.File(
+                        label="Dateien wählen", 
+                        visible=False, 
+                        file_count="multiple", 
+                        type="filepath"
+                    )
+                    
+                    with gr.Group(visible=False) as sb_group:
+                        gr.Markdown("Dateien auf Server:")
+                        attach_sb_browser = gr.FileExplorer(
+                            root_dir=STORAGE_MOUNT_POINT,
+                            glob="**/*",
+                            height=200,
+                            file_count="multiple"
+                        )
+                        sb_refresh_btn = gr.Button("🔄", size="sm")
 
-                        # 3. Attachments & Prompts
-                        with gr.Accordion("📎 Inhalt & Prompts", open=False):
-                            
-                            gr.Markdown("**📝 Vorlagen**")
-                            with gr.Row():
-                                c_prompt_select = gr.Dropdown(choices=[], label="Vorlage wählen", scale=2)
-                                c_prompt_refresh = gr.Button("🔄", scale=0, size="sm")
-                            c_insert_prompt_btn = gr.Button("⬇️ In Textfeld einfügen", size="sm")
-                            
-                            gr.Markdown("---")
-                            
-                            gr.Markdown("**📎 Anhang**")
-                            gr.Markdown("_Hinweis: Mehrere Dateien möglich. Inhalte werden extrahiert (OCR/Text)._", visible=True)
-                            
-                            attach_type = gr.Radio(
-                                ["Transkript", "Vision-Ergebnis", "Eigener Text", "Datei uploaden", "Storage Box Datei"],
-                                value="Transkript",
-                                label="Typ"
-                            )
-                            
-                            attach_id = gr.Number(label="ID", precision=0, visible=True)
-                            attach_custom = gr.Textbox(label="Text", lines=3, visible=False)
-                            
-                            attach_file = gr.File(
-                                label="Dateien wählen", 
-                                visible=False, 
-                                file_count="multiple", 
-                                type="filepath"
-                            )
-                            
-                            with gr.Group(visible=False) as sb_group:
-                                gr.Markdown("Dateien auf Server:")
-                                attach_sb_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
-                                    height=200,
-                                    file_count="multiple"
-                                )
-                                sb_refresh_btn = gr.Button("🔄", size="sm")
+                    with gr.Row():
+                        attach_btn = gr.Button("➕ Anhängen", variant="secondary")
+                        undo_attach_btn = gr.Button("↩️ Rückgängig", variant="stop")
+                    
+                    attach_status = gr.Markdown("")
 
-                            with gr.Row():
-                                attach_btn = gr.Button("➕ Anhängen", variant="secondary")
-                                undo_attach_btn = gr.Button("↩️ Rückgängig", variant="stop")
-                            
-                            attach_status = gr.Markdown("")
-
-                            # Toggle Logic
-                            def toggle_attach_inputs(atype):
-                                return (
-                                    gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]),
-                                    gr.update(visible=atype == "Eigener Text"),
-                                    gr.update(visible=atype == "Datei uploaden"),
-                                    gr.update(visible=atype == "Storage Box Datei")
-                                )
-                            
-                            attach_type.change(
-                                toggle_attach_inputs, 
-                                attach_type, 
-                                [attach_id, attach_custom, attach_file, sb_group]
-                            )
-                            
-                            def refresh_chat_sb(): return gr.update(value=None)
-                            sb_refresh_btn.click(refresh_chat_sb, outputs=attach_sb_browser)
-                            
-                            # Attach Event
-                            attach_btn.click(
-                                attach_content_to_chat, 
-                                inputs=[c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser, session_state], 
-                                outputs=[c_bot, attach_status]
-                            )
-                            
-                            # Undo Event
-                            undo_attach_btn.click(
-                                undo_last_attachment,
-                                inputs=[c_bot],
-                                outputs=[c_bot, attach_status]
-                            )
+                    # Toggle Logic
+                    def toggle_attach_inputs(atype):
+                        return (
+                            gr.update(visible=atype in ["Transkript", "Vision-Ergebnis"]),
+                            gr.update(visible=atype == "Eigener Text"),
+                            gr.update(visible=atype == "Datei uploaden"),
+                            gr.update(visible=atype == "Storage Box Datei")
+                        )
+                    
+                    attach_type.change(
+                        toggle_attach_inputs, 
+                        attach_type, 
+                        [attach_id, attach_custom, attach_file, sb_group]
+                    )
+                    
+                    def refresh_chat_sb(): return gr.update(value=None)
+                    sb_refresh_btn.click(refresh_chat_sb, outputs=attach_sb_browser)
+                    
+                    # Attach Event
+                    attach_btn.click(
+                        attach_content_to_chat, 
+                        inputs=[c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser, session_state], 
+                        outputs=[c_bot, attach_status]
+                    )
+                    
+                    # Undo Event
+                    undo_attach_btn.click(
+                        undo_last_attachment,
+                        inputs=[c_bot],
+                        outputs=[c_bot, attach_status]
+                    )
 
                 # --- EVENT WIRING ---
 
@@ -5145,6 +5278,7 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                     inputs=[c_prompt_select, c_msg, session_state], 
                     outputs=[c_msg]
                 )
+                
             # --- TAB 2: TRANSKRIPTION ---
             with gr.TabItem("🎙️ Transkription"):
                 with gr.Row():
@@ -5189,22 +5323,27 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                         # --- MAIN CONTROLS ---
                         gr.Markdown("### 🎛️ Auswahl")
                         with gr.Group():
-                            with gr.Row():
+                            with gr.Row(elem_classes="compact-row"):
                                 t_prov = gr.Dropdown(
                                     choices=["Gladia", "Deepgram", "AssemblyAI", "Mistral", "Scaleway", "Groq"], 
                                     value="Deepgram", 
                                     label="Engine",
                                     scale=2
                                 )
+                                
                                 t_diar = gr.Checkbox(
                                     value=True, 
                                     label="🎭 Sprecher erkennen",
                                     scale=1,
-                                    container=False
+                                    container=False,
+                                    elem_classes="transparent-checkbox" # <--- Added Class
                                 )
                             
-                            # Badge moved to separate row below
-                            t_badge = gr.HTML(value=get_compliance_html("Gladia"))
+                                #t_badge = gr.HTML(value=get_compliance_html("Gladia"))
+                                with gr.Column(elem_classes="badge-col"):
+                                        t_badge = gr.HTML(
+                                            value=f"<div class='custom-badge'>{get_compliance_html('Deepgram')}</div>"
+                                        )
 
                         # --- SETTINGS ACCORDION ---
                         with gr.Accordion("⚙️ Einstellungen", open=False):
