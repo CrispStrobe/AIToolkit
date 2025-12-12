@@ -3,6 +3,7 @@
 This documentation covers the deployment of a (mostly) **GDPR-compliant Multi-Provider AI Suite** with:
 - 💬 **Chat** (Multiple LLM providers with context-aware history)
 - 🎙️ **Audio Transcription** (Gladia, Whisper, Mistral, Deepgram, AssemblyAI; Speaker Diarization; Chunking)
+- 📄 **Content Extraction** for uploads (text extraction from PPTX, DOCX, XLSX, PDF; OCR for images/scans)
 - 📦 **Cloud Storage** (Hetzner Storage Box integration via SMB)
 - 🔄 **Resumable Jobs** (Job tracking for large files)
 - 👁️ **Vision Analysis** (Image understanding)
@@ -35,7 +36,8 @@ The application runs as a Python/Gradio service on `localhost:7860`, managed by 
 
 ## 🛠️ Step 1: System Dependencies & Security
 
-**CRITICAL:** FFmpeg must be in PATH. `cifs-utils` is required for Storage Box mounting.
+
+**CRITICAL:** FFmpeg must be in PATH. `cifs-utils` is required for Storage Box. OCR and document tools are required for the Content Extractor.
 
 ```bash
 sudo apt update
@@ -51,7 +53,11 @@ sudo apt install -y \
     python3-certbot-apache \
     sqlite3 \
     fail2ban \
-    cifs-utils
+    cifs-utils \
+    tesseract-ocr \
+    tesseract-ocr-deu \
+    poppler-utils \
+    pandoc
 ```
 
 ### Firewall Configuration (UFW)
@@ -243,10 +249,18 @@ pip install \
     requests \
     pillow \
     pydub \
-    pypdf2 \
     sqlalchemy \
     bcrypt \
-    fastapi-poe
+    fastapi-poe \
+    python-pptx \
+    python-docx \
+    pypdf \
+    pymupdf \
+    pdf2image \
+    pytesseract \
+    pandas \
+    openpyxl \
+    lxml
 ```
 
 ### 3.6 Initialize Permissions
