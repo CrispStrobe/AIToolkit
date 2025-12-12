@@ -4077,6 +4077,16 @@ try:
     HAS_PANDAS = True
 except ImportError: logger.warning("⚠️ pandas missing")
 
+try:
+    from pptx import Presentation
+    HAS_PPTX = True
+except ImportError: 
+    HAS_PPTX = False
+    logger.warning("⚠️ python-pptx missing")
+
+import zipfile
+from xml.etree import ElementTree as ET
+
 class UniversalExtractor:
     @staticmethod
     def extract(filepath):
@@ -4107,9 +4117,12 @@ class UniversalExtractor:
                         logger.warning(f"Docx extraction failed: {e}")
                 return UniversalExtractor._extract_with_cli_tool(filepath)
 
-            # 4. Excel
+            # 4. Excel and Powerpoint
             elif ext in ['.xls', '.xlsx', '.csv']:
                 return UniversalExtractor._extract_excel(filepath)
+            
+            elif ext == '.pptx':
+                return UniversalExtractor._extract_pptx(filepath)
 
             # 5. HTML (NEW: Multiple fallbacks)
             elif ext in ['.html', '.htm']:
@@ -4127,6 +4140,103 @@ class UniversalExtractor:
             logger.error(f"Critical Extractor Error: {e}")
             logger.error(traceback.format_exc())
             return f"[Systemfehler: {str(e)}]"
+        
+    @staticmethod
+    def _extract_pptx(path):
+        """
+        Robust PPTX extraction preserving slide order, notes, and comments.
+        """
+        if not HAS_PPTX:
+            return "[❌ 'python-pptx' fehlt. Bitte `pip install python-pptx` installieren.]"
+
+        try:
+            prs = Presentation(path)
+            output = [f"[PPTX Extraction: {os.path.basename(path)}]\n"]
+            
+            # XML Namespaces
+            ns = {
+                'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+                'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+            }
+
+            # 1. Extract Comments (Zip Logic)
+            all_comments = {}
+            try:
+                with zipfile.ZipFile(path, 'r') as zf:
+                    # Iterate purely based on slide count, assuming standard structure
+                    for i in range(1, len(prs.slides) + 1):
+                        rel_file = f'ppt/slides/_rels/slide{i}.xml.rels'
+                        if rel_file in zf.namelist():
+                            with zf.open(rel_file) as rf:
+                                rel_tree = ET.parse(rf)
+                                for rel in rel_tree.findall(".//r:Relationship", ns):
+                                    tgt = rel.get('Target')
+                                    if tgt and "comments" in tgt:
+                                        # Resolve path (../comments/comment1.xml -> ppt/comments/comment1.xml)
+                                        fname = os.path.basename(tgt)
+                                        comment_path = f'ppt/comments/{fname}'
+                                        
+                                        if comment_path in zf.namelist():
+                                            slide_comments = all_comments.setdefault(i, [])
+                                            with zf.open(comment_path) as cf:
+                                                c_tree = ET.parse(cf)
+                                                # Look for comment text
+                                                for comment in c_tree.findall('.//p:cm', ns):
+                                                    text_node = comment.find('.//p:text', ns)
+                                                    if text_node is not None and text_node.text:
+                                                        slide_comments.append(text_node.text)
+            except Exception as e:
+                logger.warning(f"PPTX Comment extraction warning: {e}")
+
+            # 2. Extract Slides (Text + Notes)
+            for i, slide in enumerate(prs.slides):
+                slide_num = i + 1
+                slide_buffer = []
+                
+                # -- Main Text (Sorted Top-to-Bottom) --
+                # python-pptx shapes usually have .top, but we check safety
+                shapes = [s for s in slide.shapes if s.has_text_frame]
+                shapes.sort(key=lambda s: (s.top if hasattr(s, 'top') else 0, s.left if hasattr(s, 'left') else 0))
+                
+                for shape in shapes:
+                    shape_text = []
+                    for paragraph in shape.text_frame.paragraphs:
+                        if paragraph.text.strip():
+                            shape_text.append(paragraph.text.strip())
+                    if shape_text:
+                        slide_buffer.append("\n".join(shape_text))
+
+                # -- Speaker Notes --
+                if slide.has_notes_slide:
+                    notes_tf = slide.notes_slide.notes_text_frame
+                    if notes_tf and notes_tf.text.strip():
+                        slide_buffer.append(f"\n[Speaker Notes]:\n{notes_tf.text.strip()}")
+
+                # -- Formatting Output --
+                output.append(f"## Slide {slide_num}")
+                if slide_buffer:
+                    output.append("\n\n".join(slide_buffer))
+                else:
+                    output.append("(No text content)")
+
+                # -- Add Comments --
+                if slide_num in all_comments:
+                    output.append("\n[Comments]:")
+                    for c in all_comments[slide_num]:
+                        output.append(f"- {c}")
+                
+                output.append("\n---\n")
+
+            final_text = "\n".join(output)
+            
+            if len(final_text) < 50:
+                return "[⚠️ PPTX scheint leer zu sein oder enthält nur Bilder]"
+                
+            return final_text
+
+        except Exception as e:
+            logger.error(f"PPTX Error: {e}")
+            return f"[❌ Fehler beim Lesen der PPTX: {str(e)}]"
 
     @staticmethod
     def _extract_html(path):
