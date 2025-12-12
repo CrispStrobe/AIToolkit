@@ -2466,6 +2466,7 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 
 def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens, user_state):
     """Enhanced chat with strict context window enforcement"""
+    print ("running chat...")
     # --- SECURITY CHECK ---
     if not user_state or not user_state.get("id"):
         yield "⛔ Nicht autorisiert. Bitte neu anmelden."
@@ -3873,18 +3874,54 @@ def update_t_ui_old(prov, force_all=False):
     
 # --- Chat functions ---
 def user_msg(msg, hist):
+    # 1. CLI DEBUG LOG
+    print(f"\n[DEBUG] 👤 user_msg called at {time.time()}")
+    
+    if not msg or not msg.strip():
+        print("[DEBUG] ❌ Empty message ignored")
+        return "", hist
+    
+    # 2. Simple Deduplication (Prevents double visual bubble)
+    if hist and len(hist) > 0:
+        if hist[-1]['role'] == 'user' and hist[-1]['content'] == msg:
+            print(f"[DEBUG] 🚫 DUPLICATE user message detected. Ignoring.")
+            return "", hist
+
     return "", hist + [{"role": "user", "content": msg}]
 
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
-    """Execute chat passing user state for security"""
-    if not hist: yield hist; return
+    """
+    Execute chat with Debounce Lock to prevent double-generation
+    """
+    current_time = time.time()
+    
+    # --- CLI DEBUG LOG ---
+    print(f"[DEBUG] 🤖 bot_msg called at {current_time}")
 
-    if hist[-1]["role"] != "user": yield hist; return
+    # 1. DEBOUNCE LOCK (The Fix)
+    # Check if we ran this function for this user less than 1.0 second ago
+    last_run = user_state.get('last_chat_time', 0)
+    if current_time - last_run < 1.0:
+        print(f"[DEBUG] 🛑 DEBOUNCE: Ignoring double trigger ({current_time - last_run:.4f}s)")
+        yield hist
+        return
 
+    # Update timestamp
+    user_state['last_chat_time'] = current_time
+
+    # 2. Standard Validation
+    if not hist: 
+        print("[DEBUG] ❌ History is empty")
+        yield hist; return
+
+    if hist[-1]["role"] != "user": 
+        print(f"[DEBUG] ❌ Last message is '{hist[-1]['role']}', not 'user'. Skipping.")
+        yield hist; return
+
+    # 3. Prepare Generation
     last_user_msg = hist[-1]["content"]
     hist.append({"role": "assistant", "content": ""})
 
-    # Prepare Context
     raw_context = hist[:-2]
     clean_context = []
     for m in raw_context:
@@ -3893,6 +3930,8 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         clean_context.append({"role": role, "content": m["content"]})
 
     try:
+        print(f"[DEBUG] 🚀 Calling LLM: {prov} / {mod}...")
+        
         # Pass user_state to run_chat
         generator = run_chat(last_user_msg, clean_context, prov, mod, temp, sys, key, r_effort, r_tokens, user_state)
         
@@ -3901,6 +3940,7 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
             yield hist
             
     except Exception as e:
+        print(f"[DEBUG] 🔥 ERROR: {str(e)}")
         hist[-1]["content"] = f"🔥 Wrapper Fehler: {str(e)}"
         yield hist
 
@@ -5053,17 +5093,6 @@ with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD)
                             # Prompt Logic
                             c_prompt_refresh.click(get_user_prompt_choices, inputs=[session_state], outputs=c_prompt_select)
                             c_insert_prompt_btn.click(insert_custom_prompt, inputs=[c_prompt_select, c_msg, session_state], outputs=[c_msg])
-
-                # --- EVENT WIRING (Bottom of Chat Tab) ---
-                submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], c_bot
-                )
-                click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
-                    bot_msg, [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], c_bot
-                )
-                c_stop_btn.click(fn=None, cancels=[submit_event, click_event])
-                c_save_btn.click(save_chat, [c_bot, c_prov, c_model, session_state], c_save_status)
-                c_clear_btn.click(lambda: ([], ""), outputs=[c_bot, c_save_status])
 
                 c_save_status = gr.Markdown("")
 
