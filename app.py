@@ -1411,7 +1411,7 @@ PROVIDERS = {
     "Deepgram": {
         "base_url": "https://api.eu.deepgram.com/v1",
         "key_name": "DEEPGRAM",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b>",
+        "badge": "🇪🇺 <b>EU-Server, US-Firma</b>",
         "audio_models": ["nova-3-general", "nova-2-general", "nova-2"],
         "context_limits": {
             "nova-3-general": 16384,
@@ -1423,7 +1423,7 @@ PROVIDERS = {
     "AssemblyAI": {
         "base_url": "https://api.eu.assemblyai.com/v2",
         "key_name": "ASSEMBLYAI",
-        "badge": "🇪🇺 <b>DSGVO-Konform</b>",
+        "badge": "🇪🇺 <b>EU-Server, US-Firma</b>",
         "audio_models": ["universal", "slam-1"],
         "context_limits": {
             "universal": 16384,
@@ -1928,14 +1928,14 @@ def get_compliance_html_raw(provider):
     """Gibt nur den Text/Icon zurück. Styling erfolgt im UI-Update."""
     # Ensure emojis are first characters
     badges = {
-        "Scaleway": "&#127467;&#127479; <b>DSGVO</b><br>(France)",       # 🇫🇷
-        "Nebius": "&#127466;&#127482; <b>DSGVO</b><br>(EU-Host)",        # 🇪🇺
-        "Mistral": "&#127467;&#127479; <b>DSGVO</b><br>(France)",        # 🇫🇷
-        "Gladia": "&#127467;&#127479; <b>DSGVO</b><br>(France)",         # 🇫🇷
-        "OpenRouter": "&#127482;&#127480; <b>US-Host</b><br>(Non-EU)",   # 🇺🇸
-        "Groq": "&#127482;&#127480; <b>US-Host</b><br>(Fast)",           # 🇺🇸
-        "Deepgram": "&#127466;&#127482; <b>DSGVO</b><br>(EU-Host)",      # 🇪🇺
-        "AssemblyAI": "&#127466;&#127482; <b>DSGVO</b><br>(EU-Host)",    # 🇪🇺
+        "Scaleway": "&#127467;&#127479; <b>DSGVO</b><br>(FR)",             # 🇫🇷
+        "Nebius": "&#127466;&#127482; <b>DSGVO</b><br>(NL)",               # 🇪🇺
+        "Mistral": "&#127467;&#127479; <b>DSGVO</b><br>(FR)",              # 🇫🇷
+        "Gladia": "&#127467;&#127479; <b>DSGVO</b><br>(FR)",               # 🇫🇷
+        "OpenRouter": "&#127482;&#127480; <b>US-Host</b><br>(nicht EU)",   # 🇺🇸
+        "Groq": "&#127482;&#127480; <b>US-Host</b><br>(nicht EU)",         # 🇺🇸
+        "Deepgram": "&#127466;&#127482; <b>US-Firma</b><br>(EU-Server)",   # 🇪🇺
+        "AssemblyAI": "&#127466;&#127482; <b>US-Firma</b><br>(EU-Server)", # 🇪🇺
     }
     # Using <br> allows nicer wrapping in the new small badge box
     return badges.get(provider, "❓ Unbekannt")
