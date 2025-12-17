@@ -8143,11 +8143,10 @@ initialize_application()
 # ==========================================
 if __name__ == "__main__":
     from fastapi import FastAPI, Request, status
-    from fastapi.responses import JSONResponse, Response
-    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import JSONResponse
     import uvicorn
 
-    # 1. Configuration Constants
+    # 1. Configuration
     APP_DIR = "/var/www/transkript_app"
     LOG_FILE = os.path.join(APP_DIR, "app.log")
     STATIC_DIR = os.path.join(APP_DIR, "static")
@@ -8155,13 +8154,6 @@ if __name__ == "__main__":
 
     # 2. Ensure directories exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
-    os.makedirs(STATIC_DIR, exist_ok=True)  # Ensure static dir exists
-    
-    # ✅ WRITE CSS TO FILE
-    css_file = os.path.join(STATIC_DIR, "custom.css")
-    with open(css_file, 'w', encoding='utf-8') as f:
-        f.write(CUSTOM_CSS)
-    print(f"✅ CSS written to: {css_file}")
     
     if not os.path.exists(LOG_FILE):
         try:
@@ -8170,18 +8162,10 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Could not create log file: {e}")
 
-    # 3. Define FastAPI Wrapper
-    app = FastAPI()
+    # 3. Create FastAPI app
+    fastapi_app = FastAPI()
 
-    # ✅ Serve static files
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-    # ✅ Inject CSS via custom route
-    @app.get("/custom.css")
-    async def serve_custom_css():
-        return Response(content=CUSTOM_CSS, media_type="text/css")
-
-    @app.middleware("http")
+    @fastapi_app.middleware("http")
     async def block_api_endpoints(request: Request, call_next):
         if request.url.path.startswith("/api"):
              return JSONResponse(
@@ -8191,26 +8175,21 @@ if __name__ == "__main__":
         response = await call_next(request)
         return response
 
-    print(f"🚀 Starting Server on Port 7860 (Fast Shutdown Enabled)...")
+    print(f"🚀 Starting Server on Port 7860...")
     print(f"📂 Serving files from: {APP_DIR}")
 
-    # 4. Mount Gradio (WITHOUT css/head in mount)
-    print(f"🚀 Mounting Gradio app...")
-    app = gr.mount_gradio_app(
-        app, 
-        demo, 
-        path="/",
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"]
+    # ==========================================
+    # ✅ CORRECT WAY: Use demo.launch() with app parameter
+    # ==========================================
+    demo.queue()
+    
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        app=fastapi_app,              # ✅ Pass FastAPI app HERE!
+        css=CUSTOM_CSS,                # ✅ CSS goes here!
+        head=PWA_HEAD,                 # ✅ Head goes here!
+        theme=gr.themes.Soft(),        # ✅ Theme goes here!
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
+        show_error=True
     )
-
-    # 5. Run Server
-    print(f"🚀 Starting Server on Port 7860...")
-    config = uvicorn.Config(
-        app, 
-        host="0.0.0.0", 
-        port=7860, 
-        timeout_graceful_shutdown=1,
-        log_level="info"
-    )
-    server = uvicorn.Server(config)
-    server.run()
