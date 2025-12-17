@@ -5475,9 +5475,9 @@ mobile_css_fix = """
 # NEW
 with gr.Blocks(
     title="Akademie KI Suite", 
-    theme=gr.themes.Soft(), 
-    head=PWA_HEAD,      # Only Meta tags/JS here
-    css=CUSTOM_CSS      # CSS goes here to override Theme defaults
+    #theme=gr.themes.Soft(), 
+    #head=PWA_HEAD,      # Only Meta tags/JS here
+    #css=CUSTOM_CSS      # CSS goes here to override Theme defaults
 ) as demo:
     # Print debug info on startup
     print("=" * 60)
@@ -5485,7 +5485,7 @@ with gr.Blocks(
     print(f"CSS length: {len(CUSTOM_CSS)} characters")
     print(f"First 100 chars: {CUSTOM_CSS[:100]}")
     print("=" * 60)
-    
+
     # 0. INJECT PWA SCRIPTS (Required for Gradio 6+)
     gr.HTML("""
     <script>
@@ -8143,11 +8143,25 @@ initialize_application()
 # ==========================================
 if __name__ == "__main__":
     from fastapi import FastAPI, Request, status
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, Response
+    from fastapi.staticfiles import StaticFiles
     import uvicorn
 
-    # 2. Ensure directories and permissions exist
+    # 1. Configuration Constants
+    APP_DIR = "/var/www/transkript_app"
+    LOG_FILE = os.path.join(APP_DIR, "app.log")
+    STATIC_DIR = os.path.join(APP_DIR, "static")
+    IMAGES_DIR = os.path.join(APP_DIR, "generated_images")
+
+    # 2. Ensure directories exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
+    os.makedirs(STATIC_DIR, exist_ok=True)  # Ensure static dir exists
+    
+    # ✅ WRITE CSS TO FILE
+    css_file = os.path.join(STATIC_DIR, "custom.css")
+    with open(css_file, 'w', encoding='utf-8') as f:
+        f.write(CUSTOM_CSS)
+    print(f"✅ CSS written to: {css_file}")
     
     if not os.path.exists(LOG_FILE):
         try:
@@ -8156,12 +8170,19 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Could not create log file: {e}")
 
-    # 3. Define FastAPI Wrapper for Security
+    # 3. Define FastAPI Wrapper
     app = FastAPI()
+
+    # ✅ Serve static files
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    # ✅ Inject CSS via custom route
+    @app.get("/custom.css")
+    async def serve_custom_css():
+        return Response(content=CUSTOM_CSS, media_type="text/css")
 
     @app.middleware("http")
     async def block_api_endpoints(request: Request, call_next):
-        # Allow internal UI paths (/run, /queue), block external API access
         if request.url.path.startswith("/api"):
              return JSONResponse(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -8173,19 +8194,12 @@ if __name__ == "__main__":
     print(f"🚀 Starting Server on Port 7860 (Fast Shutdown Enabled)...")
     print(f"📂 Serving files from: {APP_DIR}")
 
-    # --- CRITICAL CSS FIX ---
-    # We assign the CSS/Head directly to the properties because 
-    # the constructor arguments are being ignored in this version.
-    demo.css = CUSTOM_CSS
-    demo.head = PWA_HEAD
-    # ------------------------
-
-    # 4. Mount Gradio
+    # 4. Mount Gradio (WITHOUT css/head in mount)
     print(f"🚀 Mounting Gradio app...")
     app = gr.mount_gradio_app(
         app, 
         demo, 
-        path="/", 
+        path="/",
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"]
     )
 
