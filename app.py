@@ -7358,7 +7358,9 @@ with gr.Blocks(
 
                         # --- LOGIC ---
                         def load_img_data(user_state=None):
-                            """Load images with decryption for the table view."""
+                            """
+                            Load images and force decryption of the prompt for the table view.
+                            """
                             # 1. Strict Auth Check
                             if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
                                 return [], []
@@ -7378,19 +7380,22 @@ with gr.Blocks(
                                 
                                 for i in i_list:
                                     # 2. Decrypt Prompt for Display
-                                    dec_prompt = str(i.prompt)
-                                    
-                                    # Force decrypt check
-                                    if dec_prompt.startswith("gAAAA"):
+                                    raw_prompt = str(i.prompt)
+                                    dec_prompt = raw_prompt
+
+                                    # Check if encrypted (starts with Fernet header)
+                                    if raw_prompt.startswith("gAAAA"):
                                         try:
                                             # Try User Key
-                                            dec_prompt = crypto.decrypt_text(dec_prompt, key=umk)
+                                            dec_prompt = crypto.decrypt_text(raw_prompt, key=umk)
                                             
                                             # Fallback for legacy data (Global Key)
                                             if dec_prompt == "[Decryption Failed]" and umk != crypto.global_key:
-                                                dec_prompt = crypto.decrypt_text(i.prompt, key=crypto.global_key)
-                                        except Exception as e:
-                                            dec_prompt = "[Verschlüsselt]"
+                                                legacy_attempt = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
+                                                if legacy_attempt != "[Decryption Failed]":
+                                                    dec_prompt = legacy_attempt
+                                        except Exception:
+                                            dec_prompt = "🔒 [Verschlüsselt]"
                                     
                                     # Truncate for table view
                                     display_prompt = (dec_prompt[:75] + '...') if len(dec_prompt) > 75 else dec_prompt
@@ -7410,7 +7415,7 @@ with gr.Blocks(
 
                         def load_single_img(tid, user_state=None):
                             """
-                            Loads DB record and decrypts the image file to a temp path for display.
+                            Loads DB record, decrypts the PROMPT and the IMAGE file.
                             """
                             if not tid or not user_state or not user_state.get("id"): 
                                 return None, "", "❌"
@@ -7430,32 +7435,35 @@ with gr.Blocks(
                                 umk = user_state.get('umk') if user_state else crypto.global_key
 
                                 # 1. Decrypt Prompt
-                                prompt = img.prompt
-                                # Try decrypting
-                                if str(prompt).startswith("gAAAA"):
-                                    try:
-                                        prompt = crypto.decrypt_text(prompt, key=umk)
-                                        if prompt == "[Decryption Failed]" and umk != crypto.global_key:
-                                            prompt = crypto.decrypt_text(img.prompt, key=crypto.global_key)
-                                    except Exception as e:
-                                        prompt = "[Entschlüsselungsfehler Prompt]"
+                                raw_prompt = str(img.prompt)
+                                final_prompt = raw_prompt
+                                logger.info(f"raw_prompt: {raw_prompt}") 
 
-                                # 2. Decrypt Image File
+                                if raw_prompt.startswith("gAAAA"):
+                                    try:
+                                        final_prompt = crypto.decrypt_text(raw_prompt, key=umk)
+                                        logger.info(f"final_prompt: {final_prompt}") 
+                                        # Fallback
+                                        if final_prompt == "[Decryption Failed]" and umk != crypto.global_key:
+                                            legacy_attempt = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
+                                            if legacy_attempt != "[Decryption Failed]":
+                                                final_prompt = legacy_attempt
+                                    except Exception:
+                                        final_prompt = "🔒 [Fehler bei Entschlüsselung]"
+
+                                # 2. Decrypt Image File (if needed)
                                 display_path = img.image_path
                                 
-                                # Check if it is an encrypted file (.enc)
                                 if img.image_path.endswith(".enc"):
                                     try:
                                         with open(img.image_path, "rb") as f:
                                             enc_data = f.read()
                                         
-                                        # Decrypt
                                         from cryptography.fernet import Fernet
                                         f_eng = Fernet(umk)
                                         dec_data = f_eng.decrypt(enc_data)
                                         
-                                        # Write to temp file with correct extension (remove .enc)
-                                        # We guess jpg if extension is missing, or infer from original name
+                                        # Write to temp file
                                         original_name = os.path.basename(img.image_path).replace(".enc", "")
                                         if "." not in original_name: original_name += ".jpg"
                                         
@@ -7468,9 +7476,9 @@ with gr.Blocks(
                                         
                                     except Exception as e:
                                         logger.error(f"Image decryption failed: {e}")
-                                        return None, prompt, "❌ Fehler: Bild konnte nicht entschlüsselt werden."
+                                        return None, final_prompt, "❌ Fehler: Bild konnte nicht entschlüsselt werden."
 
-                                return display_path, prompt, f"✅ Geladen"
+                                return display_path, final_prompt, f"✅ Geladen"
 
                             except Exception as e:
                                 logger.error(f"Load Single Image Error: {e}")
