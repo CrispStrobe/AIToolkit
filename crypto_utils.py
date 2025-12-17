@@ -144,6 +144,44 @@ class CryptoManager:
         self.pq_secret_key = None
         if HAS_PQ:
             self._init_pq_keys()
+
+    def encrypt_bytes(self, data: bytes, key: bytes = None) -> bytes:
+        """
+        Encrypt raw bytes (e.g. images) using AES-256-GCM.
+        Allows passing a specific User Key.
+        """
+        if not data: return b""
+        # Use provided user key, otherwise fallback to global master key
+        use_key = key if key else self.master_key
+        
+        try:
+            nonce = get_random_bytes(12)
+            cipher = AES.new(use_key, AES.MODE_GCM, nonce=nonce)
+            ciphertext, tag = cipher.encrypt_and_digest(data)
+            # Structure: Nonce (12) + Tag (16) + Ciphertext
+            return nonce + tag + ciphertext
+        except Exception as e:
+            logger.error(f"Byte encryption error: {e}")
+            raise
+
+    def decrypt_bytes(self, data: bytes, key: bytes = None) -> bytes:
+        """
+        Decrypt raw bytes using AES-256-GCM.
+        """
+        if not data: return b""
+        use_key = key if key else self.master_key
+        
+        try:
+            # Extract components
+            nonce = data[:12]
+            tag = data[12:28]
+            ciphertext = data[28:]
+            
+            cipher = AES.new(use_key, AES.MODE_GCM, nonce=nonce)
+            return cipher.decrypt_and_verify(ciphertext, tag)
+        except Exception as e:
+            logger.error(f"Byte decryption error: {e}")
+            raise
     
     def _load_or_create_master_key(self) -> bytes:
         """Load master key from environment or create new one"""
