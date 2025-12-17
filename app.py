@@ -1436,7 +1436,7 @@ def download_from_url(url, download_video=False, save_to_storage=True, user_stat
     return False, None, "❌ Alle Methoden fehlgeschlagen"
 
 # ==========================================
-# 📦 STORAGE BOX HELPER
+# 📦 ENHANCED STORAGE BOX HELPER
 # ==========================================
 
 def get_user_storage_path(username):
@@ -1445,20 +1445,33 @@ def get_user_storage_path(username):
     Creates directory if it doesn't exist.
     """
     if not username:
-        logger.warning("get_user_storage_path called without username")
+        logger.error("❌ get_user_storage_path called without username")
         return None
         
     user_path = os.path.join(STORAGE_MOUNT_POINT, username)
     
+    logger.info(f"🗂️ Storage path requested for user '{username}': {user_path}")
+    
     # Create directory with proper permissions
     try:
-        os.makedirs(user_path, exist_ok=True)
-        logger.info(f"✅ User storage path ready: {user_path}")
+        if not os.path.exists(user_path):
+            os.makedirs(user_path, exist_ok=True)
+            os.chmod(user_path, 0o700)  # Only user can access
+            logger.info(f"✅ Created storage directory: {user_path}")
+        else:
+            logger.debug(f"✓ Storage directory exists: {user_path}")
+            
+        # Verify it's actually accessible
+        if not os.access(user_path, os.R_OK | os.W_OK):
+            logger.error(f"❌ Storage directory not accessible: {user_path}")
+            return None
+            
+        return user_path
+        
     except Exception as e:
-        logger.error(f"❌ Failed to create storage path for {username}: {e}")
+        logger.error(f"❌ Failed to create/access storage path for {username}: {e}")
+        logger.exception(e)
         return None
-    
-    return user_path
 
 def ensure_user_storage_dirs(username):
     """
@@ -1466,57 +1479,210 @@ def ensure_user_storage_dirs(username):
     Called at login time.
     """
     if not username:
-        logger.warning("ensure_user_storage_dirs called without username")
+        logger.warning("❌ ensure_user_storage_dirs called without username")
         return False
     
     user_path = get_user_storage_path(username)
     
     if user_path and os.path.exists(user_path):
         logger.info(f"✅ Storage directory verified for user '{username}': {user_path}")
+        
+        # List contents for debugging
+        try:
+            contents = os.listdir(user_path)
+            logger.info(f"📁 Storage contents for '{username}': {len(contents)} items")
+            if contents:
+                logger.debug(f"   Files: {contents[:5]}{'...' if len(contents) > 5 else ''}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not list storage contents: {e}")
+            
         return True
     
     logger.error(f"❌ Storage directory creation failed for user '{username}'")
     return False
 
-
-def copy_storage_file_to_temp(file_path):
+def save_to_user_storage(username, filename, file_data, encrypt=True, user_state=None):
     """
-    Copies a file from Storage Box to local temp for processing.
-    Returns path to local temp file.
-    """
-    if not file_path: return None
+    Save file to user's storage box with optional encryption.
     
-    # Security check: Ensure path is within mount point
-    abs_path = os.path.abspath(file_path)
-    if not abs_path.startswith(os.path.abspath(STORAGE_MOUNT_POINT)):
-        raise ValueError("Zugriff verweigert: Datei liegt außerhalb der Storage Box")
+    Args:
+        username: User's username
+        filename: Desired filename
+        file_data: bytes or file path
+        encrypt: Whether to encrypt the file
+        user_state: User session state (for UMK)
+    
+    Returns:
+        (success: bool, storage_path: str, message: str)
+    """
+    logger.info(f"💾 save_to_user_storage: user={username}, file={filename}, encrypt={encrypt}")
+    
+    try:
+        # 1. Get user storage path
+        user_path = get_user_storage_path(username)
+        if not user_path:
+            return False, None, "❌ Storage path nicht verfügbar"
         
-    if not os.path.exists(abs_path):
-        raise ValueError("Datei existiert nicht")
+        # 2. Generate safe filename
+        safe_filename = re.sub(r'[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]', '_', filename)
+        if encrypt:
+            safe_filename += ".enc"
         
-    # Copy to temp
-    filename = os.path.basename(abs_path)
-    temp_dir = tempfile.gettempdir()
-    local_dest = os.path.join(temp_dir, f"sb_{int(time.time())}_{filename}")
-    
-    import shutil
-    shutil.copy2(abs_path, local_dest)
-    return local_dest
+        storage_path = os.path.join(user_path, safe_filename)
+        
+        logger.info(f"📂 Target storage path: {storage_path}")
+        
+        # 3. Read file data if it's a path
+        if isinstance(file_data, str) and os.path.exists(file_data):
+            logger.debug(f"📥 Reading file from path: {file_data}")
+            with open(file_data, 'rb') as f:
+                file_data = f.read()
+        elif not isinstance(file_data, bytes):
+            logger.error(f"❌ Invalid file_data type: {type(file_data)}")
+            return False, None, "❌ Ungültige Datei-Daten"
+        
+        logger.info(f"📊 File size: {len(file_data)} bytes")
+        
+        # 4. Encrypt if requested
+        if encrypt:
+            logger.info("🔐 Encrypting file...")
+            umk = user_state.get('umk') if user_state else crypto.global_key
+            
+            if not umk:
+                logger.error("❌ No encryption key available")
+                return False, None, "❌ Kein Verschlüsselungsschlüssel"
+            
+            # Ensure key is properly formatted for Fernet
+            import base64
+            key_for_fernet = umk
+            if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
+                key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
+            
+            from cryptography.fernet import Fernet
+            f = Fernet(key_for_fernet)
+            file_data = f.encrypt(file_data)
+            logger.info(f"✅ File encrypted. New size: {len(file_data)} bytes")
+        
+        # 5. Write to storage
+        logger.info(f"💾 Writing to storage: {storage_path}")
+        with open(storage_path, 'wb') as f:
+            f.write(file_data)
+        
+        # 6. Set proper permissions (user-only)
+        os.chmod(storage_path, 0o600)
+        
+        logger.info(f"✅ File saved successfully: {storage_path}")
+        return True, storage_path, f"✅ Gespeichert: {safe_filename}"
+        
+    except Exception as e:
+        logger.exception(f"❌ Error saving to storage: {e}")
+        return False, None, f"❌ Fehler: {str(e)}"
 
-def get_storage_root(user_state=None):
+def load_from_user_storage(username, filepath, decrypt=True, user_state=None):
     """
-    Returns the user-specific storage root path.
-    NO LONGER returns global mount point.
+    Load and optionally decrypt a file from user's storage.
+    
+    Args:
+        username: User's username
+        filepath: Full path or filename in user's storage
+        decrypt: Whether to decrypt the file
+        user_state: User session state (for UMK)
+    
+    Returns:
+        (success: bool, file_data: bytes, message: str)
     """
-    if not user_state or not user_state.get("username"):
-        logger.warning("get_storage_root called without valid user_state")
-        return None
+    logger.info(f"📂 load_from_user_storage: user={username}, file={filepath}, decrypt={decrypt}")
     
-    username = user_state.get("username")
-    user_path = get_user_storage_path(username)
+    try:
+        # 1. Resolve path
+        if not filepath.startswith(STORAGE_MOUNT_POINT):
+            # It's a relative path, construct full path
+            user_path = get_user_storage_path(username)
+            if not user_path:
+                return False, None, "❌ Storage nicht verfügbar"
+            filepath = os.path.join(user_path, filepath)
+        
+        logger.info(f"📁 Full path: {filepath}")
+        
+        # 2. Security check: Ensure path is within user's directory
+        user_path = get_user_storage_path(username)
+        abs_filepath = os.path.abspath(filepath)
+        abs_user_path = os.path.abspath(user_path)
+        
+        if not abs_filepath.startswith(abs_user_path):
+            logger.error(f"🚫 Security violation: Path outside user directory")
+            logger.error(f"   Requested: {abs_filepath}")
+            logger.error(f"   User dir: {abs_user_path}")
+            return False, None, "🚫 Zugriff verweigert"
+        
+        # 3. Check file exists
+        if not os.path.exists(filepath):
+            logger.error(f"❌ File not found: {filepath}")
+            return False, None, "❌ Datei nicht gefunden"
+        
+        # 4. Read file
+        logger.info(f"📥 Reading file: {filepath}")
+        with open(filepath, 'rb') as f:
+            file_data = f.read()
+        
+        logger.info(f"📊 File size: {len(file_data)} bytes")
+        
+        # 5. Decrypt if needed
+        if decrypt and filepath.endswith('.enc'):
+            logger.info("🔓 Decrypting file...")
+            umk = user_state.get('umk') if user_state else crypto.global_key
+            
+            if not umk:
+                logger.error("❌ No decryption key available")
+                return False, None, "❌ Kein Entschlüsselungsschlüssel"
+            
+            # Ensure key is properly formatted
+            import base64
+            key_for_fernet = umk
+            if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
+                key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
+            
+            from cryptography.fernet import Fernet
+            f = Fernet(key_for_fernet)
+            file_data = f.decrypt(file_data)
+            logger.info(f"✅ File decrypted. Size: {len(file_data)} bytes")
+        
+        logger.info("✅ File loaded successfully")
+        return True, file_data, "✅ Geladen"
+        
+    except Exception as e:
+        logger.exception(f"❌ Error loading from storage: {e}")
+        return False, None, f"❌ Fehler: {str(e)}"
+
+def list_user_storage_files(username, pattern="*"):
+    """
+    List files in user's storage directory.
     
-    logger.debug(f"get_storage_root for '{username}': {user_path}")
-    return user_path
+    Returns:
+        (success: bool, files: list, message: str)
+    """
+    logger.info(f"📋 list_user_storage_files: user={username}, pattern={pattern}")
+    
+    try:
+        user_path = get_user_storage_path(username)
+        if not user_path:
+            return False, [], "❌ Storage nicht verfügbar"
+        
+        import glob
+        search_pattern = os.path.join(user_path, pattern)
+        files = glob.glob(search_pattern)
+        
+        # Make paths relative for display
+        relative_files = [os.path.relpath(f, user_path) for f in files]
+        
+        logger.info(f"📁 Found {len(relative_files)} files for user '{username}'")
+        logger.debug(f"   Files: {relative_files[:10]}{'...' if len(relative_files) > 10 else ''}")
+        
+        return True, relative_files, f"✅ {len(relative_files)} Dateien"
+        
+    except Exception as e:
+        logger.exception(f"❌ Error listing storage: {e}")
+        return False, [], f"❌ Fehler: {str(e)}"
 
 # ==========================================
 # AUDIO HELPERS
@@ -5031,30 +5197,49 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
             
             for f_path in files_list:
                 try:
-                    # Normalize path
-                    if not f_path.startswith("/"): 
-                        f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+                    logger.info(f"📦 Processing storage file: {f_path}")
                     
-                    if not os.path.exists(f_path):
-                        status_messages.append(f"❌ {os.path.basename(f_path)}: Nicht gefunden")
+                    # Extract just the filename if it's a full path
+                    if f_path.startswith(STORAGE_MOUNT_POINT):
+                        filename = os.path.basename(f_path)
+                    else:
+                        filename = f_path
+                    
+                    # Load with decryption
+                    success, file_data, msg = load_from_user_storage(
+                        username=user_state.get("username"),
+                        filepath=filename,
+                        decrypt=True,
+                        user_state=user_state
+                    )
+                    
+                    if not success:
+                        logger.error(f"❌ Failed to load storage file: {msg}")
+                        status_messages.append(f"❌ {filename}: {msg}")
                         continue
                     
-                    # Copy to temp for processing
-                    local_temp = copy_storage_file_to_temp(f_path)
-                    content_block, status_msg = process_file_path(local_temp, "Cloud")
+                    # Write to temp for extraction
+                    temp_path = os.path.join(tempfile.gettempdir(), f"sb_{int(time.time())}_{filename}")
+                    with open(temp_path, 'wb') as f:
+                        f.write(file_data)
+                    
+                    logger.info(f"✅ Decrypted to temp: {temp_path}")
+                    
+                    # Extract content
+                    content_block, status_msg = process_file_path(temp_path, "Cloud (Encrypted)")
                     full_content_to_add += content_block
                     status_messages.append(status_msg)
                     
-                    # Cleanup
+                    # Cleanup temp
                     try: 
-                        os.remove(local_temp)
+                        os.remove(temp_path)
                     except: 
                         pass
                         
                 except Exception as e:
-                    logger.error(f"Storage box file error: {e}")
+                    logger.exception(f"❌ Storage box file error: {e}")
                     status_messages.append(f"❌ {os.path.basename(f_path)}: Fehler")
-
+                    
         # === 3. TRANSCRIPT ===
         elif attach_type == "Transkript":
             if not attach_id:
@@ -5361,61 +5546,54 @@ def generate_and_handle_ui(prompt, provider, model, width, height, steps, key, u
 # --- DB SAVE WRAPPER ---
 def process_gallery_save(img_path, provider, prompt, model, user_state):
     """
-    Encrypts the image file bytes before saving to persistent storage.
-    Fixed: Properly formats the Key for Fernet.
+    Saves generated image to user's storage with encryption.
     """
     try:
-        import base64 # Ensure import
-        
         if not user_state or not user_state.get("id"):
+            logger.error("❌ Gallery save: No user session")
             return "❌ Bitte anmelden", gr.update(visible=True)
         
         user_id = user_state["id"]
-        # Get User Master Key
-        umk = user_state.get('umk') if user_state else crypto.global_key
+        username = user_state.get("username")
+        
+        logger.info(f"💾 Gallery save: user={username}, image={img_path}")
         
         if not img_path or not os.path.exists(img_path):
+            logger.error(f"❌ Image file not found: {img_path}")
             return "❌ Datei nicht gefunden (Session abgelaufen?)", gr.update(visible=True)
 
-        # 1. Prepare Paths
-        permanent_dir = "/var/www/transkript_app/generated_images"
-        os.makedirs(permanent_dir, exist_ok=True)
+        # 1. Generate filename
+        timestamp = int(time.time())
+        filename = f"img_{timestamp}_{os.path.basename(img_path)}"
         
-        # We append .enc to signify it's encrypted
-        filename = f"img_{int(time.time())}_{os.path.basename(img_path)}.enc"
-        permanent_path = os.path.join(permanent_dir, filename)
-
-        # 2. Encrypt & Save File
-        with open(img_path, "rb") as f_in:
-            file_data = f_in.read()
-            
-        # FIX: Fernet requires URL-safe Base64 encoded key
-        # If umk is raw bytes (32 bytes), encode it.
-        key_for_fernet = umk
-        if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
-            key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
-            
-        from cryptography.fernet import Fernet
-        f = Fernet(key_for_fernet)
-        encrypted_data = f.encrypt(file_data)
+        # 2. Save to user's storage with encryption
+        success, storage_path, message = save_to_user_storage(
+            username=username,
+            filename=filename,
+            file_data=img_path,  # Pass path, function will read it
+            encrypt=True,
+            user_state=user_state
+        )
         
-        with open(permanent_path, "wb") as f_out:
-            f_out.write(encrypted_data)
+        if not success:
+            logger.error(f"❌ Failed to save to storage: {message}")
+            return message, gr.update(visible=True)
 
-        # 3. Save Metadata to DB
+        # 3. Save metadata to DB
         img_id = save_generated_image(
             user_id=int(user_id), 
             provider=str(provider), 
             model=str(model), 
             prompt=str(prompt), 
-            image_path=str(permanent_path),
+            image_path=str(storage_path),  # Store encrypted path
             user_state=user_state 
         )
         
+        logger.info(f"✅ Image saved: ID={img_id}, path={storage_path}")
         return f"✅ Verschlüsselt gespeichert (ID: {img_id})", gr.update(visible=False)
 
     except Exception as e:
-        logger.exception(f"Gallery Save Error: {e}")
+        logger.exception(f"❌ Gallery Save Error: {e}")
         return f"🔥 Fehler: {str(e)}", gr.update(visible=True)
 
 def manual_save_transcription(original, translated, provider, model, lang, user_state, filename="manual_save.mp3"):
@@ -8001,10 +8179,7 @@ with gr.Blocks(
         """Enhanced login with storage path initialization"""
         success, message, show_app, show_login, state_data = login_user(username, password)
         
-        # status_text = f"👤 Angemeldet als: **{state_data['username']}**" if success else "👤 Nicht angemeldet"
-        # SHORTER STATUS TEXT for mobile
         status_text = f"👤 {state_data['username']}" if success else "👤"
-        
         show_admin_tab = state_data.get("is_admin", False)
         
         # Storage root for file browsers (user-specific)
@@ -8015,21 +8190,28 @@ with gr.Blocks(
                 # Create user storage directory
                 if ensure_user_storage_dirs(username):
                     storage_root = get_user_storage_path(username)
-                    logger.info(f"🗂️ Storage root for {username}: {storage_root}")
+                    logger.info(f"✅ Storage initialized for '{username}': {storage_root}")
+                    
+                    # Verify it's not empty
+                    try:
+                        files = os.listdir(storage_root)
+                        logger.info(f"📁 Storage contains {len(files)} items")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not list storage: {e}")
                 else:
-                    logger.warning(f"⚠️ Could not initialize storage for {username}")
+                    logger.error(f"❌ Storage initialization failed for '{username}'")
             except Exception as e:
-                logger.error(f"❌ Storage initialization error for {username}: {e}")
+                logger.exception(f"❌ Storage setup error: {e}")
         
-        # Return storage_root as an additional output to update FileExplorer components
+        # Return with storage_root updates
         return (
-            message,                        # login_message
-            show_app,                       # main_app visibility
-            show_login,                     # login_screen visibility
-            status_text,                    # login_status
-            gr.update(visible=True),        # logout_btn
-            gr.update(visible=show_admin_tab), # admin_tab
-            state_data,                     # session_state
+            message,                        
+            show_app,                       
+            show_login,                     
+            status_text,                    
+            gr.update(visible=True),        
+            gr.update(visible=show_admin_tab), 
+            state_data,                     
             gr.update(root_dir=storage_root) if storage_root else gr.update(), # t_storage_browser
             gr.update(root_dir=storage_root) if storage_root else gr.update(), # v_storage_browser
             gr.update(root_dir=storage_root) if storage_root else gr.update()  # attach_sb_browser
