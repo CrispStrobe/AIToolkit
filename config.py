@@ -759,18 +759,18 @@ body {
 /* ✅ DARK MODE FIX for header */
 .dark .compact-header,
 [data-theme="dark"] .compact-header {
-    background: #1f2937 !important;  /* Dark gray background */
-    border-bottom: 1px solid #374151 !important;  /* Darker border */
+    background: #1f2937 !important;
+    border-bottom: 1px solid #374151 !important;
 }
 
 /* ✅ Fix text colors in header */
 .compact-header * {
-    color: #111827 !important;  /* Dark text for light mode */
+    color: #111827 !important;
 }
 
 .dark .compact-header *,
 [data-theme="dark"] .compact-header * {
-    color: #f9fafb !important;  /* Light text for dark mode */
+    color: #f9fafb !important;
 }
 
 /* ==========================================
@@ -807,40 +807,58 @@ body {
    ========================================== */
 @media (max-width: 768px) {
     
-    /* Make mobile layout truly full width */
+    /* ===================================
+       REDUCE SPACING
+       =================================== */
     .gradio-container {
         padding: 0 !important;
         width: 100vw !important;
         max-width: 100vw !important;
     }
     
-    /* Remove any remaining side padding */
     .contain {
         padding-left: 0 !important;
         padding-right: 0 !important;
     }
     
-    /* ===================================
-       TABS: Keep emoji icons, hide text
-       =================================== */
-    
-    /* Target main tab buttons */
-    .tab-nav button,
-    .tabs > .tab-nav > button {
-        font-size: 1.5rem !important;  /* Show emoji at normal size */
-        padding: 8px 4px !important;
-        min-width: 50px !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
+    /* Tighter spacing */
+    .gr-row {
+        gap: 2px !important;
+        margin: 2px 0 !important;
     }
     
-    /* Hide text after emoji using pseudo-element trick */
-    .tab-nav button::after,
-    .tabs > .tab-nav > button::after {
-        content: '' !important;
-        display: inline !important;
-        width: 0 !important;
+    .gr-column {
+        gap: 2px !important;
+        padding: 2px !important;
+    }
+    
+    /* ===================================
+       TABS: Show EMOJI only, hide TEXT
+       =================================== */
+    
+    .tab-nav button,
+    .tabs > .tab-nav > button {
+        padding: 8px 4px !important;
+        min-width: 50px !important;
         overflow: hidden !important;
+        text-overflow: clip !important;
+        position: relative !important;
+    }
+    
+    /* The trick: Use text-indent to push text off-screen */
+    .tab-nav button,
+    .tabs > .tab-nav > button {
+        text-indent: -9999px !important;
+        direction: ltr !important;
+    }
+    
+    /* Make the EMOJI visible using ::first-letter */
+    .tab-nav button::first-letter,
+    .tabs > .tab-nav > button::first-letter {
+        text-indent: 0 !important;
+        float: left !important;
+        font-size: 1.5rem !important;
+        line-height: 1 !important;
     }
 
     /* Selected tab styling */
@@ -856,51 +874,110 @@ body {
     }
 
     /* ===================================
-       BUTTONS: Keep icons, hide text
+       BUTTONS with mobile-icon-only class
        =================================== */
     
-    /* Target buttons with text + emoji */
-    button:not(.tab-nav button) {
-        /* Keep the button visible */
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
+    .mobile-icon-only {
+        text-indent: -9999px !important;
+        direction: ltr !important;
+        min-width: 44px !important;
+        padding: 10px !important;
+        position: relative !important;
     }
     
-    /* Hide button text spans on mobile */
-    button span.text-label {
-        display: none !important;
+    .mobile-icon-only::first-letter {
+        text-indent: 0 !important;
+        float: left !important;
+        font-size: 1.3rem !important;
+        line-height: 1 !important;
+        position: absolute !important;
+        left: 50% !important;
+        top: 50% !important;
+        transform: translate(-50%, -50%) !important;
     }
     
-    /* Ensure button icons stay visible */
+    /* Keep SVG icons visible */
     button svg,
-    button img,
-    button .icon {
+    button img {
         display: inline-block !important;
         visibility: visible !important;
         opacity: 1 !important;
         width: 20px !important;
         height: 20px !important;
     }
+
+    /* ===================================
+       COMPACT ELEMENTS
+       =================================== */
     
-    /* Fix "Senden" button specifically */
-    button[title*="Send"],
-    button[aria-label*="Send"],
-    #send_btn,
-    .send-button {
-        min-width: 44px !important;  /* Touch-friendly size */
-        padding: 10px !important;
+    /* Compact header */
+    .compact-header {
+        padding: 4px 8px !important;
+        min-height: 42px !important;
     }
-
-    /* Chat Window Height Fix */
+    
+    /* Chat window */
     #chat_window {
-        height: 65vh !important;
-        max-height: 65vh !important;
+        height: 60vh !important;
+        max-height: 60vh !important;
+        margin: 0 !important;
+        padding: 4px !important;
     }
-
-    /* Hide Footer */
+    
+    /* Smaller badges */
+    .custom-badge {
+        font-size: 0.75em !important;
+        padding: 3px 8px !important;
+        height: 32px !important;
+    }
+    
+    /* Compact inputs */
+    input, textarea, select {
+        padding: 6px 8px !important;
+        font-size: 14px !important;
+    }
+    
+    label {
+        margin-bottom: 2px !important;
+        font-size: 13px !important;
+    }
+    
+    /* Hide footer */
     footer { 
         display: none !important; 
+    }
+}
+
+/* ==========================================
+   VERY SMALL SCREENS (< 400px)
+   ========================================== */
+@media (max-width: 400px) {
+    
+    /* Even tighter spacing */
+    .gr-row {
+        gap: 1px !important;
+        margin: 1px 0 !important;
+    }
+    
+    .gr-column {
+        gap: 1px !important;
+        padding: 1px !important;
+    }
+    
+    /* Smaller tabs */
+    .tab-nav button::first-letter,
+    .tabs > .tab-nav > button::first-letter {
+        font-size: 1.3rem !important;
+    }
+    
+    /* Smaller buttons */
+    .mobile-icon-only {
+        min-width: 40px !important;
+        padding: 8px !important;
+    }
+    
+    .mobile-icon-only::first-letter {
+        font-size: 1.1rem !important;
     }
 }
 
