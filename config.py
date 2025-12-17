@@ -694,7 +694,7 @@ TRANSCRIPT_PROMPTS = {
 # ==========================================
 # UI CONSTANTS
 # ==========================================
-PWA_HEAD = f"""
+PWA_HEAD = r"""
 <!-- Existing PWA meta tags -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -708,32 +708,33 @@ PWA_HEAD = f"""
 
 <script>
 // Mobile Text Hiding Script
-function hideMobileText() {{
-    if (window.innerWidth <= 768) {{
+function hideMobileText() {
+    if (window.innerWidth <= 768) {
         // Hide text in tabs (keep only emoji)
-        document.querySelectorAll('.icon-nav > .tab-nav > button').forEach(btn => {{
+        document.querySelectorAll('.icon-nav > .tab-nav > button').forEach(btn => {
             const text = btn.textContent.trim();
-            if (text) {{
-                // Extract first character (emoji) using regex
-                const emoji = text.match(/[\u{{1F600}}-\u{{1F64F}}\u{{1F300}}-\u{{1F5FF}}\u{{1F680}}-\u{{1F6FF}}\u{{1F1E0}}-\u{{1F1FF}}\u{{2600}}-\u{{26FF}}\u{{2700}}-\u{{27BF}}]/);
-                if (emoji) {{
-                    btn.textContent = emoji[0];
-                }}
-            }}
-        }});
+            if (text) {
+                // Extract first character (emoji) - simpler approach
+                const firstChar = Array.from(text)[0];
+                // Check if it's an emoji (rough check)
+                if (firstChar && firstChar.length > 0) {
+                    btn.textContent = firstChar;
+                }
+            }
+        });
         
         // Hide text in buttons (keep only emoji)
-        document.querySelectorAll('.mobile-icon-only').forEach(btn => {{
+        document.querySelectorAll('.mobile-icon-only').forEach(btn => {
             const text = btn.textContent.trim();
-            if (text && text.length > 2) {{ // Only if there's text after emoji
-                const emoji = text.match(/[\u{{1F600}}-\u{{1F64F}}\u{{1F300}}-\u{{1F5FF}}\u{{1F680}}-\u{{1F6FF}}\u{{1F1E0}}-\u{{1F1FF}}\u{{2600}}-\u{{26FF}}\u{{2700}}-\u{{27BF}}]/);
-                if (emoji) {{
-                    btn.textContent = emoji[0];
-                }}
-            }}
-        }});
-    }}
-}}
+            if (text && text.length > 2) {
+                const firstChar = Array.from(text)[0];
+                if (firstChar && firstChar.length > 0) {
+                    btn.textContent = firstChar;
+                }
+            }
+        });
+    }
+}
 
 // Run on load and when DOM changes
 document.addEventListener('DOMContentLoaded', hideMobileText);
@@ -741,7 +742,7 @@ window.addEventListener('resize', hideMobileText);
 
 // Watch for Gradio's dynamic content
 const observer = new MutationObserver(hideMobileText);
-observer.observe(document.body, {{ childList: true, subtree: true }});
+observer.observe(document.body, { childList: true, subtree: true });
 </script>
 """
 
