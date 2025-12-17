@@ -7340,6 +7340,7 @@ with gr.Blocks(
                                 return pad_data([], 4), []
 
                         def load_single_img(tid, user_state=None):
+                            logger.info("loading single image:", tid)
                             if not tid or not user_state or not user_state.get("id"): 
                                 return None, "", "❌"
                             
