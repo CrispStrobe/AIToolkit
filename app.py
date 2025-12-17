@@ -6112,8 +6112,11 @@ def generate_and_handle_ui(prompt, provider, model, width, height, steps, key, u
 def process_gallery_save(img_path, provider, prompt, model, user_state):
     """
     Encrypts the image file bytes before saving to persistent storage.
+    Fixed: Properly formats the Key for Fernet.
     """
     try:
+        import base64 # Ensure import
+        
         if not user_state or not user_state.get("id"):
             return "❌ Bitte anmelden", gr.update(visible=True)
         
@@ -6133,28 +6136,29 @@ def process_gallery_save(img_path, provider, prompt, model, user_state):
         permanent_path = os.path.join(permanent_dir, filename)
 
         # 2. Encrypt & Save File
-        # Use our crypto_utils helper if available, or manual Fernet
         with open(img_path, "rb") as f_in:
             file_data = f_in.read()
             
-        # Encrypt bytes using the User Master Key
-        # If you added the helper to crypto_utils, use crypto.encrypt_bytes(file_data, key=umk)
-        # Otherwise, here is the raw logic:
+        # FIX: Fernet requires URL-safe Base64 encoded key
+        # If umk is raw bytes (32 bytes), encode it.
+        key_for_fernet = umk
+        if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
+            key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
+            
         from cryptography.fernet import Fernet
-        f = Fernet(umk)
+        f = Fernet(key_for_fernet)
         encrypted_data = f.encrypt(file_data)
         
         with open(permanent_path, "wb") as f_out:
             f_out.write(encrypted_data)
 
         # 3. Save Metadata to DB
-        # We assume save_generated_image handles the PROMPT encryption internally
         img_id = save_generated_image(
             user_id=int(user_id), 
             provider=str(provider), 
             model=str(model), 
             prompt=str(prompt), 
-            image_path=str(permanent_path), # Store path to .enc file
+            image_path=str(permanent_path),
             user_state=user_state 
         )
         
@@ -7316,9 +7320,8 @@ with gr.Blocks(
                             outputs=[loaded_trans_display, trans_action_status, trans_history, trans_state]
                         )
                         
-                        if 'msg_input' in locals() or 'c_msg' in locals():
-                            target = c_msg if 'c_msg' in locals() else msg_input
-                            trans_to_chat_btn.click(lambda x: x, inputs=loaded_trans_display, outputs=target)
+                        # FIX: Direct reference to c_msg (defined in Chat Tab)
+                        trans_to_chat_btn.click(lambda x: x, inputs=loaded_trans_display, outputs=c_msg)
 
                     # =========================================================
                     # 2. GENERATED IMAGES
@@ -7383,19 +7386,22 @@ with gr.Blocks(
                                     raw_prompt = str(i.prompt)
                                     dec_prompt = raw_prompt
 
-                                    # Check if encrypted (starts with Fernet header)
-                                    if raw_prompt.startswith("gAAAA"):
-                                        try:
-                                            # Try User Key
-                                            dec_prompt = crypto.decrypt_text(raw_prompt, key=umk)
-                                            
+
+                                    # FIX: Always try to decrypt, don't check for specific header
+                                    try:
+                                        # Try User Key
+                                        candidate = crypto.decrypt_text(raw_prompt, key=umk)
+                                        if candidate and candidate != "[Decryption Failed]":
+                                            dec_prompt = candidate
+                                        else:
                                             # Fallback for legacy data (Global Key)
-                                            if dec_prompt == "[Decryption Failed]" and umk != crypto.global_key:
-                                                legacy_attempt = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
-                                                if legacy_attempt != "[Decryption Failed]":
-                                                    dec_prompt = legacy_attempt
-                                        except Exception:
-                                            dec_prompt = "🔒 [Verschlüsselt]"
+                                            if umk != crypto.global_key:
+                                                legacy = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
+                                                if legacy and legacy != "[Decryption Failed]":
+                                                    dec_prompt = legacy
+                                    except Exception:
+                                        # If it crashes, it's likely already plaintext or totally broken
+                                        pass
                                     
                                     # Truncate for table view
                                     display_prompt = (dec_prompt[:75] + '...') if len(dec_prompt) > 75 else dec_prompt
@@ -7416,11 +7422,14 @@ with gr.Blocks(
                         def load_single_img(tid, user_state=None):
                             """
                             Loads DB record, decrypts the PROMPT and the IMAGE file.
+                            Fixed: Key encoding for image decryption & blind prompt decryption.
                             """
                             if not tid or not user_state or not user_state.get("id"): 
                                 return None, "", "❌"
                             
                             try:
+                                import base64
+                                
                                 db = SessionLocal()
                                 img = db.query(GeneratedImage).filter(
                                     GeneratedImage.id == int(tid),
@@ -7434,22 +7443,24 @@ with gr.Blocks(
                                 # Get Key
                                 umk = user_state.get('umk') if user_state else crypto.global_key
 
-                                # 1. Decrypt Prompt
+                                # 1. Decrypt Prompt (Blind attempt)
                                 raw_prompt = str(img.prompt)
                                 final_prompt = raw_prompt
-                                logger.info(f"raw_prompt: {raw_prompt}") 
+                                logger.info(f"Raw prompt {raw_prompt}.")
 
-                                if raw_prompt.startswith("gAAAA"):
-                                    try:
-                                        final_prompt = crypto.decrypt_text(raw_prompt, key=umk)
-                                        logger.info(f"final_prompt: {final_prompt}") 
+                                try:
+                                    candidate = crypto.decrypt_text(raw_prompt, key=umk)
+                                    logger.info(f"Decrypted prompt {candidate}.")
+                                    if candidate and candidate != "[Decryption Failed]":
+                                        final_prompt = candidate
+                                    elif umk != crypto.global_key:
                                         # Fallback
-                                        if final_prompt == "[Decryption Failed]" and umk != crypto.global_key:
-                                            legacy_attempt = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
-                                            if legacy_attempt != "[Decryption Failed]":
-                                                final_prompt = legacy_attempt
-                                    except Exception:
-                                        final_prompt = "🔒 [Fehler bei Entschlüsselung]"
+                                        legacy = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
+                                        logger.info(f"Decrypted (legacy) prompt: {legacy}.")
+                                        if legacy and legacy != "[Decryption Failed]":
+                                            final_prompt = legacy
+                                except Exception:
+                                    pass
 
                                 # 2. Decrypt Image File (if needed)
                                 display_path = img.image_path
@@ -7459,8 +7470,13 @@ with gr.Blocks(
                                         with open(img.image_path, "rb") as f:
                                             enc_data = f.read()
                                         
+                                        # FIX: Ensure Key is B64 for Fernet
+                                        key_for_fernet = umk
+                                        if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
+                                            key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
+
                                         from cryptography.fernet import Fernet
-                                        f_eng = Fernet(umk)
+                                        f_eng = Fernet(key_for_fernet)
                                         dec_data = f_eng.decrypt(enc_data)
                                         
                                         # Write to temp file
@@ -7476,7 +7492,7 @@ with gr.Blocks(
                                         
                                     except Exception as e:
                                         logger.error(f"Image decryption failed: {e}")
-                                        return None, final_prompt, "❌ Fehler: Bild konnte nicht entschlüsselt werden."
+                                        return None, final_prompt, f"❌ Bild-Fehler: {str(e)}"
 
                                 return display_path, final_prompt, f"✅ Geladen"
 
@@ -7525,9 +7541,8 @@ with gr.Blocks(
                             outputs=[img_id_input, loaded_img_display, loaded_img_prompt, img_action_status]
                         )
 
-                        if 'msg_input' in locals() or 'c_msg' in locals():
-                            target = c_msg if 'c_msg' in locals() else msg_input
-                            img_to_chat_btn.click(lambda x: x, inputs=loaded_img_prompt, outputs=target)
+                        # FIX: Direct reference to c_msg
+                        img_to_chat_btn.click(lambda x: x, inputs=loaded_img_prompt, outputs=c_msg)
 
                     # =========================================================
                     # 3. CUSTOM PROMPTS
@@ -7626,9 +7641,8 @@ with gr.Blocks(
                             outputs=[prompt_id_load, loaded_prompt_display]
                         )
                                                 
-                        if 'msg_input' in locals() or 'c_msg' in locals():
-                            target = c_msg if 'c_msg' in locals() else msg_input
-                            prompt_to_chat_btn.click(lambda x: x, inputs=loaded_prompt_display, outputs=target)
+                        # FIX: Direct reference to c_msg
+                        prompt_to_chat_btn.click(lambda x: x, inputs=loaded_prompt_display, outputs=c_msg)
 
                     
                     # =========================================================
