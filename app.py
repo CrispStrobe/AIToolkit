@@ -4604,40 +4604,19 @@ PWA_HEAD = """
 # ==========================================
 # 🎨 CUSTOM CSS (Passed to css= argument)
 # ==========================================
-# ==========================================
-# 🎨 CUSTOM CSS (Aggressive Mobile Fix)
-# ==========================================
 CUSTOM_CSS = """
-/* 1. NUCLEAR RESET: Kill all spacing & focus rings */
+/* 1. Reset & Standardize */
 :root, body, .gradio-container {
-    --section-gap: 0px !important;
-    --block-padding: 0px !important;
-    --container-radius: 0px !important;
-    --block-radius: 0px !important;
-    --input-focus-ring-color: transparent !important;
-    --input-focus-border-color: transparent !important;
-    --shadow-spread: 0px !important;
-    --block-border-width: 0px !important;
-    --block-shadow: none !important;
     background-color: #f9fafb !important;
 }
 
-/* Force container to fill screen */
 .gradio-container {
     max-width: 100% !important;
-    width: 100% !important;
-    margin: 0 !important;
-    padding: 0 !important;
     min-height: 100vh !important;
-}
-
-/* Remove internal padding from the main wrapper */
-.gradio-container > .main {
     padding: 0 !important;
-    gap: 0 !important;
 }
 
-/* 2. HEADER */
+/* 2. Compact Header */
 .compact-header {
     background: white;
     border-bottom: 1px solid #e5e7eb;
@@ -4645,56 +4624,51 @@ CUSTOM_CSS = """
     min-height: 50px;
 }
 
-/* 3. MOBILE OPTIMIZATIONS (Max Width 768px) */
+/* 3. MOBILE RESPONSIVENESS (< 768px) */
 @media (max-width: 768px) {
     
-    /* --- TABS: Icon Only --- */
-    /* We target buttons inside the container with class 'icon-nav' */
-    .icon-nav button {
-        font-size: 0 !important;       /* Hide text */
-        padding: 15px 0 !important;    /* Taller touch target */
-        display: flex;
-        justify-content: center;
-        align-items: center;
+    /* --- TABS: Hide Text, Show Emoji --- */
+    /* Target the buttons inside the Tabs component with class 'icon-nav' */
+    .icon-nav > div > button {
+        font-size: 0 !important;        /* Hide the text label */
+        padding: 12px 0 !important;     /* Adjust padding for icon-only look */
+        min-width: 40px !important;     /* Ensure clickable width */
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
     }
-    
-    /* Restore Emoji */
-    .icon-nav button::first-letter {
-        font-size: 1.5rem !important;
-        visibility: visible !important;
+
+    /* Make the First Letter (Emoji) Visible and Large */
+    .icon-nav > div > button::first-letter {
+        font-size: 1.6rem !important;   /* Size of the emoji */
+        visibility: visible !important; /* Force visibility */
+        line-height: 1 !important;
     }
-    
-    /* Selected State */
-    .icon-nav button.selected {
+
+    /* Selected Tab Indicator adjustment */
+    .icon-nav > div > button.selected {
         border-bottom: 3px solid #2563eb !important;
         background: #f3f4f6 !important;
     }
 
-    /* --- BUTTONS: Icon Only --- */
+    /* --- Chat Window Height Fix --- */
+    #chat_window {
+        height: 65vh !important;
+        max-height: 65vh !important;
+    }
+
+    /* --- Hide Footer --- */
+    footer { display: none !important; }
+    
+    /* --- Mobile Buttons --- */
     .mobile-icon-only {
         font-size: 0 !important;
-        padding: 0 !important;
-        display: flex;
-        justify-content: center;
-        align-items: center;
         min-height: 45px !important;
-        width: 100% !important;
     }
-    
     .mobile-icon-only::first-letter {
         font-size: 1.4rem !important;
         visibility: visible !important;
     }
-
-    /* --- CHAT HEIGHT --- */
-    #chat_window {
-        height: 70vh !important;
-        max-height: 70vh !important;
-        overflow-y: auto !important;
-    }
-
-    /* Hide footer */
-    footer { display: none !important; }
 }
 """
 
@@ -6626,62 +6600,66 @@ with gr.Blocks(
                         outputs=[c_bot, attach_status]
                     )
 
-                # --- EVENT WIRING ---
-
-                # Chat Execution (With Stop)
-                submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
+                # --- EVENT WIRING for 
+                # # 1. Define the Generation Events (Save into variables)
+                # We need these variables to pass them to the Stop button
+                
+                # A. Submit via Enter Key
+                submit_event = c_msg.submit(
+                    user_msg, 
+                    [c_msg, c_bot], 
+                    [c_msg, c_bot], 
+                    queue=False
+                ).then(
                     bot_msg, 
-                    # Add session_state to the inputs list
+                    # Inputs: History, Provider, Model, Temp, System, Key, Effort, Tokens, State
                     [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
                     c_bot
                 )
 
-                click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
+                # B. Submit via Send Button
+                click_event = c_btn.click(
+                    user_msg, 
+                    [c_msg, c_bot], 
+                    [c_msg, c_bot], 
+                    queue=False
+                ).then(
                     bot_msg, 
-                    # Add session_state to the inputs list
                     [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
                     c_bot
                 )
                 
-                # Stop Button
-                c_stop_btn.click(fn=None, cancels=[submit_event, click_event])
+                # 2. Configure Stop Button
+                # 'cancels' must list the exact events created above
+                # 'queue=False' is CRITICAL for the stop button to trigger immediately
+                c_stop_btn.click(
+                    fn=None, 
+                    inputs=None, 
+                    outputs=None, 
+                    cancels=[submit_event, click_event],
+                    queue=False
+                )
 
-                # Save & Clear
+                # 3. Other Buttons
                 c_save_btn.click(save_chat, [c_bot, c_prov, c_model, session_state], c_save_status)
                 c_clear_btn.click(lambda: ([], ""), outputs=[c_bot, c_save_status])
 
-                # History Logic
+                # 4. History & Attachments (Existing logic)
                 chat_tab.select(load_chat_list_with_state, inputs=[session_state], outputs=[old_chats, c_history_state])
                 refresh_chats_btn.click(load_chat_list_with_state, inputs=[session_state], outputs=[old_chats, c_history_state])
                 old_chats.select(select_chat_row, inputs=[c_history_state], outputs=[load_chat_id])
                 load_chat_btn.click(load_single_chat, inputs=[load_chat_id, session_state], outputs=[c_bot, chat_load_status])
                 delete_chat_btn.click(delete_chat, inputs=[load_chat_id, session_state], outputs=[chat_load_status, old_chats, c_history_state])
 
-                # Attachment Logic
                 attach_btn.click(
                     attach_content_to_chat, 
-                    # Added session_state
                     inputs=[c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser, session_state], 
                     outputs=[c_bot, attach_status]
                 )
 
-                # Prompt Logic
-                c_prompt_refresh.click(
-                    get_user_prompt_choices, 
-                    inputs=[session_state], 
-                    outputs=c_prompt_select
-                )
-                chat_tab.select(
-                    get_user_prompt_choices, 
-                    inputs=[session_state], 
-                    outputs=c_prompt_select
-                )
-
-                c_insert_prompt_btn.click(
-                    insert_custom_prompt, 
-                    inputs=[c_prompt_select, c_msg, session_state], 
-                    outputs=[c_msg]
-                )
+                c_prompt_refresh.click(get_user_prompt_choices, inputs=[session_state], outputs=c_prompt_select)
+                chat_tab.select(get_user_prompt_choices, inputs=[session_state], outputs=c_prompt_select)
+                c_insert_prompt_btn.click(insert_custom_prompt, inputs=[c_prompt_select, c_msg, session_state], outputs=[c_msg])
                 
             # --- TAB 2: TRANSKRIPTION ---
             with gr.TabItem("🎙️ Transkription"):
