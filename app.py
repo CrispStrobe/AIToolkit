@@ -5486,6 +5486,9 @@ with gr.Blocks(
     print(f"First 100 chars: {CUSTOM_CSS[:100]}")
     print("=" * 60)
 
+    # ✅ Inject PWA_HEAD at the very beginning
+    gr.HTML(PWA_HEAD, visible=False)
+
     # 0. INJECT PWA SCRIPTS (Required for Gradio 6+)
     gr.HTML("""
     <script>
@@ -8154,6 +8157,15 @@ if __name__ == "__main__":
 
     # 2. Ensure directories exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    
+    # ==========================================
+    # ✅ WRITE CSS TO STATIC FILE
+    # ==========================================
+    css_path = os.path.join(STATIC_DIR, "custom.css")
+    with open(css_path, 'w', encoding='utf-8') as f:
+        f.write(CUSTOM_CSS)
+    print(f"✅ CSS written to: {css_path}")
     
     if not os.path.exists(LOG_FILE):
         try:
@@ -8163,9 +8175,9 @@ if __name__ == "__main__":
             print(f"⚠️ Could not create log file: {e}")
 
     # 3. Create FastAPI app
-    fastapi_app = FastAPI()
+    app = FastAPI()
 
-    @fastapi_app.middleware("http")
+    @app.middleware("http")
     async def block_api_endpoints(request: Request, call_next):
         if request.url.path.startswith("/api"):
              return JSONResponse(
@@ -8178,18 +8190,23 @@ if __name__ == "__main__":
     print(f"🚀 Starting Server on Port 7860...")
     print(f"📂 Serving files from: {APP_DIR}")
 
-    # ==========================================
-    # ✅ CORRECT WAY: Use demo.launch() with app parameter
-    # ==========================================
-    demo.queue()
-    
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        app=fastapi_app,              # ✅ Pass FastAPI app HERE!
-        css=CUSTOM_CSS,                # ✅ CSS goes here!
-        head=PWA_HEAD,                 # ✅ Head goes here!
-        theme=gr.themes.Soft(),        # ✅ Theme goes here!
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
-        show_error=True
+    # 4. Mount Gradio (back to original approach)
+    print(f"🚀 Mounting Gradio app...")
+    app = gr.mount_gradio_app(
+        app, 
+        demo, 
+        path="/",
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"]
     )
+
+    # 5. Run Server
+    print(f"🚀 Starting Server on Port 7860...")
+    config = uvicorn.Config(
+        app, 
+        host="0.0.0.0", 
+        port=7860, 
+        timeout_graceful_shutdown=1,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    server.run()

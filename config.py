@@ -692,12 +692,20 @@ TRANSCRIPT_PROMPTS = {
 # ==========================================
 # UI CONSTANTS
 # ==========================================
-PWA_HEAD = """
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#ffffff">
+PWA_HEAD = f"""
+<!-- Existing PWA meta tags -->
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
-<script src="/static/pwa.js" defer></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#ffffff">
+
+<!-- ✅ LOAD CUSTOM CSS FROM STATIC FILE -->
+<link rel="stylesheet" href="/file=/var/www/transkript_app/static/custom.css">
+
+<!-- Existing PWA manifest and icons -->
+<link rel="manifest" href="/file=/var/www/transkript_app/static/manifest.json">
+<link rel="apple-touch-icon" href="/file=/var/www/transkript_app/static/icon-192.png">
 """
 
 CUSTOM_CSS = """
