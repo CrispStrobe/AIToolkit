@@ -708,6 +708,7 @@ PWA_HEAD = f"""
 """
 
 CUSTOM_CSS = """
+
 /* ==========================================
    REMOVE ALL WHITESPACE & PADDING
    ========================================== */
@@ -758,18 +759,18 @@ body {
 /* ✅ DARK MODE FIX for header */
 .dark .compact-header,
 [data-theme="dark"] .compact-header {
-    background: #1f2937 !important;
-    border-bottom: 1px solid #374151 !important;
+    background: #1f2937 !important;  /* Dark gray background */
+    border-bottom: 1px solid #374151 !important;  /* Darker border */
 }
 
 /* ✅ Fix text colors in header */
 .compact-header * {
-    color: #111827 !important;
+    color: #111827 !important;  /* Dark text for light mode */
 }
 
 .dark .compact-header *,
 [data-theme="dark"] .compact-header * {
-    color: #f9fafb !important;
+    color: #f9fafb !important;  /* Light text for dark mode */
 }
 
 /* ==========================================
@@ -806,87 +807,40 @@ body {
    ========================================== */
 @media (max-width: 768px) {
     
-    /* ===================================
-       REDUCE ALL UNUSED SPACE
-       =================================== */
-    
-    /* Tighter container spacing */
+    /* Make mobile layout truly full width */
     .gradio-container {
         padding: 0 !important;
         width: 100vw !important;
         max-width: 100vw !important;
     }
     
-    /* Remove container padding */
+    /* Remove any remaining side padding */
     .contain {
         padding-left: 0 !important;
         padding-right: 0 !important;
-    }
-    
-    /* Reduce row/column gaps */
-    .gr-row {
-        gap: 4px !important;
-        margin: 2px 0 !important;
-    }
-    
-    .gr-column {
-        gap: 4px !important;
-        padding: 2px !important;
-    }
-    
-    /* Compact accordions */
-    .accordion {
-        margin: 4px 0 !important;
-    }
-    
-    /* Reduce form spacing */
-    .form {
-        gap: 4px !important;
-    }
-    
-    /* Compact input fields */
-    input, textarea, select {
-        padding: 6px 8px !important;
-        font-size: 14px !important;
-    }
-    
-    /* Reduce label spacing */
-    label {
-        margin-bottom: 2px !important;
-        font-size: 13px !important;
     }
     
     /* ===================================
        TABS: Keep emoji icons, hide text
        =================================== */
     
-    /* Target tab navigation */
-    .tab-nav {
-        padding: 0 !important;
-        gap: 2px !important;
-    }
-    
-    /* Tab buttons: Show emoji only */
+    /* Target main tab buttons */
     .tab-nav button,
     .tabs > .tab-nav > button {
+        font-size: 1.5rem !important;  /* Show emoji at normal size */
         padding: 8px 4px !important;
-        min-width: 44px !important;
-        font-size: 0 !important; /* Hide all text */
-        overflow: hidden !important;
+        min-width: 50px !important;
         white-space: nowrap !important;
+        overflow: hidden !important;
     }
     
-    /* Make emoji visible by targeting first character */
-    .tab-nav button::first-letter,
-    .tabs > .tab-nav > button::first-letter {
-        font-size: 1.5rem !important;
-        visibility: visible !important;
-    }
-    
-    /* Alternative: Target emoji unicode range */
-    .tab-nav button::before,
-    .tabs > .tab-nav > button::before {
-        font-size: 1.5rem !important;
+    /* Hide text after emoji using pseudo-element trick */
+    .tab-nav button::after,
+    .tabs > .tab-nav > button::after {
+        content: '' !important;
+        display: inline !important;
+        width: 0 !important;
+        overflow: hidden !important;
     }
 
     /* Selected tab styling */
@@ -905,20 +859,20 @@ body {
        BUTTONS: Keep icons, hide text
        =================================== */
     
-    /* Target specific buttons with class 'mobile-icon-only' */
-    .mobile-icon-only {
-        min-width: 44px !important;
-        padding: 8px !important;
-        font-size: 0 !important; /* Hide text */
+    /* Target buttons with text + emoji */
+    button:not(.tab-nav button) {
+        /* Keep the button visible */
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
     }
     
-    /* Show emoji/icon for these buttons */
-    .mobile-icon-only::first-letter {
-        font-size: 1.2rem !important;
-        visibility: visible !important;
+    /* Hide button text spans on mobile */
+    button span.text-label {
+        display: none !important;
     }
     
-    /* Keep SVG icons visible */
+    /* Ensure button icons stay visible */
     button svg,
     button img,
     button .icon {
@@ -929,195 +883,27 @@ body {
         height: 20px !important;
     }
     
-    /* Specific button targets */
+    /* Fix "Senden" button specifically */
     button[title*="Send"],
     button[aria-label*="Send"],
-    #btn-send,
+    #send_btn,
     .send-button {
-        min-width: 44px !important;
+        min-width: 44px !important;  /* Touch-friendly size */
         padding: 10px !important;
-        font-size: 0 !important;
-    }
-    
-    button[title*="Send"]::first-letter,
-    #btn-send::first-letter {
-        font-size: 1.2rem !important;
     }
 
-    /* ===================================
-       COMPACT HEADER ON MOBILE
-       =================================== */
-    .compact-header {
-        padding: 4px 8px !important;
-        min-height: 40px !important;
-    }
-    
-    .compact-header .gr-row {
-        gap: 4px !important;
-    }
-    
-    /* User status compact */
-    #user-status-row {
-        font-size: 12px !important;
-    }
-
-    /* ===================================
-       CHAT WINDOW OPTIMIZATION
-       =================================== */
+    /* Chat Window Height Fix */
     #chat_window {
-        height: 60vh !important;
-        max-height: 60vh !important;
-        margin: 0 !important;
-        padding: 4px !important;
-    }
-    
-    /* Chat messages compact */
-    .message {
-        padding: 6px !important;
-        margin: 2px 0 !important;
-    }
-    
-    /* Chat input area */
-    #chat_window + * {
-        padding: 4px !important;
+        height: 65vh !important;
+        max-height: 65vh !important;
     }
 
-    /* ===================================
-       DROPDOWNS & SELECTS COMPACT
-       =================================== */
-    .dropdown,
-    select {
-        font-size: 13px !important;
-        padding: 6px !important;
-    }
-
-    /* ===================================
-       BADGES ON MOBILE
-       =================================== */
-    .custom-badge {
-        font-size: 0.75em !important;
-        padding: 2px 6px !important;
-        height: 32px !important;
-    }
-
-    /* ===================================
-       DATAFRAMES COMPACT
-       =================================== */
-    .dataframe {
-        font-size: 12px !important;
-    }
-    
-    .dataframe th,
-    .dataframe td {
-        padding: 4px !important;
-    }
-
-    /* ===================================
-       ACCORDIONS COMPACT
-       =================================== */
-    .accordion-header {
-        padding: 6px 8px !important;
-        font-size: 14px !important;
-    }
-    
-    .accordion-content {
-        padding: 8px !important;
-    }
-
-    /* ===================================
-       HIDE FOOTER
-       =================================== */
+    /* Hide Footer */
     footer { 
         display: none !important; 
     }
-    
-    /* Hide Gradio branding */
-    .gradio-container footer,
-    .footer {
-        display: none !important;
-    }
 }
 
-/* ==========================================
-   VERY SMALL SCREENS (< 400px)
-   ========================================== */
-@media (max-width: 400px) {
-    
-    /* Even more aggressive spacing reduction */
-    .gr-row {
-        gap: 2px !important;
-        margin: 1px 0 !important;
-    }
-    
-    .gr-column {
-        gap: 2px !important;
-        padding: 1px !important;
-    }
-    
-    /* Smaller fonts */
-    body {
-        font-size: 13px !important;
-    }
-    
-    /* Compact buttons */
-    button {
-        padding: 6px !important;
-        font-size: 13px !important;
-    }
-    
-    .mobile-icon-only {
-        min-width: 40px !important;
-        padding: 6px !important;
-    }
-    
-    /* Smaller tabs */
-    .tab-nav button {
-        min-width: 40px !important;
-        padding: 6px 2px !important;
-    }
-    
-    .tab-nav button::first-letter {
-        font-size: 1.3rem !important;
-    }
-    
-    /* Compact header */
-    .compact-header {
-        padding: 2px 4px !important;
-        min-height: 36px !important;
-    }
-    
-    /* Smaller badges */
-    .custom-badge {
-        font-size: 0.7em !important;
-        padding: 2px 4px !important;
-        height: 28px !important;
-    }
-}
-
-/* ==========================================
-   LANDSCAPE MOBILE (< 768px height)
-   ========================================== */
-@media (max-height: 500px) and (orientation: landscape) {
-    
-    /* Reduce vertical space usage */
-    #chat_window {
-        height: 50vh !important;
-    }
-    
-    .compact-header {
-        min-height: 36px !important;
-        padding: 4px 8px !important;
-    }
-    
-    .accordion-header {
-        padding: 4px 6px !important;
-    }
-    
-    /* Smaller input fields */
-    textarea {
-        min-height: 60px !important;
-    }
-}
 """
 
 SENSITIVE_FILE_WARNING = """
