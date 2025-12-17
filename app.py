@@ -8140,11 +8140,9 @@ def initialize_application():
 initialize_application()
 
 # ==========================================
-# 🚀 LAUNCH CONFIGURATION - PATCHED APPROACH
+# 🚀 LAUNCH CONFIGURATION - CLEAN VERSION
 # ==========================================
 if __name__ == "__main__":
-    import uvicorn
-    
     # Configuration
     APP_DIR = "/var/www/transkript_app"
     LOG_FILE = os.path.join(APP_DIR, "app.log")
@@ -8162,34 +8160,15 @@ if __name__ == "__main__":
 
     print(f"🚀 Starting Server on Port 7860...")
     print(f"📂 Serving files from: {APP_DIR}")
+    
+    # Print CSS debug
+    print("=" * 60)
+    print("🎨 CSS DEBUG INFO:")
+    print(f"CSS length: {len(CUSTOM_CSS)} characters")
+    print("=" * 60)
 
     # ==========================================
-    # ✅ PATCH GRADIO TO DISABLE OPENAPI
-    # ==========================================
-    import gradio as gr
-    from gradio.routes import App
-    
-    # Monkey-patch Gradio's App class to disable OpenAPI
-    original_create_app = App.create_app
-    
-    @staticmethod
-    def patched_create_app(app, *args, **kwargs):
-        """Create Gradio app with OpenAPI disabled"""
-        blocks = args[0] if args else kwargs.get('blocks')
-        result = original_create_app(blocks, *args[1:], **kwargs)
-        
-        # Disable OpenAPI on the FastAPI app
-        if hasattr(result, 'docs_url'):
-            result.docs_url = None
-            result.redoc_url = None
-            result.openapi_url = None
-        
-        return result
-    
-    App.create_app = patched_create_app
-    
-    # ==========================================
-    # ✅ LAUNCH WITH CSS (NOW SECURE!)
+    # ✅ SIMPLE LAUNCH WITH CSS
     # ==========================================
     demo.queue()
     
@@ -8201,5 +8180,5 @@ if __name__ == "__main__":
         head=PWA_HEAD,
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
         show_error=True,
-        footer_links=["gradio"]    # Hide API link from footer
+        footer_links=["gradio"]    # Hide API docs from footer
     )
