@@ -45,7 +45,7 @@ sudo apt upgrade -y
 
 # Install all required system packages
 sudo apt install -y \
-    python3-venv \
+    wget \
     python3-pip \
     ffmpeg \
     apache2 \
@@ -188,6 +188,7 @@ git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git .
 **Option B: Manual File Upload**
 Upload these files from your repository:
 - `app.py` - Main application
+- `crypto_utils.py` - Encryption logic & Key Wrapping
 - `requirements.txt` - Python dependencies
 - `static/` folder containing:
   - `custom.css` - PWA styling
@@ -217,6 +218,7 @@ NEBIUS_API_KEY=...
 POE_API_KEY=...
 ASSEMBLYAI_API_KEY=...
 DEEPGRAM_API_KEY=...
+GRADIO_ANALYTICS_ENABLED=False
 STORAGE_BOX_PATH=/mnt/storage
 ```
 
@@ -226,26 +228,45 @@ STORAGE_BOX_PATH=/mnt/storage
 sudo chmod 600 /var/www/transkript_app/.env
 ```
 
-### 3.4 Create Virtual Environment
+### 3.4 Create Virtual Environment (Miniconda Method)
+
+We use **Miniconda** to ensure a stable Python 3.10 environment, bypassing system repo issues.
 
 ```bash
-sudo python3 -m venv venv
-source venv/bin/activate
+# 1. Download and Install Miniconda
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/miniconda
+
+# 2. Initialize Conda
+/opt/miniconda/bin/conda init bash
+source ~/.bashrc
+
+# Accept TOS
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+# 3. Create the 'ak_suite' environment with Python 3.10
+/opt/miniconda/bin/conda create -n ak_suite python=3.10 -y
+
+# 4. Link it to the app directory (Standardizes systemd paths)
+cd /var/www/transkript_app
+rm -rf venv
+ln -s /opt/miniconda/envs/ak_suite ./venv
+conda activate ak_suite
 ```
 
 ### 3.5 Install Python Dependencies
 
 ```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+# Activate the environment
+conda activate ak_suite
 
-**If `requirements.txt` is missing, install manually:**
-
-```bash
+# Install Core Dependencies
+pip install --upgrade pip wheel
 pip install \
     "openai>=1.0" \
-    gradio==4.44.0 \
+    "gradio>=5.0" \
+    "yt-dlp>=2024.11" \
     requests \
     pillow \
     pydub \
@@ -260,8 +281,16 @@ pip install \
     pytesseract \
     pandas \
     openpyxl \
-    lxml
+    lxml \
+    pycryptodome \
+    pqcrypto \
+    cryptography
 ```
+
+We use pycryptodome for AES-GCM and cryptography for Fernet/PBKDF2.
+
+Alternatively, for single installs without activation of the environment:
+```/var/www/transkript_app/venv/bin/pip install [package]```
 
 ### 3.6 Initialize Permissions
 
@@ -302,13 +331,17 @@ Edit `/etc/apache2/sites-available/transkript.conf`:
 
 ```apache
 <VirtualHost *:80>
-    ServerName ai.yourdomain.de
+    ServerName ai.yourdomain.com
     
-    # Proxy settings for Gradio
-    ProxyPreserveHost On
-    
-    # Websocket support (Required for Gradio queue)
+    # Block OpenAPI on HTTP too
     RewriteEngine On
+    RewriteRule ^/openapi\.json$ - [F,L]
+    RewriteRule ^/docs/?$ - [F,L]
+    RewriteRule ^/redoc/?$ - [F,L]
+    RewriteRule ^/api(/.*)?$ - [F,L]
+    RewriteRule ^/gradio_api/openapi\.json$ - [F,L]
+    
+    # Websocket support
     RewriteCond %{HTTP:Upgrade} =websocket [NC]
     RewriteRule /(.*)           ws://127.0.0.1:7860/$1 [P,L]
     
@@ -318,8 +351,8 @@ Edit `/etc/apache2/sites-available/transkript.conf`:
     ProxyPass / http://127.0.0.1:7860/
     ProxyPassReverse / http://127.0.0.1:7860/
     
-    # Force HTTPS
-    RewriteCond %{SERVER_NAME} =ai.yourdomain.de
+    # Force HTTPS for everything else
+    RewriteCond %{SERVER_NAME} =ki.akademie-rs.de
     RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
 </VirtualHost>
 ```
@@ -331,26 +364,35 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
 ```apache
 <IfModule mod_ssl.c>
 <VirtualHost *:443>
-    ServerName ai.yourdomain.de
+    ServerName ai.yourdomain.com
+    
+    # =================================================
+    # 🔒 BLOCK OPENAPI - FIRST PRIORITY
+    # =================================================
+    
+    RewriteEngine On
+    
+    # Block all OpenAPI endpoints with [F,L] - Forbidden + Last
+    RewriteRule ^/openapi\.json$ - [F,L]
+    RewriteRule ^/docs/?$ - [F,L]
+    RewriteRule ^/redoc/?$ - [F,L]
+    RewriteRule ^/api(/.*)?$ - [F,L]
+    RewriteRule ^/gradio_api/openapi\.json$ - [F,L]
     
     # =================================================
     # 1. STATIC FILES (Served by Apache)
     # =================================================
     
-    # Static Directory
     Alias /static /var/www/transkript_app/static
     <Directory /var/www/transkript_app/static>
         Require all granted
         Options -Indexes
-        # Force MIME types
         AddType text/css .css
         AddType application/javascript .js
         AddType image/png .png
-        # Cache control
         Header set Cache-Control "public, max-age=31536000, immutable"
     </Directory>
     
-    # Manifest (Root Alias)
     Alias /manifest.json /var/www/transkript_app/static/manifest.json
     <Files "manifest.json">
         Require all granted
@@ -358,7 +400,6 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
         Header set Cache-Control "no-cache"
     </Files>
     
-    # Service Worker (Root Alias)
     Alias /service-worker.js /var/www/transkript_app/static/service-worker.js
     <Files "service-worker.js">
         Require all granted
@@ -373,23 +414,20 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
     
     ProxyPreserveHost On
     
-    # Critical Headers for HTTPS Forwarding
     RequestHeader set X-Forwarded-Proto "https"
     RequestHeader set X-Forwarded-Port "443"
-    RequestHeader set X-Forwarded-Host "ai.yourdomain.de"
+    RequestHeader set X-Forwarded-Host "ki.akademie-rs.de"
     
-    RewriteEngine On
-    
-    # Websockets (Required for Gradio queue)
+    # Websockets (must come AFTER OpenAPI blocks)
     RewriteCond %{HTTP:Upgrade} =websocket [NC]
     RewriteRule /(.*)           ws://127.0.0.1:7860/$1 [P,L]
     
-    # Exclude PWA files from Proxy (Apache serves these)
+    # Exclude static files from proxy
     ProxyPass /static !
     ProxyPass /manifest.json !
     ProxyPass /service-worker.js !
     
-    # Send everything else to Python
+    # Proxy everything else to Gradio
     ProxyPass / http://127.0.0.1:7860/
     ProxyPassReverse / http://127.0.0.1:7860/
     
@@ -397,8 +435,8 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
     # 3. SSL CONFIGURATION
     # =================================================
     
-    SSLCertificateFile /etc/letsencrypt/live/ai.yourdomain.de/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/ai.yourdomain.de/privkey.pem
+    SSLCertificateFile /etc/letsencrypt/live/ki.akademie-rs.de/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/ki.akademie-rs.de/privkey.pem
     Include /etc/letsencrypt/options-ssl-apache.conf
     
     # Upload Limits (1GB for audio files)
@@ -408,6 +446,8 @@ Edit `/etc/apache2/sites-available/transkript-le-ssl.conf`:
 </VirtualHost>
 </IfModule>
 ```
+
+This way, Gradio API, no matter if active by itself or not, will be strictly not reachable.
 
 ### 4.5 Enable Sites and Restart Apache
 
@@ -434,6 +474,7 @@ Type=simple
 User=root
 WorkingDirectory=/var/www/transkript_app
 Environment="PATH=/var/www/transkript_app/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GRADIO_ANALYTICS_ENABLED=False"
 EnvironmentFile=/var/www/transkript_app/.env
 ExecStart=/var/www/transkript_app/venv/bin/python app.py
 Restart=always
@@ -546,9 +587,12 @@ sudo logrotate -d /etc/logrotate.d/transkript_app
 ```
 /var/www/transkript_app/
 ├── app.py                      # Main application (from repo)
+├── crypto_utils.py             # Encryption Logic
 ├── requirements.txt            # Python dependencies (from repo)
 ├── .env                        # API keys (NOT in repo - created manually)
-├── suite.db           # SQLite database (auto-created on first run)
+├── .master_key                 # Global Encryption Key (CRITICAL)
+├── .pq_keypair                 # (OPTIONAL) Post-Quantum Keys
+├── suite.db                    # SQLite database (auto-created on first run)
 ├── app.log                     # Application logs
 ├── venv/                       # Python virtual environment
 ├── jobs/                       # Resume job manifests (auto-created)
@@ -666,7 +710,8 @@ cat /var/www/transkript_app/.env
 
 # Test if service can read it
 sudo systemctl restart transkript
-sudo journalctl -u transkript -n 50  # Look for API key errors
+sudo journalctl -u transkript -n 50  # Look for API key errors, or:
+sudo journalctl -u transkript -f # watch continuously
 ```
 
 ---
@@ -709,11 +754,26 @@ pip install --upgrade [package_name]
 sudo systemctl restart transkript
 ```
 
-### Backup Database
+### Backup Database & Keys
+
+You must backup the .master_key file along with the database. Without it, the database cannot be decrypted.
 
 ```bash
-sudo cp /var/www/transkript_app/suite.db \
-       /var/www/transkript_app/suite.db.backup-$(date +%Y%m%d)
+# Create backup directory
+mkdir -p /var/backups/transkript
+
+# Backup DB and Key
+cp /var/www/transkript_app/akademie_suite.db \
+   /var/backups/transkript/akademie_suite.db.backup-$(date +%Y%m%d)
+
+cp /var/www/transkript_app/.master_key \
+   /var/backups/transkript/master_key.backup-$(date +%Y%m%d)
+
+# Optional: Backup PQ Keypair if it exists
+if [ -f /var/www/transkript_app/.pq_keypair ]; then
+   cp /var/www/transkript_app/.pq_keypair \
+      /var/backups/transkript/pq_keypair.backup-$(date +%Y%m%d)
+fi
 ```
 
 ### Monitor Disk Space
@@ -757,11 +817,12 @@ sudo tail -f /var/log/apache2/error.log  # Apache errors
 ## ⚠️ Security Checklist
 
 - ✅ `.env` file permissions set to `600` (only root can read)
+- ✅ `.master_key` file permissions set to `600` (CRITICAL)
 - ✅ `/etc/cifs-credentials` permissions set to `600`
 - ✅ Fail2Ban enabled and running
 - ✅ SSL certificate valid and auto-renewing
-- ✅ Firewall configured (only ports 22, 80, 443 open)
-- ✅ Regular backups of `suite.db`
+- ✅ Firewall configured (only ports `22, 80, 443` open)
+- ✅ Regular backups of `suite.db` and `.master_key`
 - ✅ Apache upload limits configured (1GB)
 - ✅ Storage Box mounted with restricted permissions
 
