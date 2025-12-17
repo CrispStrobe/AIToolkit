@@ -748,35 +748,59 @@ body {
 }
 
 /* ==========================================
-   COMPACT HEADER
+   COMPACT HEADER - LIGHT & DARK MODE FIX
    ========================================== */
 .compact-header {
-    background: white;
-    border-bottom: 1px solid #e5e7eb;
+    background: white !important;
+    border-bottom: 1px solid #e5e7eb !important;
     padding: 8px 12px !important;
-    min-height: 50px;
+    min-height: 50px !important;
+}
+
+/* ✅ DARK MODE FIX for header */
+.dark .compact-header,
+[data-theme="dark"] .compact-header {
+    background: #1f2937 !important;  /* Dark gray background */
+    border-bottom: 1px solid #374151 !important;  /* Darker border */
+}
+
+/* ✅ Fix text colors in header */
+.compact-header * {
+    color: #111827 !important;  /* Dark text for light mode */
+}
+
+.dark .compact-header *,
+[data-theme="dark"] .compact-header * {
+    color: #f9fafb !important;  /* Light text for dark mode */
 }
 
 /* ==========================================
    BADGE STYLING
    ========================================== */
 .custom-badge {
-    background-color: #374151;
+    background-color: #374151 !important;
     color: #ffffff !important;
-    padding: 4px 12px;
-    border-radius: 8px;
-    border: 1px solid #4b5563;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 38px;
-    font-size: 0.85em;
-    white-space: nowrap;
-    text-align: center;
+    padding: 4px 12px !important;
+    border-radius: 8px !important;
+    border: 1px solid #4b5563 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    height: 38px !important;
+    font-size: 0.85em !important;
+    white-space: nowrap !important;
+    text-align: center !important;
 }
 
 .custom-badge b {
     color: #ffffff !important;
+}
+
+/* Dark mode badge adjustments */
+.dark .custom-badge,
+[data-theme="dark"] .custom-badge {
+    background-color: #4b5563 !important;
+    border: 1px solid #6b7280 !important;
 }
 
 /* ==========================================
@@ -797,25 +821,76 @@ body {
         padding-right: 0 !important;
     }
     
-    /* TABS: Hide Text, Show Emoji Only */
-    .icon-nav > div > button {
-        font-size: 0 !important;
-        padding: 12px 0 !important;
-        min-width: 40px !important;
-        display: flex !important;
-        justify-content: center !important;
-        align-items: center !important;
+    /* ===================================
+       TABS: Keep emoji icons, hide text
+       =================================== */
+    
+    /* Target main tab buttons */
+    .tab-nav button,
+    .tabs > .tab-nav > button {
+        font-size: 1.5rem !important;  /* Show emoji at normal size */
+        padding: 8px 4px !important;
+        min-width: 50px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+    }
+    
+    /* Hide text after emoji using pseudo-element trick */
+    .tab-nav button::after,
+    .tabs > .tab-nav > button::after {
+        content: '' !important;
+        display: inline !important;
+        width: 0 !important;
+        overflow: hidden !important;
     }
 
-    .icon-nav > div > button::first-letter {
-        font-size: 1.6rem !important;
-        visibility: visible !important;
-        line-height: 1 !important;
-    }
-
-    .icon-nav > div > button.selected {
+    /* Selected tab styling */
+    .tab-nav button.selected,
+    .tabs > .tab-nav > button.selected {
         border-bottom: 3px solid #2563eb !important;
         background: #f3f4f6 !important;
+    }
+    
+    .dark .tab-nav button.selected,
+    .dark .tabs > .tab-nav > button.selected {
+        background: #374151 !important;
+    }
+
+    /* ===================================
+       BUTTONS: Keep icons, hide text
+       =================================== */
+    
+    /* Target buttons with text + emoji */
+    button:not(.tab-nav button) {
+        /* Keep the button visible */
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    
+    /* Hide button text spans on mobile */
+    button span.text-label {
+        display: none !important;
+    }
+    
+    /* Ensure button icons stay visible */
+    button svg,
+    button img,
+    button .icon {
+        display: inline-block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        width: 20px !important;
+        height: 20px !important;
+    }
+    
+    /* Fix "Senden" button specifically */
+    button[title*="Send"],
+    button[aria-label*="Send"],
+    #send_btn,
+    .send-button {
+        min-width: 44px !important;  /* Touch-friendly size */
+        padding: 10px !important;
     }
 
     /* Chat Window Height Fix */
@@ -828,18 +903,8 @@ body {
     footer { 
         display: none !important; 
     }
-    
-    /* Mobile Button Icons */
-    .mobile-icon-only {
-        font-size: 0 !important;
-        min-height: 45px !important;
-    }
-    
-    .mobile-icon-only::first-letter {
-        font-size: 1.4rem !important;
-        visibility: visible !important;
-    }
 }
+
 """
 
 SENSITIVE_FILE_WARNING = """

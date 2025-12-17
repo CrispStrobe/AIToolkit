@@ -8,7 +8,10 @@
 # /var/www/transkript_app/app.py
 
 import gradio as gr
+
 import os
+os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+
 from typing import Tuple, List, Dict, Optional
 import glob
 
@@ -8180,7 +8183,7 @@ if __name__ == "__main__":
         head=PWA_HEAD,
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
         show_error=True,
-        footer_links=[],  # ✅ Empty list - no footer links at all
+        footer_links=[], 
         app_kwargs={ # 🔒 Disable OpenAPI/API documentation endpoints
             "docs_url": None,
             "redoc_url": None,
