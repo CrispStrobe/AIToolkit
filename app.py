@@ -8176,9 +8176,11 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=7860,
         theme=gr.themes.Soft(),
-        css=CUSTOM_CSS,            # ✅ CSS works!
+        css=CUSTOM_CSS,
         head=PWA_HEAD,
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
         show_error=True,
-        footer_links=["gradio"]    # Hide API docs from footer
+        footer_links=[],  # ✅ Empty list - no footer links at all
+        # ✅ The nuclear option - disable the entire API
+        _fastapi_app_kwargs={"docs_url": None, "redoc_url": None, "openapi_url": None}
     )
