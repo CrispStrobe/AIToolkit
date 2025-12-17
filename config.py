@@ -710,17 +710,25 @@ PWA_HEAD = r"""
 // Mobile Text Hiding Script
 function hideMobileText() {
     if (window.innerWidth <= 768) {
-        // Hide text in tabs (keep only emoji)
-        document.querySelectorAll('.icon-nav > .tab-nav > button').forEach(btn => {
-            const text = btn.textContent.trim();
-            if (text) {
-                // Extract first character (emoji) - simpler approach
-                const firstChar = Array.from(text)[0];
-                // Check if it's an emoji (rough check)
-                if (firstChar && firstChar.length > 0) {
-                    btn.textContent = firstChar;
+        // Hide text in ALL tabs (multiple selectors for reliability)
+        const tabSelectors = [
+            '.icon-nav > .tab-nav > button',
+            '.icon-nav .tab-nav button',
+            '.tabs.icon-nav button',
+            '[role="tablist"] button'
+        ];
+        
+        tabSelectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(btn => {
+                const text = btn.textContent.trim();
+                if (text && text.length > 2) {  // Only process if there's text after emoji
+                    const firstChar = Array.from(text)[0];
+                    if (firstChar) {
+                        btn.textContent = firstChar;
+                        btn.setAttribute('data-original-text', text); // Save original for desktop
+                    }
                 }
-            }
+            });
         });
         
         // Hide text in buttons (keep only emoji)
@@ -728,21 +736,50 @@ function hideMobileText() {
             const text = btn.textContent.trim();
             if (text && text.length > 2) {
                 const firstChar = Array.from(text)[0];
-                if (firstChar && firstChar.length > 0) {
+                if (firstChar) {
                     btn.textContent = firstChar;
+                    btn.setAttribute('data-original-text', text);
                 }
+            }
+        });
+    } else {
+        // Restore original text on desktop
+        document.querySelectorAll('[data-original-text]').forEach(btn => {
+            const original = btn.getAttribute('data-original-text');
+            if (original) {
+                btn.textContent = original;
             }
         });
     }
 }
 
-// Run on load and when DOM changes
+// Run immediately
+hideMobileText();
+
+// Run on load
 document.addEventListener('DOMContentLoaded', hideMobileText);
+
+// Run on window resize
 window.addEventListener('resize', hideMobileText);
 
-// Watch for Gradio's dynamic content
-const observer = new MutationObserver(hideMobileText);
-observer.observe(document.body, { childList: true, subtree: true });
+// Watch for Gradio's dynamic content with delay
+const observer = new MutationObserver(() => {
+    setTimeout(hideMobileText, 100);
+});
+
+// Start observing when DOM is ready
+if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+} else {
+    document.addEventListener('DOMContentLoaded', () => {
+        observer.observe(document.body, { childList: true, subtree: true });
+    });
+}
+
+// Extra: Run after a short delay for late-loading elements
+setTimeout(hideMobileText, 500);
+setTimeout(hideMobileText, 1000);
+setTimeout(hideMobileText, 2000);
 </script>
 """
 
