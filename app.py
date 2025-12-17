@@ -6104,14 +6104,14 @@ def generate_and_handle_ui(prompt, provider, model, width, height, steps, key, u
 # --- DB SAVE WRAPPER ---
 def process_gallery_save(img_path, provider, prompt, model, user_state):
     """
-    Encrypts the image file using crypto_utils before saving.
+    Encrypts the image file bytes before saving to persistent storage.
     """
     try:
         if not user_state or not user_state.get("id"):
             return "❌ Bitte anmelden", gr.update(visible=True)
         
         user_id = user_state["id"]
-        # Get the User Master Key
+        # Get User Master Key
         umk = user_state.get('umk') if user_state else crypto.global_key
         
         if not img_path or not os.path.exists(img_path):
@@ -6126,23 +6126,29 @@ def process_gallery_save(img_path, provider, prompt, model, user_state):
         permanent_path = os.path.join(permanent_dir, filename)
 
         # 2. Encrypt & Save File
+        # Use our crypto_utils helper if available, or manual Fernet
         with open(img_path, "rb") as f_in:
             file_data = f_in.read()
             
-        # USE HELPER FROM CRYPTO_UTILS
-        encrypted_data = crypto.encrypt_bytes(file_data, key=umk)
+        # Encrypt bytes using the User Master Key
+        # If you added the helper to crypto_utils, use crypto.encrypt_bytes(file_data, key=umk)
+        # Otherwise, here is the raw logic:
+        from cryptography.fernet import Fernet
+        f = Fernet(umk)
+        encrypted_data = f.encrypt(file_data)
         
         with open(permanent_path, "wb") as f_out:
             f_out.write(encrypted_data)
 
         # 3. Save Metadata to DB
+        # We assume save_generated_image handles the PROMPT encryption internally
         img_id = save_generated_image(
             user_id=int(user_id), 
             provider=str(provider), 
             model=str(model), 
             prompt=str(prompt), 
             image_path=str(permanent_path), # Store path to .enc file
-            user_state=user_state # Passes key for prompt encryption
+            user_state=user_state 
         )
         
         return f"✅ Verschlüsselt gespeichert (ID: {img_id})", gr.update(visible=False)
@@ -7183,7 +7189,8 @@ with gr.Blocks(
                             gr.Markdown("#### 📋 Gespeicherte Transkripte")
                             trans_history = gr.Dataframe(
                                 headers=["ID", "Datum", "Titel", "Provider", "Sprache"],
-                                value=[[None, "", "", "", ""]] * 6,
+                                value=[],  # Start Empty
+                                #value=[[None, "", "", "", ""]] * 6,
                                 interactive=False,
                                 wrap=True,
                                 datatype=["number", "str", "str", "str", "str"],
@@ -7210,31 +7217,42 @@ with gr.Blocks(
                         # --- LOGIC ---
                         def load_trans_data(user_state=None):
                             """
-                            Load transcriptions filtered STRICTLY by user_id
+                            Load transcriptions with STRICT user isolation and clean list handling.
                             """
-                            if not user_state or not user_state.get("id"):
-                                return pad_data([], 5), []
+                            # 1. Strict Auth Check
+                            if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
+                                print("[DEBUG] ❌ load_trans_data: No valid user_state found.")
+                                return [], [] # Return EMPTY list, not skeleton
                             
                             user_id = user_state["id"]
+                            print(f"[DEBUG] 📥 Loading transcripts for User ID: {user_id}")
                             
                             try:
-                                # Debug Log to verify isolation
-                                logger.info(f"Loading transcriptions for User ID: {user_id}")
+                                # 2. Database Query with STRICT filter
+                                # We explicitly re-query here to ensure we don't rely on potentially stale external functions
+                                db = SessionLocal()
+                                t_list = db.query(Transcription).filter(
+                                    Transcription.user_id == user_id
+                                ).order_by(Transcription.timestamp.desc()).limit(50).all()
+                                db.close()
                                 
-                                # Get raw list from DB
-                                t_list = get_user_transcriptions(user_id)
-                                
-                                # 🛡️ DEFENSE IN DEPTH: Explicitly filter again in Python
-                                # This prevents any DB query glitches from leaking other users' data
-                                t_list = [t for t in t_list if t.user_id == user_id]
-                                
-                                clean_data = [[t.id, t.timestamp.strftime("%Y-%m-%d %H:%M"), t.title or "—", t.provider, t.language] for t in t_list]
-                                return pad_data(list(clean_data), 5), clean_data
+                                # 3. Format Data
+                                clean_data = []
+                                for t in t_list:
+                                    clean_data.append([
+                                        t.id, 
+                                        t.timestamp.strftime("%Y-%m-%d %H:%M"), 
+                                        t.title or "—", 
+                                        t.provider, 
+                                        t.language or "?"
+                                    ])
+                                    
+                                return clean_data, clean_data
                                 
                             except Exception as e:
                                 logger.exception(f"Error loading transcriptions: {e}")
-                                return pad_data([], 5), []
-
+                                return [], []
+                            
                         def load_single_trans(tid, user_state):
                             if not tid or not user_state or not user_state.get("id"): 
                                 return gr.update(), "❌"
@@ -7311,7 +7329,8 @@ with gr.Blocks(
                             gr.Markdown("#### 🖼️ Bild-Historie")
                             images_history = gr.Dataframe(
                                 headers=["ID", "Datum", "Prompt", "Modell"],
-                                value=[[None, "", "", ""]] * 6, 
+                                value=[], # Start Empty
+                                #value=[[None, "", "", ""]] * 6, 
                                 interactive=False,
                                 wrap=True,
                                 datatype=["number", "str", "str", "str"],
@@ -7339,45 +7358,57 @@ with gr.Blocks(
                         # --- LOGIC ---
                         def load_img_data(user_state=None):
                             """
-                            Load images AND decrypt the prompts for the table view
+                            Load images with FORCED prompt decryption for the table view.
                             """
-                            if not user_state or not user_state.get("id"): 
-                                return pad_data([], 4), []
+                            # 1. Strict Auth Check
+                            if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
+                                return [], []
                             
                             try:
                                 # Get Session Key
                                 umk = user_state.get('umk') if user_state else crypto.global_key
+                                user_id = user_state["id"]
                                 
-                                i_list = get_user_generated_images(user_state["id"])
-                                # 🛡️ Explicit filter for images too
-                                i_list = [i for i in i_list if i.user_id == user_state["id"]]
+                                db = SessionLocal()
+                                i_list = db.query(GeneratedImage).filter(
+                                    GeneratedImage.user_id == user_id
+                                ).order_by(GeneratedImage.timestamp.desc()).limit(50).all()
+                                db.close()
                                 
                                 clean = []
                                 
                                 for i in i_list:
-                                    # 1. Decrypt Prompt for Display
-                                    dec_prompt = i.prompt
-                                    if i.is_encrypted:
+                                    # 2. Decrypt Prompt for Display
+                                    dec_prompt = str(i.prompt)
+                                    
+                                    # Force decrypt check: If it looks like Fernet (starts with gAAAA), try to decrypt
+                                    # regardless of what the DB flag says.
+                                    if dec_prompt.startswith("gAAAA"):
                                         try:
-                                            # Try decrypting prompt with user session key
-                                            dec_prompt = crypto.decrypt_text(i.prompt, key=umk)
+                                            dec_prompt = crypto.decrypt_text(dec_prompt, key=umk)
                                             
-                                            # Legacy fallback: Try global key if user key fails
+                                            # Fallback for legacy data (Global Key)
                                             if dec_prompt == "[Decryption Failed]" and umk != crypto.global_key:
                                                 dec_prompt = crypto.decrypt_text(i.prompt, key=crypto.global_key)
-                                        except:
+                                        except Exception as e:
+                                            print(f"[DEBUG] Decrypt error for img {i.id}: {e}")
                                             dec_prompt = "[Verschlüsselt]"
                                     
-                                    # Truncate for table view (keep UI clean)
+                                    # Truncate for table view
                                     display_prompt = (dec_prompt[:75] + '...') if len(dec_prompt) > 75 else dec_prompt
                                     
-                                    clean.append([i.id, i.timestamp.strftime("%Y-%m-%d"), display_prompt, i.model])
+                                    clean.append([
+                                        i.id, 
+                                        i.timestamp.strftime("%Y-%m-%d"), 
+                                        display_prompt, 
+                                        i.model
+                                    ])
                                     
-                                return pad_data(list(clean), 4), clean
+                                return clean, clean
                                 
                             except Exception as e:
                                 logger.error(f"Img Load Error: {e}") 
-                                return pad_data([], 4), []
+                                return [], []
 
                         def load_single_img(tid, user_state=None):
                             """
@@ -7400,9 +7431,10 @@ with gr.Blocks(
                                 # Get Key
                                 umk = user_state.get('umk') if user_state else crypto.global_key
 
-                                # 1. Decrypt Prompt (for the textbox)
+                                # 1. Decrypt Prompt
                                 prompt = img.prompt
-                                if img.is_encrypted:
+                                # Try decrypting
+                                if str(prompt).startswith("gAAAA"):
                                     try:
                                         prompt = crypto.decrypt_text(prompt, key=umk)
                                         if prompt == "[Decryption Failed]" and umk != crypto.global_key:
@@ -7410,20 +7442,25 @@ with gr.Blocks(
                                     except Exception as e:
                                         prompt = "[Entschlüsselungsfehler Prompt]"
 
-                                # 2. Decrypt Image File (for the image viewer)
+                                # 2. Decrypt Image File
                                 display_path = img.image_path
                                 
-                                # If file ends in .enc, we must decrypt it
+                                # Check if it is an encrypted file (.enc)
                                 if img.image_path.endswith(".enc"):
                                     try:
                                         with open(img.image_path, "rb") as f:
                                             enc_data = f.read()
                                         
-                                        # USE HELPER FROM CRYPTO_UTILS
-                                        dec_data = crypto.decrypt_bytes(enc_data, key=umk)
+                                        # Decrypt
+                                        from cryptography.fernet import Fernet
+                                        f_eng = Fernet(umk)
+                                        dec_data = f_eng.decrypt(enc_data)
                                         
                                         # Write to temp file with correct extension (remove .enc)
+                                        # We guess jpg if extension is missing, or infer from original name
                                         original_name = os.path.basename(img.image_path).replace(".enc", "")
+                                        if "." not in original_name: original_name += ".jpg"
+                                        
                                         temp_decrypted_path = os.path.join(tempfile.gettempdir(), f"dec_{original_name}")
                                         
                                         with open(temp_decrypted_path, "wb") as f_out:
