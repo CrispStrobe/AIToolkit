@@ -1533,10 +1533,11 @@ import shutil
 JOB_STATE_DIR = "/var/www/transkript_app/jobs"
 os.makedirs(JOB_STATE_DIR, exist_ok=True)
 
-def create_job_manifest(job_id, audio_path, provider, model, chunks, lang, prompt, temp):
-    """Save job state to disk"""
+def create_job_manifest(job_id, audio_path, provider, model, chunks, lang, prompt, temp, user_id):
+    """Save job state to disk with User ID"""
     manifest = {
         "job_id": job_id,
+        "user_id": user_id,  # Track ownership
         "audio_path": audio_path,
         "provider": provider,
         "model": model,
@@ -1566,8 +1567,8 @@ def update_job_chunk_status(job_id, chunk_index, status, text=None):
     with open(path, "w") as f:
         json.dump(manifest, f)
 
-def get_failed_jobs():
-    """List incomplete jobs"""
+def get_failed_jobs(user_id):
+    """List incomplete jobs filtered by User ID"""
     jobs = []
     if not os.path.exists(JOB_STATE_DIR): return []
     
@@ -1576,6 +1577,11 @@ def get_failed_jobs():
             try:
                 with open(os.path.join(JOB_STATE_DIR, f), "r") as jf:
                     data = json.load(jf)
+                    
+                    # Check User ID match
+                    if data.get("user_id") != user_id:
+                        continue
+                        
                     # Check if any chunk is not 'done'
                     pending = sum(1 for c in data["chunks"] if c["status"] != "done")
                     if pending > 0:
@@ -3942,7 +3948,7 @@ def run_chunked_api_transcription(client, model, chunk_paths, lang, prompt, temp
 
     yield "".join(full_transcript_parts).strip()
         
-def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt, diar, trans, target, key, chunk_opt=True, chunk_len=10):
+def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt, diar, trans, target, key, chunk_opt=True, chunk_len=10, user_id=None):
     """
     Unified transcription router.
     - Gladia: Handles Files (Upload -> URL) OR Direct URLs (YouTube/etc).
@@ -4161,7 +4167,7 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
 
                 # --- CREATE JOB MANIFEST (For Resume Capability) ---
                 job_id = int(time.time())
-                create_job_manifest(job_id, audio, provider, model, chunks, lang, whisper_prompt, whisper_temp)
+                create_job_manifest(job_id, audio, provider, model, chunks, lang, whisper_prompt, whisper_temp, user_id)
                 logs += f"\n🆔 Job-ID: {job_id} (Für Resume gespeichert)"
                 yield logs, "", ""
 
@@ -4291,7 +4297,8 @@ def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, d
             actual_audio_path, provider, model, 
             final_lang, w_temp, w_prompt, 
             final_diar, final_trans, final_target, 
-            key, chunk_opt, chunk_len
+            key, chunk_opt, chunk_len,
+            user_id=user_id
         ):
             yield result
 
@@ -7216,27 +7223,21 @@ with gr.Blocks(
 
                         # --- LOGIC ---
                         def load_trans_data(user_state=None):
-                            """
-                            Load transcriptions with STRICT user isolation and clean list handling.
-                            """
+                            """Load transcriptions filtered by current user."""
                             # 1. Strict Auth Check
                             if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
-                                print("[DEBUG] ❌ load_trans_data: No valid user_state found.")
-                                return [], [] # Return EMPTY list, not skeleton
+                                return [], []
                             
                             user_id = user_state["id"]
-                            print(f"[DEBUG] 📥 Loading transcripts for User ID: {user_id}")
                             
                             try:
-                                # 2. Database Query with STRICT filter
-                                # We explicitly re-query here to ensure we don't rely on potentially stale external functions
                                 db = SessionLocal()
+                                # FILTER BY USER_ID
                                 t_list = db.query(Transcription).filter(
                                     Transcription.user_id == user_id
                                 ).order_by(Transcription.timestamp.desc()).limit(50).all()
                                 db.close()
                                 
-                                # 3. Format Data
                                 clean_data = []
                                 for t in t_list:
                                     clean_data.append([
@@ -7357,9 +7358,7 @@ with gr.Blocks(
 
                         # --- LOGIC ---
                         def load_img_data(user_state=None):
-                            """
-                            Load images with FORCED prompt decryption for the table view.
-                            """
+                            """Load images with decryption for the table view."""
                             # 1. Strict Auth Check
                             if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
                                 return [], []
@@ -7381,17 +7380,16 @@ with gr.Blocks(
                                     # 2. Decrypt Prompt for Display
                                     dec_prompt = str(i.prompt)
                                     
-                                    # Force decrypt check: If it looks like Fernet (starts with gAAAA), try to decrypt
-                                    # regardless of what the DB flag says.
+                                    # Force decrypt check
                                     if dec_prompt.startswith("gAAAA"):
                                         try:
+                                            # Try User Key
                                             dec_prompt = crypto.decrypt_text(dec_prompt, key=umk)
                                             
                                             # Fallback for legacy data (Global Key)
                                             if dec_prompt == "[Decryption Failed]" and umk != crypto.global_key:
                                                 dec_prompt = crypto.decrypt_text(i.prompt, key=crypto.global_key)
                                         except Exception as e:
-                                            print(f"[DEBUG] Decrypt error for img {i.id}: {e}")
                                             dec_prompt = "[Verschlüsselt]"
                                     
                                     # Truncate for table view
@@ -7647,8 +7645,10 @@ with gr.Blocks(
                         resume_result = gr.Textbox(label="Ergebnis", lines=10)
 
                         # Logic
-                        def list_failed_jobs():
-                            data = get_failed_jobs()
+                        def list_failed_jobs(user_state):
+                            if not user_state or not user_state.get("id"):
+                                return [["Bitte anmelden", "", "", ""]]
+                            data = get_failed_jobs(user_state["id"]) # <--- PASS ID
                             return data if data else [["Keine offenen Jobs", "", "", ""]]
 
                         def resume_job_process(jid):
@@ -7685,10 +7685,10 @@ with gr.Blocks(
                                 yield f"🔥 Fehler: {e}", ""
 
                         # Wiring
-                        refresh_jobs_btn.click(list_failed_jobs, outputs=failed_jobs_table)
+                        refresh_jobs_btn.click(list_failed_jobs, inputs=[session_state], outputs=failed_jobs_table)
                         
                         # --- FIX: AUTO-LOAD ON TAB SELECT ---
-                        jobs_tab.select(list_failed_jobs, outputs=failed_jobs_table)
+                        jobs_tab.select(list_failed_jobs, inputs=[session_state], outputs=failed_jobs_table)
 
                         resume_btn.click(resume_job_process, inputs=resume_job_id_input, outputs=[resume_log, resume_result])
                         
@@ -7704,9 +7704,14 @@ with gr.Blocks(
                         gr.Markdown("## 🎯 Bevorzugte Modelle verwalten")
                         gr.Markdown("Wähle welche Modelle in den Dropdown-Menüs erscheinen sollen und lege die Reihenfolge fest.")
                         
+                        
+                        def get_implemented_provider_choices():
+                            """Return list of providers that are marked as implemented"""
+                            return [p for p in PROVIDERS.keys() if is_provider_implemented(p)]
+                        
                         with gr.Row():
                             pref_provider = gr.Dropdown(
-                                choices=list(PROVIDERS.keys()),
+                                choices=get_implemented_provider_choices(),
                                 value="Scaleway",
                                 label="Provider auswählen"
                             )
