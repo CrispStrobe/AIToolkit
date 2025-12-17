@@ -8181,5 +8181,4 @@ if __name__ == "__main__":
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
         show_error=True,
         footer_links=[],  # ✅ Empty list - no footer links at all
-        
     )
