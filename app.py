@@ -1439,6 +1439,42 @@ def download_from_url(url, download_video=False, save_to_storage=True, user_stat
 # 📦 ENHANCED STORAGE BOX HELPER
 # ==========================================
 
+def copy_storage_file_to_temp(file_path, user_state=None):
+    """
+    Copies a file from Storage Box to local temp for processing.
+    Handles encrypted files automatically.
+    Returns path to local temp file.
+    """
+    if not file_path: return None
+    
+    username = user_state.get("username") if user_state else None
+    if not username:
+        raise ValueError("Nicht angemeldet")
+    
+    # Load file (with decryption if .enc)
+    success, file_data, msg = load_from_user_storage(
+        username=username,
+        filepath=file_path,
+        decrypt=file_path.endswith('.enc'),
+        user_state=user_state
+    )
+    
+    if not success:
+        raise ValueError(f"Konnte Datei nicht laden: {msg}")
+    
+    # Determine original filename (remove .enc if present)
+    filename = os.path.basename(file_path)
+    if filename.endswith('.enc'):
+        filename = filename[:-4]  # Remove .enc extension
+    
+    # Write to temp
+    temp_path = os.path.join(tempfile.gettempdir(), f"sb_{int(time.time())}_{filename}")
+    with open(temp_path, 'wb') as f:
+        f.write(file_data)
+    
+    logger.info(f"✅ Decrypted to temp: {temp_path}")
+    return temp_path
+
 def get_user_storage_path(username):
     """
     Returns the user-specific storage path.
@@ -6133,17 +6169,22 @@ with gr.Blocks(
                                 t_audio = gr.Audio(type="filepath", label="Datei hochladen")
                             
                             with gr.TabItem("📦 Storage Box"):
-                                gr.Markdown("Wähle Datei aus Cloud-Speicher:")
+                                gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*", 
-                                    #height=300,
-                                    label="Dateien durchsuchen"
+                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3.enc,wav.enc,m4a.enc,ogg.enc,flac.enc}", 
+                                    label="Audiodateien durchsuchen"
+                                )
+                                t_storage_file_list = gr.Dropdown(
+                                    label="Verfügbare Dateien (entschlüsselte Namen)",
+                                    choices=[],
+                                    interactive=True
                                 )
                                 with gr.Row():
                                     t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
                                     t_load_sb_btn = gr.Button("✅ Diese verwenden", variant="secondary", scale=1)
                                 t_sb_status = gr.Markdown("")
+
 
                             with gr.TabItem("🔗 URL Download"):
                                 gr.Markdown("""
@@ -6201,23 +6242,51 @@ with gr.Blocks(
                                 )
 
                         # Logic: Storage Box Selection
-                        def use_storage_file(selected_files):
-                            if not selected_files:
+                        def refresh_transcription_storage_list(user_state):
+                            """Load and display decrypted filenames"""
+                            if not user_state or not user_state.get("username"):
+                                return gr.update(choices=[], value=None), "❌ Nicht angemeldet"
+                            
+                            success, files, msg = list_user_storage_files(user_state.get("username"), pattern="*")
+                            if not success:
+                                return gr.update(choices=[], value=None), msg
+                            
+                            # Filter audio files and show decrypted names
+                            audio_extensions = ('.mp3', '.wav', '.m4a', '.ogg', '.flac', '.mp3.enc', '.wav.enc', '.m4a.enc', '.ogg.enc', '.flac.enc')
+                            audio_files = [f for f in files if f.lower().endswith(audio_extensions)]
+                            
+                            # Create display names (remove .enc)
+                            display_choices = []
+                            for f in audio_files:
+                                display_name = f[:-4] if f.endswith('.enc') else f
+                                display_choices.append((display_name, f))  # (label, value)
+                            
+                            logger.info(f"📁 Found {len(display_choices)} audio files for transcription")
+                            return gr.update(choices=display_choices, value=None), f"✅ {len(display_choices)} Audiodateien"
+
+                        def use_storage_file_transcription(selected_file, user_state):
+                            if not selected_file:
                                 return None, "❌ Keine Datei ausgewählt"
-                            f_path = selected_files[0] if isinstance(selected_files, list) else selected_files
-                            if not f_path.startswith("/"):
-                                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+                            
                             try:
-                                local_temp = copy_storage_file_to_temp(f_path)
-                                return local_temp, f"✅ Geladen: {os.path.basename(f_path)}"
+                                local_temp = copy_storage_file_to_temp(selected_file, user_state)
+                                display_name = selected_file[:-4] if selected_file.endswith('.enc') else selected_file
+                                return local_temp, f"✅ Geladen: {display_name}"
                             except Exception as e:
+                                logger.exception(f"Storage file load error: {e}")
                                 return None, f"🔥 Fehler: {str(e)}"
 
-                        def refresh_explorer():
-                            return gr.update(value=None) 
+                        t_refresh_sb_btn.click(
+                            refresh_transcription_storage_list, 
+                            inputs=[session_state], 
+                            outputs=[t_storage_file_list, t_sb_status]
+                        )
+                        t_load_sb_btn.click(
+                            use_storage_file_transcription, 
+                            inputs=[t_storage_file_list, session_state], 
+                            outputs=[t_audio, t_sb_status]
+                        )
 
-                        t_load_sb_btn.click(use_storage_file, inputs=t_storage_browser, outputs=[t_audio, t_sb_status])
-                        t_refresh_sb_btn.click(refresh_explorer, outputs=t_storage_browser)
 
                         # --- MAIN CONTROLS ---
                         gr.Markdown("### 🎛️ Auswahl")
@@ -6431,35 +6500,61 @@ with gr.Blocks(
                             
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
-                                v_storage_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
-                                    #height=300,
-                                    label="Bilder durchsuchen"
+                                v_storage_file_list = gr.Dropdown(
+                                    label="Verfügbare Bilder (entschlüsselte Namen)",
+                                    choices=[],
+                                    interactive=True
                                 )
                                 with gr.Row():
                                     v_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
                                     v_load_sb_btn = gr.Button("✅ Dieses Bild verwenden", variant="secondary", scale=1)
                                 v_sb_status = gr.Markdown("")
-
+                        
                         # Logic: Storage Box Selection (Vision)
-                        def use_storage_image(selected_files):
-                            if not selected_files:
+                        def refresh_vision_storage_list(user_state):
+                            """Load and display decrypted image filenames"""
+                            if not user_state or not user_state.get("username"):
+                                return gr.update(choices=[], value=None), "❌ Nicht angemeldet"
+                            
+                            success, files, msg = list_user_storage_files(user_state.get("username"), pattern="*")
+                            if not success:
+                                return gr.update(choices=[], value=None), msg
+                            
+                            # Filter image files
+                            image_extensions = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.png.enc', '.jpg.enc', '.jpeg.enc', '.webp.enc', '.bmp.enc', '.gif.enc')
+                            image_files = [f for f in files if f.lower().endswith(image_extensions)]
+                            
+                            # Create display names (remove .enc)
+                            display_choices = []
+                            for f in image_files:
+                                display_name = f[:-4] if f.endswith('.enc') else f
+                                display_choices.append((display_name, f))
+                            
+                            logger.info(f"🖼️ Found {len(display_choices)} image files for vision")
+                            return gr.update(choices=display_choices, value=None), f"✅ {len(display_choices)} Bilder"
+
+                        def use_storage_image_vision(selected_file, user_state):
+                            if not selected_file:
                                 return None, "❌ Kein Bild ausgewählt"
-                            f_path = selected_files[0] if isinstance(selected_files, list) else selected_files
-                            if not f_path.startswith("/"):
-                                f_path = os.path.join(STORAGE_MOUNT_POINT, f_path)
+                            
                             try:
-                                local_temp = copy_storage_file_to_temp(f_path)
-                                return local_temp, f"✅ Geladen: {os.path.basename(f_path)}"
+                                local_temp = copy_storage_file_to_temp(selected_file, user_state)
+                                display_name = selected_file[:-4] if selected_file.endswith('.enc') else selected_file
+                                return local_temp, f"✅ Geladen: {display_name}"
                             except Exception as e:
+                                logger.exception(f"Vision storage load error: {e}")
                                 return None, f"🔥 Fehler: {str(e)}"
 
-                        def refresh_v_explorer():
-                            return gr.update(value=None)
-
-                        v_load_sb_btn.click(use_storage_image, inputs=v_storage_browser, outputs=[v_img, v_sb_status])
-                        v_refresh_sb_btn.click(refresh_v_explorer, outputs=v_storage_browser)
+                        v_refresh_sb_btn.click(
+                            refresh_vision_storage_list,
+                            inputs=[session_state],
+                            outputs=[v_storage_file_list, v_sb_status]
+                        )
+                        v_load_sb_btn.click(
+                            use_storage_image_vision,
+                            inputs=[v_storage_file_list, session_state],
+                            outputs=[v_img, v_sb_status]
+                        )
 
 
                         # --- SELECTION ROW ---
@@ -8212,9 +8307,9 @@ with gr.Blocks(
             gr.update(visible=True),        
             gr.update(visible=show_admin_tab), 
             state_data,                     
-            gr.update(root_dir=storage_root) if storage_root else gr.update(), # t_storage_browser
-            gr.update(root_dir=storage_root) if storage_root else gr.update(), # v_storage_browser
-            gr.update(root_dir=storage_root) if storage_root else gr.update()  # attach_sb_browser
+            #gr.update(root_dir=storage_root) if storage_root else gr.update(), # t_storage_browser
+            #gr.update(root_dir=storage_root) if storage_root else gr.update(), # v_storage_browser
+            #gr.update(root_dir=storage_root) if storage_root else gr.update()  # attach_sb_browser
         )
     
     def handle_logout():
@@ -8228,7 +8323,7 @@ with gr.Blocks(
         outputs=[
             login_message, main_app, login_screen, login_status, 
             logout_btn, admin_tab, session_state,
-            t_storage_browser, v_storage_browser, attach_sb_browser
+            #t_storage_browser, v_storage_browser, attach_sb_browser
         ],
         # INLINE JS: Save credentials directly to LocalStorage
         # js="(u, p) => { localStorage.setItem('ak_user', u); localStorage.setItem('ak_pass', p); }"
