@@ -5479,17 +5479,6 @@ with gr.Blocks(
     #head=PWA_HEAD,      # Only Meta tags/JS here
     #css=CUSTOM_CSS      # CSS goes here to override Theme defaults
 ) as demo:
-    # ✅ INJECT CSS FIRST (This works even with mount_gradio_app!)
-    gr.HTML(f"""
-    <style>
-    {CUSTOM_CSS}
-    </style>
-    """, visible=False)
-    
-    # ✅ INJECT PWA HEAD
-    gr.HTML(f"""
-    {PWA_HEAD}
-    """, visible=False)
 
     # Print debug info on startup
     print("=" * 60)
@@ -8151,20 +8140,19 @@ def initialize_application():
 initialize_application()
 
 # ==========================================
-# 🚀 LAUNCH CONFIGURATION - SECURE VERSION
+# 🚀 LAUNCH CONFIGURATION - HYBRID APPROACH
 # ==========================================
 if __name__ == "__main__":
-    from fastapi import FastAPI, Request, status
-    from fastapi.responses import JSONResponse
     import uvicorn
-
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+    
     # Configuration
     APP_DIR = "/var/www/transkript_app"
     LOG_FILE = os.path.join(APP_DIR, "app.log")
     STATIC_DIR = os.path.join(APP_DIR, "static")
     IMAGES_DIR = os.path.join(APP_DIR, "generated_images")
 
-    # Ensure directories exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
     
     if not os.path.exists(LOG_FILE):
@@ -8174,46 +8162,99 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Could not create log file: {e}")
 
-    # ==========================================
-    # ✅ CREATE FASTAPI APP WITH SECURITY
-    # ==========================================
-    app = FastAPI(
-        docs_url=None,      # ✅ Disable /docs
-        redoc_url=None,     # ✅ Disable /redoc
-        openapi_url=None    # ✅ Disable /openapi.json
-    )
-
-    @app.middleware("http")
-    async def block_api_endpoints(request: Request, call_next):
-        # Block any remaining API endpoints
-        if request.url.path in ["/api", "/api/", "/openapi.json", "/docs", "/redoc"]:
-            return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
-                content={"detail": "API access is disabled."}
-            )
-        response = await call_next(request)
-        return response
-
     print(f"🚀 Starting Server on Port 7860...")
     print(f"📂 Serving files from: {APP_DIR}")
 
     # ==========================================
-    # ✅ MOUNT GRADIO (CSS via HTML injection)
+    # ✅ START GRADIO WITH CSS IN BACKGROUND THREAD
     # ==========================================
-    print(f"🚀 Mounting Gradio app...")
-    app = gr.mount_gradio_app(
-        app, 
-        demo, 
-        path="/",
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"]
+    import threading
+    
+    gradio_started = threading.Event()
+    
+    def start_gradio():
+        """Start Gradio with CSS support"""
+        demo.queue()
+        demo.launch(
+            server_name="127.0.0.1",  # ✅ Bind to localhost only
+            server_port=7861,          # ✅ Different internal port
+            theme=gr.themes.Soft(),
+            css=CUSTOM_CSS,            # ✅ CSS works here!
+            head=PWA_HEAD,
+            allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
+            show_error=True,
+            footer_links=["gradio"],   # Hide API from footer
+            prevent_thread_lock=True   # ✅ Don't block
+        )
+        gradio_started.set()
+    
+    # Start Gradio in background
+    gradio_thread = threading.Thread(target=start_gradio, daemon=True)
+    gradio_thread.start()
+    gradio_started.wait()  # Wait for Gradio to start
+    
+    print("✅ Gradio started on internal port 7861")
+    
+    # ==========================================
+    # ✅ CREATE FASTAPI PROXY (BLOCKS OPENAPI)
+    # ==========================================
+    from starlette.requests import Request as StarletteRequest
+    from starlette.responses import StreamingResponse
+    import httpx
+    
+    app = FastAPI(
+        docs_url=None,      # ✅ No docs
+        redoc_url=None,     # ✅ No redoc
+        openapi_url=None    # ✅ No openapi.json
     )
-
-    # Run Server
-    print(f"🚀 Starting Server on Port 7860...")
+    
+    @app.middleware("http")
+    async def proxy_to_gradio(request: Request, call_next):
+        """Block OpenAPI and proxy everything else to Gradio"""
+        
+        # ✅ Block OpenAPI endpoints
+        blocked_paths = ["/openapi.json", "/docs", "/redoc", "/api"]
+        if any(request.url.path.startswith(path) for path in blocked_paths):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "API access is disabled."}
+            )
+        
+        # ✅ Proxy all other requests to Gradio
+        try:
+            async with httpx.AsyncClient() as client:
+                url = f"http://127.0.0.1:7861{request.url.path}"
+                if request.url.query:
+                    url += f"?{request.url.query}"
+                
+                response = await client.request(
+                    method=request.method,
+                    url=url,
+                    headers=dict(request.headers),
+                    content=await request.body(),
+                    timeout=30.0
+                )
+                
+                return StreamingResponse(
+                    response.iter_bytes(),
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                )
+        except Exception as e:
+            print(f"Proxy error: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal proxy error"}
+            )
+    
+    # ==========================================
+    # ✅ RUN PROXY SERVER
+    # ==========================================
+    print(f"🚀 Starting proxy on port 7860...")
     config = uvicorn.Config(
         app, 
-        host="0.0.0.0", 
-        port=7860, 
+        host="0.0.0.0",
+        port=7860,
         timeout_graceful_shutdown=1,
         log_level="info"
     )
