@@ -710,197 +710,317 @@ PWA_HEAD = f"""
 CUSTOM_CSS = """
 
 /* ==========================================
-   REMOVE ALL WHITESPACE & PADDING
+   ACCORDION COMPACTING
    ========================================== */
 
-/* Remove default container padding */
-.gradio-container {
+.block:has(> .label-wrap) {
     padding: 0 !important;
-    margin: 0 !important;
-    max-width: 100% !important;
-    width: 100% !important;
+    margin-bottom: 0 !important;
+    border: none !important;
+    overflow: hidden !important;
 }
 
-/* Remove padding from main content area */
-.main {
-    padding: 0 !important;
+.block > .label-wrap { 
+    padding: 0px 8px !important; 
     margin: 0 !important;
+    min-height: 32px !important; 
+    height: 32px !important; 
+    display: flex !important;
+    align-items: center !important;
+    background-color: transparent !important;
+    border: none !important;
 }
 
-/* Remove gaps in rows and columns */
-.gr-row, .gr-column {
-    gap: 0 !important;
-    padding: 0 !important;
-}
-
-/* Ensure full width usage */
-body {
+.block > .label-wrap > span {
     margin: 0 !important;
     padding: 0 !important;
-    overflow-x: hidden !important;
+    font-size: 0.9rem !important;
 }
 
-/* Remove side margins from tabs */
-.tabs {
-    padding: 0 !important;
+.block > .label-wrap .icon {
     margin: 0 !important;
+    transform: scale(0.8);
 }
 
 /* ==========================================
-   COMPACT HEADER - LIGHT & DARK MODE FIX
+   HEADER ALIGNMENT
    ========================================== */
-.compact-header {
-    background: white !important;
-    border-bottom: 1px solid #e5e7eb !important;
-    padding: 8px 12px !important;
-    min-height: 50px !important;
+
+#user-status-row {
+    justify-content: flex-end !important;
+    text-align: right !important;
+    padding-right: 10px !important;
 }
 
-/* ✅ DARK MODE FIX for header */
-.dark .compact-header,
-[data-theme="dark"] .compact-header {
-    background: #1f2937 !important;  /* Dark gray background */
-    border-bottom: 1px solid #374151 !important;  /* Darker border */
-}
+/* ==========================================
+   DESKTOP TWEAKS
+   ========================================== */
 
-/* ✅ Fix text colors in header */
-.compact-header * {
-    color: #111827 !important;  /* Dark text for light mode */
-}
-
-.dark .compact-header *,
-[data-theme="dark"] .compact-header * {
-    color: #f9fafb !important;  /* Light text for dark mode */
+label span { 
+    font-size: 0.85rem !important; 
+    font-weight: 600 !important; 
+    margin-bottom: 2px !important;
+    opacity: 1 !important; 
 }
 
 /* ==========================================
    BADGE STYLING
    ========================================== */
+
+.badge-col .prose { 
+    border: none !important; 
+    background: transparent !important; 
+    padding: 0 !important; 
+    margin: 0 !important;
+    box-shadow: none !important;
+}
+
+.badge-col { 
+    border: none !important; 
+    box-shadow: none !important; 
+    background: transparent !important; 
+}
+
 .custom-badge {
-    background-color: #374151 !important;
-    color: #ffffff !important;
-    padding: 4px 12px !important;
-    border-radius: 8px !important;
-    border: 1px solid #4b5563 !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    height: 38px !important;
-    font-size: 0.85em !important;
-    white-space: nowrap !important;
-    text-align: center !important;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", Arial, sans-serif !important;
+    font-size: 0.85rem !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important; 
+    background: #ffffff !important;
+    color: #000000 !important;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 0 10px;
+    text-align: center;
+    height: 42px; 
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    font-variant-emoji: emoji;
+    -webkit-font-smoothing: antialiased;
 }
 
-.custom-badge b {
-    color: #ffffff !important;
+.compact-row { 
+    gap: 8px !important; 
+    align-items: end !important; 
 }
 
-/* Dark mode badge adjustments */
-.dark .custom-badge,
-[data-theme="dark"] .custom-badge {
-    background-color: #4b5563 !important;
-    border: 1px solid #6b7280 !important;
+.compact-row .form { 
+    border: none !important; 
+    background: transparent !important; 
 }
 
 /* ==========================================
-   MOBILE RESPONSIVENESS (< 768px)
+   MOBILE RESPONSIVE (< 768px)
    ========================================== */
+
 @media (max-width: 768px) {
     
-    /* Make mobile layout truly full width */
+    /* ===================================
+       GLOBAL SPACING REDUCTION
+       =================================== */
+    
     .gradio-container {
         padding: 0 !important;
+        margin: 0 !important;
         width: 100vw !important;
         max-width: 100vw !important;
+        overflow-x: hidden !important;
     }
     
-    /* Remove any remaining side padding */
     .contain {
         padding-left: 0 !important;
         padding-right: 0 !important;
     }
     
+    .gr-row {
+        gap: 4px !important;
+        margin: 2px 0 !important;
+    }
+    
+    .gr-column {
+        gap: 4px !important;
+        padding: 2px !important;
+    }
+    
     /* ===================================
-       TABS: Keep emoji icons, hide text
+       COMPACT HEADER
        =================================== */
     
-    /* Target main tab buttons */
-    .tab-nav button,
-    .tabs > .tab-nav > button {
-        font-size: 1.5rem !important;  /* Show emoji at normal size */
-        padding: 8px 4px !important;
+    .compact-header { 
+        padding: 4px 8px !important; 
+        min-height: 40px !important;
+        gap: 4px !important;
+    }
+    
+    .compact-header h3 { 
+        margin: 0 !important; 
+        font-size: 1.1rem !important; 
+    }
+    
+    /* ===================================
+       TABS: ICON ONLY (Gradio 6 Method)
+       =================================== */
+    
+    /* Hide the text span inside tab buttons */
+    .icon-nav > .tab-nav > button > span:not(.icon) {
+        display: none !important;
+    }
+    
+    /* Keep button visible and properly sized */
+    .icon-nav > .tab-nav > button {
+        padding: 10px 8px !important;
         min-width: 50px !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-    }
-    
-    /* Hide text after emoji using pseudo-element trick */
-    .tab-nav button::after,
-    .tabs > .tab-nav > button::after {
-        content: '' !important;
-        display: inline !important;
-        width: 0 !important;
-        overflow: hidden !important;
-    }
-
-    /* Selected tab styling */
-    .tab-nav button.selected,
-    .tabs > .tab-nav > button.selected {
-        border-bottom: 3px solid #2563eb !important;
-        background: #f3f4f6 !important;
-    }
-    
-    .dark .tab-nav button.selected,
-    .dark .tabs > .tab-nav > button.selected {
-        background: #374151 !important;
-    }
-
-    /* ===================================
-       BUTTONS: Keep icons, hide text
-       =================================== */
-    
-    /* Target buttons with text + emoji */
-    button:not(.tab-nav button) {
-        /* Keep the button visible */
-        display: inline-flex !important;
+        height: 50px !important;
+        display: flex !important;
         align-items: center !important;
         justify-content: center !important;
     }
     
-    /* Hide button text spans on mobile */
-    button span.text-label {
+    /* Ensure icons stay visible and sized properly */
+    .icon-nav > .tab-nav > button .icon {
+        display: flex !important;
+        font-size: 1.5rem !important;
+        visibility: visible !important;
+    }
+    
+    /* Selected tab styling */
+    .icon-nav > .tab-nav > button.selected {
+        border-bottom: 3px solid #2563eb !important;
+        background: #f3f4f6 !important;
+    }
+    
+    .dark .icon-nav > .tab-nav > button.selected {
+        background: #374151 !important;
+    }
+    
+    /* ===================================
+       BUTTONS: ICON ONLY (Gradio 6 Method)
+       =================================== */
+    
+    /* Target buttons with mobile-icon-only class */
+    .mobile-icon-only {
+        min-width: 44px !important;
+        height: 44px !important;
+        padding: 8px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    
+    /* Hide text spans but keep icon spans */
+    .mobile-icon-only > span:not(.icon) {
         display: none !important;
     }
     
-    /* Ensure button icons stay visible */
-    button svg,
-    button img,
-    button .icon {
-        display: inline-block !important;
+    /* Ensure button icons are visible */
+    .mobile-icon-only .icon {
+        display: flex !important;
+        font-size: 1.3rem !important;
         visibility: visible !important;
-        opacity: 1 !important;
-        width: 20px !important;
-        height: 20px !important;
     }
     
-    /* Fix "Senden" button specifically */
-    button[title*="Send"],
-    button[aria-label*="Send"],
-    #send_btn,
-    .send-button {
-        min-width: 44px !important;  /* Touch-friendly size */
-        padding: 10px !important;
+    /* Special styling for primary send button */
+    #btn-send { 
+        background-color: #2563eb !important; 
     }
-
-    /* Chat Window Height Fix */
-    #chat_window {
-        height: 65vh !important;
-        max-height: 65vh !important;
+    
+    #btn-send .icon { 
+        color: white !important; 
     }
-
-    /* Hide Footer */
-    footer { 
+    
+    /* Secondary button icons */
+    .btn-secondary .icon { 
+        color: #374151 !important; 
+    }
+    
+    /* ===================================
+       CHAT OPTIMIZATION
+       =================================== */
+    
+    #chat_window { 
+        height: 60vh !important; 
+        max-height: 60vh !important;
+        margin: 0 !important;
+        padding: 4px !important;
+    }
+    
+    /* ===================================
+       FORM ELEMENTS COMPACT
+       =================================== */
+    
+    input, textarea, select {
+        padding: 6px 8px !important;
+        font-size: 14px !important;
+    }
+    
+    label {
+        margin-bottom: 2px !important;
+        font-size: 13px !important;
+    }
+    
+    /* ===================================
+       BADGE COMPACT
+       =================================== */
+    
+    .custom-badge { 
+        font-size: 0.7rem !important; 
+        padding: 2px 6px !important; 
+        height: 32px !important; 
+    }
+    
+    /* ===================================
+       HIDE FOOTER
+       =================================== */
+    
+    footer, 
+    .footer,
+    .gradio-container footer { 
         display: none !important; 
+    }
+    
+    /* ===================================
+       COMPACT ACCORDIONS
+       =================================== */
+    
+    .accordion-header {
+        padding: 6px 8px !important;
+        font-size: 14px !important;
+    }
+    
+    .accordion-content {
+        padding: 8px !important;
+    }
+}
+
+/* ==========================================
+   VERY SMALL SCREENS (< 400px)
+   ========================================== */
+
+@media (max-width: 400px) {
+    .gr-row {
+        gap: 2px !important;
+    }
+    
+    .mobile-icon-only {
+        min-width: 40px !important;
+        height: 40px !important;
+    }
+    
+    .mobile-icon-only .icon {
+        font-size: 1.2rem !important;
+    }
+    
+    .icon-nav > .tab-nav > button {
+        min-width: 44px !important;
+        padding: 8px 4px !important;
+    }
+    
+    .custom-badge { 
+        font-size: 0.65rem !important; 
+        padding: 2px 4px !important; 
+        height: 28px !important; 
     }
 }
 
