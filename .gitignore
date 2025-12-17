@@ -1,0 +1,29 @@
+# Python Virtual Environment
+venv/
+ENV/
+env/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database (IMPORTANT: Do not commit production data)
+*.db
+*.sqlite3
+akademie_suite.db
+
+# Logs
+*.log
+app.log
+
+# Generated Content (Media/Images usually shouldn't be in git if they are user-generated)
+generated_images/
+jobs/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Environment variables (API Keys, Secrets)
+.env
