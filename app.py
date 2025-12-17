@@ -8140,12 +8140,10 @@ def initialize_application():
 initialize_application()
 
 # ==========================================
-# 🚀 LAUNCH CONFIGURATION - HYBRID APPROACH
+# 🚀 LAUNCH CONFIGURATION - PATCHED APPROACH
 # ==========================================
 if __name__ == "__main__":
     import uvicorn
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
     
     # Configuration
     APP_DIR = "/var/www/transkript_app"
@@ -8166,97 +8164,42 @@ if __name__ == "__main__":
     print(f"📂 Serving files from: {APP_DIR}")
 
     # ==========================================
-    # ✅ START GRADIO WITH CSS IN BACKGROUND THREAD
+    # ✅ PATCH GRADIO TO DISABLE OPENAPI
     # ==========================================
-    import threading
+    import gradio as gr
+    from gradio.routes import App
     
-    gradio_started = threading.Event()
+    # Monkey-patch Gradio's App class to disable OpenAPI
+    original_create_app = App.create_app
     
-    def start_gradio():
-        """Start Gradio with CSS support"""
-        demo.queue()
-        demo.launch(
-            server_name="127.0.0.1",  # ✅ Bind to localhost only
-            server_port=7861,          # ✅ Different internal port
-            theme=gr.themes.Soft(),
-            css=CUSTOM_CSS,            # ✅ CSS works here!
-            head=PWA_HEAD,
-            allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
-            show_error=True,
-            footer_links=["gradio"],   # Hide API from footer
-            prevent_thread_lock=True   # ✅ Don't block
-        )
-        gradio_started.set()
-    
-    # Start Gradio in background
-    gradio_thread = threading.Thread(target=start_gradio, daemon=True)
-    gradio_thread.start()
-    gradio_started.wait()  # Wait for Gradio to start
-    
-    print("✅ Gradio started on internal port 7861")
-    
-    # ==========================================
-    # ✅ CREATE FASTAPI PROXY (BLOCKS OPENAPI)
-    # ==========================================
-    from starlette.requests import Request as StarletteRequest
-    from starlette.responses import StreamingResponse
-    import httpx
-    
-    app = FastAPI(
-        docs_url=None,      # ✅ No docs
-        redoc_url=None,     # ✅ No redoc
-        openapi_url=None    # ✅ No openapi.json
-    )
-    
-    @app.middleware("http")
-    async def proxy_to_gradio(request: Request, call_next):
-        """Block OpenAPI and proxy everything else to Gradio"""
+    @staticmethod
+    def patched_create_app(app, *args, **kwargs):
+        """Create Gradio app with OpenAPI disabled"""
+        blocks = args[0] if args else kwargs.get('blocks')
+        result = original_create_app(blocks, *args[1:], **kwargs)
         
-        # ✅ Block OpenAPI endpoints
-        blocked_paths = ["/openapi.json", "/docs", "/redoc", "/api"]
-        if any(request.url.path.startswith(path) for path in blocked_paths):
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "API access is disabled."}
-            )
+        # Disable OpenAPI on the FastAPI app
+        if hasattr(result, 'docs_url'):
+            result.docs_url = None
+            result.redoc_url = None
+            result.openapi_url = None
         
-        # ✅ Proxy all other requests to Gradio
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"http://127.0.0.1:7861{request.url.path}"
-                if request.url.query:
-                    url += f"?{request.url.query}"
-                
-                response = await client.request(
-                    method=request.method,
-                    url=url,
-                    headers=dict(request.headers),
-                    content=await request.body(),
-                    timeout=30.0
-                )
-                
-                return StreamingResponse(
-                    response.iter_bytes(),
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                )
-        except Exception as e:
-            print(f"Proxy error: {e}")
-            return JSONResponse(
-                status_code=500,
-                content={"detail": "Internal proxy error"}
-            )
+        return result
+    
+    App.create_app = patched_create_app
     
     # ==========================================
-    # ✅ RUN PROXY SERVER
+    # ✅ LAUNCH WITH CSS (NOW SECURE!)
     # ==========================================
-    print(f"🚀 Starting proxy on port 7860...")
-    config = uvicorn.Config(
-        app, 
-        host="0.0.0.0",
-        port=7860,
-        timeout_graceful_shutdown=1,
-        log_level="info"
+    demo.queue()
+    
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=gr.themes.Soft(),
+        css=CUSTOM_CSS,            # ✅ CSS works!
+        head=PWA_HEAD,
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
+        show_error=True,
+        footer_links=["gradio"]    # Hide API link from footer
     )
-    server = uvicorn.Server(config)
-    server.run()
