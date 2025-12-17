@@ -705,6 +705,44 @@ PWA_HEAD = f"""
 <!-- Existing PWA manifest and icons -->
 <link rel="manifest" href="/file=/var/www/transkript_app/static/manifest.json">
 <link rel="apple-touch-icon" href="/file=/var/www/transkript_app/static/icon-192.png">
+
+<script>
+// Mobile Text Hiding Script
+function hideMobileText() {{
+    if (window.innerWidth <= 768) {{
+        // Hide text in tabs (keep only emoji)
+        document.querySelectorAll('.icon-nav > .tab-nav > button').forEach(btn => {{
+            const text = btn.textContent.trim();
+            if (text) {{
+                // Extract first character (emoji) using regex
+                const emoji = text.match(/[\u{{1F600}}-\u{{1F64F}}\u{{1F300}}-\u{{1F5FF}}\u{{1F680}}-\u{{1F6FF}}\u{{1F1E0}}-\u{{1F1FF}}\u{{2600}}-\u{{26FF}}\u{{2700}}-\u{{27BF}}]/);
+                if (emoji) {{
+                    btn.textContent = emoji[0];
+                }}
+            }}
+        }});
+        
+        // Hide text in buttons (keep only emoji)
+        document.querySelectorAll('.mobile-icon-only').forEach(btn => {{
+            const text = btn.textContent.trim();
+            if (text && text.length > 2) {{ // Only if there's text after emoji
+                const emoji = text.match(/[\u{{1F600}}-\u{{1F64F}}\u{{1F300}}-\u{{1F5FF}}\u{{1F680}}-\u{{1F6FF}}\u{{1F1E0}}-\u{{1F1FF}}\u{{2600}}-\u{{26FF}}\u{{2700}}-\u{{27BF}}]/);
+                if (emoji) {{
+                    btn.textContent = emoji[0];
+                }}
+            }}
+        }});
+    }}
+}}
+
+// Run on load and when DOM changes
+document.addEventListener('DOMContentLoaded', hideMobileText);
+window.addEventListener('resize', hideMobileText);
+
+// Watch for Gradio's dynamic content
+const observer = new MutationObserver(hideMobileText);
+observer.observe(document.body, {{ childList: true, subtree: true }});
+</script>
 """
 
 CUSTOM_CSS = """
