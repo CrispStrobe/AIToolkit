@@ -5049,12 +5049,30 @@ def save_chat(hist, prov, mod, user_state):
             logger.warning("Save chat failed: Empty chat history")
             return "❌ Kein Chat zum Speichern"
 
-        # Generate title
-        first_content = hist[0].get("content", "") if isinstance(hist[0], dict) else str(hist[0])
-        title = first_content[:50] + "..." if len(first_content) > 50 else first_content
+        # --- FIX: Extract clean text string from multimodal content for TITLE ---
+        def extract_title_text(content):
+            if isinstance(content, list):
+                # Handle multimodal format: [{'type': 'text', 'text': '...'}]
+                text_parts = [str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("type") == "text"]
+                return " ".join(text_parts)
+            elif isinstance(content, dict):
+                # Fallback if it's a single dict
+                return str(content.get("text", ""))
+            return str(content)
+
+        # Get first message content
+        raw_content = hist[0].get("content", "") if isinstance(hist[0], dict) else str(hist[0])
+        clean_content = extract_title_text(raw_content)
+        
+        # Create title from clean text
+        title = clean_content[:50] + "..." if len(clean_content) > 50 else (clean_content or "Chat ohne Titel")
+        # -----------------------------------------------------------------------
 
         logger.info(f"Saving chat with title: {title}")
-        chat_id = save_chat_history(user_id, prov, mod, hist, title)
+        
+        # Pass the clean string title to the DB function
+        chat_id = save_chat_history(user_id, prov, mod, hist, title, user_state=user_state)
+        
         logger.info(f"Chat saved successfully with ID: {chat_id}")
 
         return f"✅ Chat gespeichert (ID: {chat_id})"
