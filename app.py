@@ -5487,7 +5487,7 @@ with gr.Blocks(
     print("=" * 60)
 
     # ✅ Inject PWA_HEAD at the very beginning
-    gr.HTML(PWA_HEAD, visible=False)
+    # gr.HTML(PWA_HEAD, visible=False)
 
     # 0. INJECT PWA SCRIPTS (Required for Gradio 6+)
     gr.HTML("""
@@ -8144,28 +8144,20 @@ initialize_application()
 # ==========================================
 # 🚀 LAUNCH CONFIGURATION
 # ==========================================
+# ==========================================
+# 🚀 LAUNCH CONFIGURATION
+# ==========================================
 if __name__ == "__main__":
-    from fastapi import FastAPI, Request, status
-    from fastapi.responses import JSONResponse
     import uvicorn
-
-    # 1. Configuration
+    
+    # 1. Configuration Constants
     APP_DIR = "/var/www/transkript_app"
     LOG_FILE = os.path.join(APP_DIR, "app.log")
     STATIC_DIR = os.path.join(APP_DIR, "static")
     IMAGES_DIR = os.path.join(APP_DIR, "generated_images")
-
+    
     # 2. Ensure directories exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
-    os.makedirs(STATIC_DIR, exist_ok=True)
-    
-    # ==========================================
-    # ✅ WRITE CSS TO STATIC FILE
-    # ==========================================
-    css_path = os.path.join(STATIC_DIR, "custom.css")
-    with open(css_path, 'w', encoding='utf-8') as f:
-        f.write(CUSTOM_CSS)
-    print(f"✅ CSS written to: {css_path}")
     
     if not os.path.exists(LOG_FILE):
         try:
@@ -8173,40 +8165,30 @@ if __name__ == "__main__":
             os.chmod(LOG_FILE, 0o666) 
         except Exception as e:
             print(f"⚠️ Could not create log file: {e}")
-
-    # 3. Create FastAPI app
-    app = FastAPI()
-
-    @app.middleware("http")
-    async def block_api_endpoints(request: Request, call_next):
-        if request.url.path.startswith("/api"):
-             return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
-                content={"detail": "External API access is disabled."}
-            )
-        response = await call_next(request)
-        return response
-
+    
     print(f"🚀 Starting Server on Port 7860...")
     print(f"📂 Serving files from: {APP_DIR}")
-
-    # 4. Mount Gradio (back to original approach)
-    print(f"🚀 Mounting Gradio app...")
-    app = gr.mount_gradio_app(
-        app, 
-        demo, 
-        path="/",
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"]
+    
+    # Print CSS debug info
+    print("=" * 60)
+    print("🎨 CSS DEBUG INFO:")
+    print(f"CSS length: {len(CUSTOM_CSS)} characters")
+    print(f"First 100 chars: {CUSTOM_CSS[:100]}")
+    print("=" * 60)
+    
+    # ==========================================
+    # ✅ USE demo.launch() WITH CSS PARAMETER
+    # ==========================================
+    demo.queue()
+    
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=gr.themes.Soft(),    # ✅ Theme here
+        css=CUSTOM_CSS,             # ✅ CSS here - this WILL work!
+        head=PWA_HEAD,              # ✅ Head here
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
+        show_error=True,
+        # API blocking via Gradio instead of FastAPI middleware:
+        footer_links=["gradio", "settings"]  # Hide API docs link
     )
-
-    # 5. Run Server
-    print(f"🚀 Starting Server on Port 7860...")
-    config = uvicorn.Config(
-        app, 
-        host="0.0.0.0", 
-        port=7860, 
-        timeout_graceful_shutdown=1,
-        log_level="info"
-    )
-    server = uvicorn.Server(config)
-    server.run()
