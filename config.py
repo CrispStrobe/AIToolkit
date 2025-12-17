@@ -860,27 +860,15 @@ label span {
     }
     
     /* ===================================
-       TABS: ICON ONLY (WORKING METHOD)
+       TABS: ICON ONLY - JavaScript Required
        =================================== */
     
-    /* Target all tab buttons */
     .icon-nav > .tab-nav > button {
         padding: 10px 4px !important;
         min-width: 50px !important;
         height: 50px !important;
-        font-size: 0 !important;  /* Hide text */
-        overflow: hidden !important;
-        text-overflow: clip !important;
-        white-space: nowrap !important;
     }
     
-    /* Show ONLY first character (the emoji) */
-    .icon-nav > .tab-nav > button::first-letter {
-        font-size: 1.5rem !important;
-        line-height: 1 !important;
-    }
-    
-    /* Selected tab styling */
     .icon-nav > .tab-nav > button.selected {
         border-bottom: 3px solid #2563eb !important;
         background: #f3f4f6 !important;
@@ -891,38 +879,18 @@ label span {
     }
     
     /* ===================================
-       BUTTONS: ICON ONLY (WORKING METHOD)
+       BUTTONS: ICON ONLY - JavaScript Required
        =================================== */
     
-    /* Target buttons with mobile-icon-only class */
     .mobile-icon-only {
         min-width: 44px !important;
         height: 44px !important;
         padding: 8px !important;
-        font-size: 0 !important;  /* Hide all text */
-        overflow: hidden !important;
-        text-overflow: clip !important;
-        white-space: nowrap !important;
     }
     
-    /* Show ONLY first character (the emoji) */
-    .mobile-icon-only::first-letter {
-        font-size: 1.3rem !important;
-        line-height: 1 !important;
-    }
-    
-    /* Special styling for primary send button */
     #btn-send { 
-        background-color: #2563eb !important; 
-    }
-    
-    #btn-send::first-letter { 
-        color: white !important; 
-    }
-    
-    /* Secondary button styling */
-    .btn-secondary::first-letter { 
-        color: #374151 !important; 
+        background-color: #2563eb !important;
+        color: white !important;
     }
     
     /* ===================================
@@ -998,17 +966,9 @@ label span {
         height: 40px !important;
     }
     
-    .mobile-icon-only::first-letter {
-        font-size: 1.2rem !important;
-    }
-    
     .icon-nav > .tab-nav > button {
         min-width: 44px !important;
         padding: 8px 4px !important;
-    }
-    
-    .icon-nav > .tab-nav > button::first-letter {
-        font-size: 1.4rem !important;
     }
     
     .custom-badge { 
