@@ -8181,5 +8181,9 @@ if __name__ == "__main__":
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
         show_error=True,
         footer_links=[],  # ✅ Empty list - no footer links at all
-        
+        app_kwargs={ # 🔒 Disable OpenAPI/API documentation endpoints
+            "docs_url": None,
+            "redoc_url": None,
+            "openapi_url": None
+        }
     )
