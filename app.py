@@ -5,7 +5,7 @@
 # by the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-# /var/www/transkript_app/app.py
+# /var/www/transkript_app/app.py:
 
 import gradio as gr
 
