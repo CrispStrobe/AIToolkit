@@ -5,20 +5,11 @@
 # by the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 
-# /var/www/transkript_app/app.py:
+# /var/www/transkript_app/app.py
 
 import gradio as gr
-
 import os
-os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
-
 from typing import Tuple, List, Dict, Optional
-import glob
-
-# ==========================================
-# IMPORTS FROM MODULES
-# ==========================================
-from config import *
 
 # --- FORCE FFMPEG PATH ---
 # Explicitly tell Python where to find the tools
@@ -78,10 +69,6 @@ try:
 except ImportError:
     print("⚠️ WARNUNG: Bitte 'pip install openai pillow' ausführen.")
 
-from crypto_utils import crypto, HAS_PQ, KeyWrapper
-# Initialize the wrapper
-key_wrapper = KeyWrapper()
-
 # ==========================================
 # 🗄️ DATABASE SETUP
 # ==========================================
@@ -93,100 +80,10 @@ from datetime import datetime
 import bcrypt
 
 # Database setup
+DATABASE_URL = "sqlite:///akademie_suite.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
-def migrate_to_encrypted_db():
-    """
-    CRITICAL: Encrypt all existing plaintext data
-    Run this ONCE during deployment
-    """
-    db = SessionLocal()
-    
-    try:
-        logger.info("🔐 Starting database encryption migration...")
-        
-        # 1. Check if crypto is initialized
-        if not crypto.master_key:
-            logger.error("❌ Crypto not initialized! Cannot migrate.")
-            return False
-        
-        # 2. Migrate Transcriptions
-        trans = db.query(Transcription).filter(Transcription.is_encrypted == False).all()
-        logger.info(f"Migrating {len(trans)} transcriptions...")
-        for t in trans:
-            try:
-                if t.original_text:
-                    t.original_text = crypto.encrypt_text(t.original_text)
-                if t.translated_text:
-                    t.translated_text = crypto.encrypt_text(t.translated_text)
-                t.is_encrypted = True
-                t.encryption_metadata = json.dumps({"algorithm": "AES-256-GCM", "version": 1})
-            except Exception as e:
-                logger.error(f"Failed to encrypt transcription {t.id}: {e}")
-                continue  # Skip this one, continue with others
-        
-        # 3. Migrate Chat History
-        chats = db.query(ChatHistory).filter(ChatHistory.is_encrypted == False).all()
-        logger.info(f"Migrating {len(chats)} chats...")
-        for c in chats:
-            try:
-                if c.messages:
-                    c.messages = crypto.encrypt_text(c.messages)
-                c.is_encrypted = True
-                c.encryption_metadata = json.dumps({"algorithm": "AES-256-GCM", "version": 1})
-            except Exception as e:
-                logger.error(f"Failed to encrypt chat {c.id}: {e}")
-                continue
-        
-        # 4. Migrate Vision Results
-        visions = db.query(VisionResult).filter(VisionResult.is_encrypted == False).all()
-        logger.info(f"Migrating {len(visions)} vision results...")
-        for v in visions:
-            try:
-                if v.result:
-                    v.result = crypto.encrypt_text(v.result)
-                if v.prompt:
-                    v.prompt = crypto.encrypt_text(v.prompt)
-                v.is_encrypted = True
-                v.encryption_metadata = json.dumps({"algorithm": "AES-256-GCM", "version": 1})
-            except Exception as e:
-                logger.error(f"Failed to encrypt vision {v.id}: {e}")
-                continue
-        
-        # 5. Encrypt Generated Images (files) - Skipped by default (too large)
-        images = db.query(GeneratedImage).filter(GeneratedImage.is_encrypted == False).all()
-        logger.info(f"Skipping {len(images)} images (too large for migration)")
-        
-        db.commit()
-        logger.info("✅ Migration complete!")
-        return True
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"🔥 Migration failed: {e}")
-        return False
-    finally:
-        db.close()
-
-# Call on startup (only runs once due to is_encrypted flag)
-def ensure_encryption():
-    """Check if migration is needed"""
-    db = SessionLocal()
-    try:
-        # Check if any unencrypted data exists
-        unencrypted_count = db.query(Transcription).filter(
-            Transcription.is_encrypted == False
-        ).count()
-        
-        if unencrypted_count > 0:
-            logger.warning(f"⚠️ Found {unencrypted_count} unencrypted transcriptions. Starting migration...")
-            migrate_to_encrypted_db()
-    except Exception as e:
-        logger.error(f"Encryption check failed: {e}")
-    finally:
-        db.close()
 
 # ==========================================
 # 📊 DATABASE MODELS
@@ -198,14 +95,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
-
-    # FIELDS FOR KEY WRAPPING
-    salt = Column(String) # Stores the random salt for PBKDF2
-    encrypted_master_key = Column(Text) # Stores the encrypted User Master Key (Lockbox)
-
     email = Column(String, unique=True, index=True)
     is_admin = Column(Boolean, default=False)
-    is_media_manager = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -229,9 +120,6 @@ class ChatHistory(Base):
 
     user = relationship("User", back_populates="chat_history")
 
-    is_encrypted = Column(Boolean, default=False)
-    encryption_metadata = Column(Text)
-
 class Transcription(Base):
     __tablename__ = "transcriptions"
 
@@ -248,9 +136,6 @@ class Transcription(Base):
 
     user = relationship("User", back_populates="transcriptions")
 
-    is_encrypted = Column(Boolean, default=False)
-    encryption_metadata = Column(Text)  # JSON with algorithm info
-
 class VisionResult(Base):
     __tablename__ = "vision_results"
 
@@ -265,9 +150,6 @@ class VisionResult(Base):
 
     user = relationship("User", back_populates="vision_results")
 
-    is_encrypted = Column(Boolean, default=False)
-    encryption_metadata = Column(Text)
-
 class GeneratedImage(Base):
     __tablename__ = "generated_images"
 
@@ -280,24 +162,6 @@ class GeneratedImage(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="generated_images")
-
-    is_encrypted = Column(Boolean, default=False)
-    encryption_metadata = Column(Text)
-    encrypted_path = Column(String)  # Path to .enc file
-
-class FileUploadMetadata(Base):
-    """NEW TABLE: Track encrypted uploads"""
-    __tablename__ = "file_uploads"
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    original_filename = Column(String, nullable=False)
-    encrypted_path = Column(String, nullable=False)
-    encryption_metadata = Column(Text, nullable=False)  # JSON
-    upload_timestamp = Column(DateTime, default=datetime.utcnow)
-    file_hash = Column(String)  # SHA256 of original
-    
-    user = relationship("User", backref="uploaded_files")
 
 class CustomPrompt(Base):
     __tablename__ = "custom_prompts"
@@ -357,149 +221,6 @@ class UserSettings(Base):
     
     user = relationship("User", back_populates="settings")
 
-class DSFARecord(Base):
-    """Track Data Protection Impact Assessments"""
-    __tablename__ = "dsfa_records"
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    assessment_date = Column(DateTime, default=datetime.utcnow)
-    use_case = Column(String, nullable=False)  # "transcription", "chat", etc.
-    provider = Column(String, nullable=False)
-    risk_level = Column(String)  # "low", "medium", "high"
-    special_categories = Column(Boolean, default=False)  # Art. 9 DS-GVO
-    mitigation_measures = Column(Text)
-    approved_by = Column(String)
-    notes = Column(Text)
-    
-    user = relationship("User")
-
-def auto_dsfa_check(provider: str, use_case: str, data_type: str) -> dict:
-    """
-    Automatic DSFA trigger detection
-    Returns: {requires_dsfa: bool, risk_level: str, reason: str}
-    """
-    high_risk_providers = ["OpenAI", "Anthropic", "Poe"]  # US providers
-    high_risk_uses = ["transcription", "vision"]  # Likely to contain Art. 9 data
-    
-    requires = False
-    risk = "low"
-    reason = ""
-    
-    if provider in high_risk_providers:
-        requires = True
-        risk = "high"
-        reason = "US-Provider ohne EU-Datenverarbeitung"
-    
-    if use_case in high_risk_uses and "audio" in data_type.lower():
-        requires = True
-        risk = "high" if risk == "high" else "medium"
-        reason += " | Religiöse Inhalte wahrscheinlich (Gottesdienst)"
-    
-    return {
-        "requires_dsfa": requires,
-        "risk_level": risk,
-        "reason": reason
-    }
-
-class UserConfirmation(Base):
-    """Track user confirmations for warnings/dialogs"""
-    __tablename__ = "user_confirmations"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    confirmation_type = Column(String, nullable=False)  # "upload_warning", "us_provider_warning", etc.
-    confirmation_count = Column(Integer, default=0)
-    last_confirmed = Column(DateTime, default=datetime.utcnow)
-    permanently_dismissed = Column(Boolean, default=False)  # After 3 times
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    user = relationship("User", backref="confirmations")
-    
-    __table_args__ = (
-        UniqueConstraint('user_id', 'confirmation_type', name='_user_confirmation_uc'),
-    )
-
-def check_user_confirmation(user_id: int, confirmation_type: str) -> tuple:
-    """
-    Check if user needs to see confirmation dialog.
-    Returns: (show_dialog: bool, count: int)
-    """
-    db = SessionLocal()
-    try:
-        confirm = db.query(UserConfirmation).filter(
-            UserConfirmation.user_id == user_id,
-            UserConfirmation.confirmation_type == confirmation_type
-        ).first()
-        
-        if not confirm:
-            # First time - show dialog
-            return True, 0
-        
-        if confirm.permanently_dismissed:
-            # User has seen it 3+ times, don't show anymore
-            return False, confirm.confirmation_count
-        
-        if confirm.confirmation_count < 3:
-            # Still in the 3-time window
-            return True, confirm.confirmation_count
-        
-        # Automatically dismiss after 3 times
-        confirm.permanently_dismissed = True
-        db.commit()
-        return False, confirm.confirmation_count
-        
-    finally:
-        db.close()
-
-def record_user_confirmation(user_id: int, confirmation_type: str):
-    """Record that user has seen and confirmed a dialog"""
-    db = SessionLocal()
-    try:
-        confirm = db.query(UserConfirmation).filter(
-            UserConfirmation.user_id == user_id,
-            UserConfirmation.confirmation_type == confirmation_type
-        ).first()
-        
-        if not confirm:
-            confirm = UserConfirmation(
-                user_id=user_id,
-                confirmation_type=confirmation_type,
-                confirmation_count=1
-            )
-            db.add(confirm)
-        else:
-            confirm.confirmation_count += 1
-            confirm.last_confirmed = datetime.utcnow()
-            
-            if confirm.confirmation_count >= 3:
-                confirm.permanently_dismissed = True
-        
-        db.commit()
-        logger.info(f"User {user_id} confirmed '{confirmation_type}' (count: {confirm.confirmation_count})")
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error recording confirmation: {e}")
-    finally:
-        db.close()
-
-def reset_user_confirmation(user_id: int, confirmation_type: str):
-    """Admin function to reset confirmation tracking"""
-    db = SessionLocal()
-    try:
-        db.query(UserConfirmation).filter(
-            UserConfirmation.user_id == user_id,
-            UserConfirmation.confirmation_type == confirmation_type
-        ).delete()
-        db.commit()
-        return True
-    except:
-        db.rollback()
-        return False
-    finally:
-        db.close()
-
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -519,82 +240,15 @@ def verify_password(password: str, hashed: str) -> bool:
     """Verify a password against its hash"""
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-def authenticate_user(username, password):
-    """
-    Authenticate user AND create keychain if needed.
-    Returns a 'SafeUser' object that works after DB close.
-    """
+def authenticate_user(username: str, password: str):
+    """Authenticate user and return user object"""
     db = get_db()
-    try:
-        logger.info(f"🔐 AUTH ATTEMPT: User '{username}'")
-        
-        user = db.query(User).filter(User.username == username).first()
-        
-        if not user:
-            logger.error(f"❌ AUTH FAIL: User '{username}' not found in DB")
-            return None, None
-            
-        if not verify_password(password, user.password_hash):
-            logger.error(f"❌ AUTH FAIL: Password hash mismatch for '{username}'")
-            return None, None
-        
-        logger.info(f"✅ Password verified for '{username}'. Unlocking keychain...")
-
-        # 1. Migration Logic (User has no keys yet)
-        if not user.salt or not user.encrypted_master_key:
-            logger.info(f"🔄 Migrating user {username} to per-user encryption...")
-            try:
-                keychain = key_wrapper.create_user_keychain(password)
-                
-                # Wrap the GLOBAL key (legacy support)
-                from cryptography.fernet import Fernet
-                salt_bytes = base64.b64decode(keychain["salt"])
-                wrapper_key = key_wrapper.derive_wrapper_key(password, salt_bytes)
-                f = Fernet(wrapper_key)
-                encrypted_umk = f.encrypt(crypto.global_key)
-                
-                user.salt = keychain["salt"]
-                user.encrypted_master_key = encrypted_umk.decode('utf-8')
-                db.commit()
-                
-                umk = crypto.global_key
-            except Exception as e:
-                logger.error(f"Migration failed: {e}")
-                return None, None
-        else:
-            # 2. Normal Unlock
-            try:
-                umk = key_wrapper.unlock_user_keychain(
-                    password, 
-                    user.salt, 
-                    user.encrypted_master_key
-                )
-            except Exception as e:
-                logger.error(f"❌ KEYCHAIN ERROR: {e}")
-                umk = None
-        
-        if not umk:
-            logger.error(f"❌ AUTH FAIL: Could not decrypt Master Key for '{username}'")
-            return None, None
-
-        logger.info(f"🔓 Login successful for '{username}'")
-
-        # 3. Create safe object
-        class SafeUser: pass
-        
-        safe_user = SafeUser()
-        safe_user.id = user.id
-        safe_user.username = user.username
-        safe_user.is_admin = user.is_admin
-        safe_user.is_media_manager = getattr(user, 'is_media_manager', False)
-        
-        return safe_user, umk
-
-    except Exception as e:
-        logger.exception(f"🔥 Auth Critical Error: {e}")
-        return None, None
-    finally:
+    user = db.query(User).filter(User.username == username).first()
+    if user and verify_password(password, user.password_hash):
         db.close()
+        return user
+    db.close()
+    return None
 
 def create_default_users():
     """Create default users if they don't exist"""
@@ -630,173 +284,16 @@ def create_default_users():
     finally:
         db.close()
 
-def save_transcription(user_id: int, provider: str, model: str, original: str,
-                       translated: str = None, language: str = None, filename: str = None, 
-                       title: str = None, user_state=None): # <-- Add user_state arg
-    db = SessionLocal()
-    try:
-        # GET KEY FROM SESSION
-        umk = user_state.get('umk') if user_state else None
-        if not umk: 
-            # Fallback for system operations if needed, but risky
-            logger.warning("No user session key found, falling back to global")
-            umk = crypto.global_key
-
-        encrypted_original = crypto.encrypt_text(original, key=umk) if original else None
-        encrypted_translated = crypto.encrypt_text(translated, key=umk) if translated else None
-            
-        trans = Transcription(
-            user_id=user_id,
-            provider=provider,
-            model=model or "N/A",
-            original_text=encrypted_original,
-            translated_text=encrypted_translated,
-            language=language,
-            filename=filename,
-            title=title or f"Transkript {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            is_encrypted=True,
-            encryption_metadata=json.dumps({"algorithm": "AES-256-GCM", "version": 2})
-        )
-        db.add(trans)
-        db.commit()
-        return trans.id
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error saving transcription: {str(e)}")
-        raise
-    finally:
-        db.close()
-
-def get_decrypted_transcription(trans_id: int, user_id: int, user_state=None):
-    """Load and decrypt using user session key"""
-    db = SessionLocal()
-    try:
-        trans = db.query(Transcription).filter(
-            Transcription.id == trans_id,
-            Transcription.user_id == user_id
-        ).first()
-        
-        if not trans: return None
-        
-        # GET KEY
-        umk = user_state.get('umk') if user_state else crypto.global_key
-        
-        if trans.is_encrypted:
-            try:
-                # Try decrypting with Session Key
-                decrypted = crypto.decrypt_text(trans.original_text, key=umk)
-                
-                # Check validity (AES-GCM auth tag will fail if key is wrong)
-                if decrypted == "[Decryption Failed]" and umk != crypto.global_key:
-                    # Fallback: Data might be old (encrypted with global key)
-                    decrypted = crypto.decrypt_text(trans.original_text, key=crypto.global_key)
-                
-                trans.original_text = decrypted
-                
-                # 4. Handle Translation Text (same logic)
-                if trans.translated_text:
-                    decrypted_trans = crypto.decrypt_text(trans.translated_text, key=umk)
-                    if decrypted_trans == "[Decryption Failed]" and umk != crypto.global_key:
-                        decrypted_trans = crypto.decrypt_text(trans.translated_text, key=crypto.global_key)
-                    trans.translated_text = decrypted_trans
-
-                    
-            except Exception as e:
-                logger.error(f"Decryption failed: {e}")
-                trans.original_text = "[Fehler: Daten konnten nicht entschlüsselt werden]"
-        
-        return trans
-    finally:
-        db.close()
-
-def get_decrypted_chat(chat_id: int, user_id: int, user_state=None):
-    db = SessionLocal()
-    try:
-        chat = db.query(ChatHistory).filter(ChatHistory.id == chat_id, ChatHistory.user_id == user_id).first()
-        if not chat: return None
-        
-        # GET KEY
-        umk = user_state.get('umk') if user_state else None
-        
-        if chat.is_encrypted:
-            # Try decrypting with Session Key
-            try:
-                # 2. Try decrypting with User Key first
-                decrypted_json = crypto.decrypt_text(chat.messages, key=umk)
-                
-                # 3. If that failed (returns specific error string), try Global Key
-                # This handles legacy data migration automatically
-                if decrypted_json == "[Decryption Failed]" and umk != crypto.global_key:
-                    # Fallback: Try global key (for data created before migration)
-                    decrypted_json = crypto.decrypt_text(chat.messages, key=crypto.global_key)
-                
-                chat.messages = decrypted_json
-            except:
-                chat.messages = "[]"
-        
-        return chat
-    finally:
-        db.close()
-
-def change_password_secure(user_id, old_password, new_password):
-    """Changes password and re-wraps the Master Key without touching data"""
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user: return False, "User missing"
-        
-        # Verify old password hash first
-        if not verify_password(old_password, user.password_hash):
-            return False, "Altes Passwort falsch"
-            
-        # RE-WRAP MAGIC
-        if user.salt and user.encrypted_master_key:
-            try:
-                new_keychain = key_wrapper.rewrap_keychain(
-                    old_password, 
-                    new_password, 
-                    user.salt, 
-                    user.encrypted_master_key
-                )
-                
-                user.salt = new_keychain["salt"]
-                user.encrypted_master_key = new_keychain["encrypted_master_key"]
-            except ValueError:
-                return False, "Kryptographischer Fehler beim Umschlüsseln."
-        else:
-            # Legacy user migration happens here if they change password!
-            # If user has no keychain yet, create one using the Global Key 
-            # (Assuming existing data is currently encrypted with Global Key)
-            pass 
-
-        # Standard password update
-        user.password_hash = hash_password(new_password)
-        db.commit()
-        return True, "✅ Passwort geändert & Key neu verschlüsselt (Daten bleiben sicher)"
-    except Exception as e:
-        db.rollback()
-        return False, f"Fehler: {e}"
-    finally:
-        db.close()
-
-def save_chat_history(user_id: int, provider: str, model: str, messages: list, title: str = None, user_state=None):   
+def save_chat_history(user_id: int, provider: str, model: str, messages: list, title: str = None):
     """Save chat conversation to database"""
     db = SessionLocal()
     try:
-        # Grab the key from the session state
-        umk = user_state.get('umk') if user_state else crypto.global_key
-        
-        messages_json = json.dumps(messages)
-        encrypted_messages = crypto.encrypt_text(messages_json, key=umk)
-
         chat = ChatHistory(
             user_id=user_id,
             provider=provider,
             model=model,
-            messages=encrypted_messages,
-            title=title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            is_encrypted=True,
-            encryption_metadata=json.dumps({"algorithm": "AES-256-GCM-UserKey", "version": 2})
+            messages=json.dumps(messages),
+            title=title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
         db.add(chat)
         db.commit()
@@ -810,52 +307,26 @@ def save_chat_history(user_id: int, provider: str, model: str, messages: list, t
     finally:
         db.close()
 
-def generate_ai_label(provider: str, model: str) -> str:
-    """Generate standardized label for AI-generated content"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    compliance = PROVIDERS.get(provider, {}).get("badge", "Unbekannt")
-    
-    return f"""
----
-**🤖 KI-Generiert**
-- **Provider:** {provider} ({compliance})
-- **Modell:** {model}
-- **Datum:** {timestamp}
-
-*Dieser Inhalt wurde mit KI-Unterstützung erstellt und durch Menschen geprüft.*
----
-"""
-
 def save_transcription(user_id: int, provider: str, model: str, original: str,
-                       translated: str = None, language: str = None, filename: str = None, 
-                       title: str = None, user_state=None): # <-- Add user_state arg
+                      translated: str = None, language: str = None, filename: str = None, title: str = None):
+    """Save transcription to database"""
     db = SessionLocal()
     try:
-        # GET KEY FROM SESSION
-        umk = user_state.get('umk') if user_state else None
-        if not umk: 
-            # Fallback for system operations if needed, but risky
-            logger.warning("No user session key found, falling back to global")
-            umk = crypto.global_key
-
-        encrypted_original = crypto.encrypt_text(original, key=umk) if original else None
-        encrypted_translated = crypto.encrypt_text(translated, key=umk) if translated else None
-            
         trans = Transcription(
             user_id=user_id,
             provider=provider,
             model=model or "N/A",
-            original_text=encrypted_original,
-            translated_text=encrypted_translated,
+            original_text=original,
+            translated_text=translated,
             language=language,
             filename=filename,
-            title=title or f"Transkript {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            is_encrypted=True,
-            encryption_metadata=json.dumps({"algorithm": "AES-256-GCM", "version": 2})
+            title=title or f"Transkript {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
         db.add(trans)
         db.commit()
-        return trans.id
+        db.refresh(trans)  # Refresh to get the ID
+        trans_id = trans.id  # Get ID BEFORE closing session
+        return trans_id
     except Exception as e:
         db.rollback()
         logger.exception(f"Error saving transcription: {str(e)}")
@@ -863,60 +334,17 @@ def save_transcription(user_id: int, provider: str, model: str, original: str,
     finally:
         db.close()
 
-def get_decrypted_vision(vision_id: int, user_id: int, user_state=None):
-    """Load and decrypt vision result"""
-    db = SessionLocal()
-    try:
-        vis = db.query(VisionResult).filter(
-            VisionResult.id == vision_id,
-            VisionResult.user_id == user_id
-        ).first()
-        
-        if not vis:
-            return None
-        
-        # Get key from session
-        umk = user_state.get('umk') if user_state else crypto.global_key
-        
-        if vis.is_encrypted:
-            try:
-                # Decrypt with user key, fallback to global
-                vis.result = crypto.decrypt_text(vis.result, key=umk)
-                if vis.result == "[Decryption Failed]" and umk != crypto.global_key:
-                    vis.result = crypto.decrypt_text(vis.result, key=crypto.global_key)
-                
-                if vis.prompt:
-                    vis.prompt = crypto.decrypt_text(vis.prompt, key=umk)
-                    if vis.prompt == "[Decryption Failed]":
-                        vis.prompt = crypto.decrypt_text(vis.prompt, key=crypto.global_key)
-            except Exception as e:
-                logger.error(f"Vision decryption failed: {e}")
-                vis.result = "[Fehler: Entschlüsselung fehlgeschlagen]"
-        
-        return vis
-    finally:
-        db.close()
-
-def save_vision_result(user_id: int, provider: str, model: str, prompt: str, result: str, image_path: str = None, user_state=None):
+def save_vision_result(user_id: int, provider: str, model: str, prompt: str, result: str, image_path: str = None):
     """Save vision analysis to database"""
     db = SessionLocal()
     try:
-        # Get Key
-        umk = user_state.get('umk') if user_state else crypto.global_key
-        
-        # Encrypt result and prompt manually before creating object
-        enc_result = crypto.encrypt_text(result, key=umk)
-        enc_prompt = crypto.encrypt_text(prompt, key=umk)
-        
         vision = VisionResult(
             user_id=user_id,
             provider=provider,
             model=model,
-            prompt=enc_prompt,
-            result=enc_result,
-            is_encrypted=True,
-            image_path=image_path,
-            encryption_metadata=json.dumps({"algorithm": "AES-256-GCM-UserKey", "version": 2})
+            prompt=prompt,
+            result=result,
+            image_path=image_path
         )
         db.add(vision)
         db.commit()
@@ -930,18 +358,15 @@ def save_vision_result(user_id: int, provider: str, model: str, prompt: str, res
     finally:
         db.close()
 
-def save_generated_image(user_id: int, provider: str, model: str, prompt: str, image_path: str, user_state=None):
+def save_generated_image(user_id: int, provider: str, model: str, prompt: str, image_path: str):
     """Save generated image to database"""
     db = SessionLocal()
     try:
-        umk = user_state.get('umk') if user_state else crypto.global_key
-        enc_prompt = crypto.encrypt_text(prompt, key=umk)
         img = GeneratedImage(
             user_id=user_id,
             provider=provider,
             model=model,
-            prompt=enc_prompt,
-            is_encrypted=True,
+            prompt=prompt,
             image_path=image_path
         )
         db.add(img)
@@ -1139,6 +564,16 @@ def get_user_chat_history(user_id: int, limit: int = 50):
     db.close()
     return results
 
+def get_single_chat(chat_id: int, user_id: int):
+    """Get a single chat conversation"""
+    db = get_db()
+    chat = db.query(ChatHistory).filter(
+        ChatHistory.id == chat_id,
+        ChatHistory.user_id == user_id
+    ).first()
+    db.close()
+    return chat
+
 def get_user_vision_results(user_id: int, limit: int = 50):
     """Get user's vision results"""
     db = get_db()
@@ -1180,264 +615,17 @@ def ensure_database_schema():
     except Exception as e:
         logger.exception(f"Database schema check failed: {e}")
 
-def migrate_add_media_manager_column():
-    """Add is_media_manager column to existing users table"""
-    try:
-        from sqlalchemy import inspect, text
-        
-        inspector = inspect(engine)
-        columns = [col['name'] for col in inspector.get_columns('users')]
-        
-        if 'is_media_manager' not in columns:
-            logger.info("Adding is_media_manager column to users table...")
-            with engine.connect() as conn:
-                conn.execute(text("ALTER TABLE users ADD COLUMN is_media_manager BOOLEAN DEFAULT 0"))
-                conn.commit()
-            logger.info("✅ Migration complete")
-        else:
-            logger.info("is_media_manager column already exists")
-    except Exception as e:
-        logger.error(f"Migration failed: {e}")
-
 # Auto-Migration
 ensure_database_schema()
-migrate_add_media_manager_column()
 
 # Initialize default users
 create_default_users()
 
-# ==========================================
-# 🎬 YOUTUBE CHANNEL WHITELIST
-# ==========================================
-
-def extract_youtube_channel_identifier(url):
-    """
-    Extract channel identifier from various YouTube URL formats.
-    
-    Supports:
-    - youtube.com/user/USERNAME
-    - youtube.com/@HANDLE
-    - youtube.com/c/CUSTOMNAME
-    - youtube.com/channel/CHANNEL_ID
-    - youtube.com/CUSTOMNAME (direct)
-    - youtu.be/VIDEO (extracts from video metadata if needed)
-    """
-    import re
-    from urllib.parse import urlparse, parse_qs
-    
-    try:
-        parsed = urlparse(url)
-        path = parsed.path
-        
-        # Pattern 1: /user/USERNAME
-        match = re.search(r'/user/([^/?&#]+)', path)
-        if match:
-            return match.group(1)
-        
-        # Pattern 2: /@HANDLE
-        match = re.search(r'/@([^/?&#]+)', path)
-        if match:
-            return f"@{match.group(1)}"
-        
-        # Pattern 3: /c/CUSTOMNAME
-        match = re.search(r'/c/([^/?&#]+)', path)
-        if match:
-            return match.group(1)
-        
-        # Pattern 4: /channel/CHANNEL_ID
-        match = re.search(r'/channel/([^/?&#]+)', path)
-        if match:
-            return match.group(1)
-        
-        # Pattern 5: Direct custom URL (e.g., /grenzfragen)
-        match = re.search(r'/([^/?&#]+)$', path)
-        if match and match.group(1) not in ['watch', 'embed', 'v', 'shorts']:
-            return match.group(1)
-        
-        # Pattern 6: Video URL - try to get channel from API
-        if '/watch' in path or 'youtu.be' in parsed.netloc:
-            try:
-                import yt_dlp
-                
-                cookie_file = "/var/www/transkript_app/cookies.txt"
-                
-                ydl_opts = {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': True,
-                    # WICHTIG: User-Agent setzen, damit wir wie ein Browser aussehen
-                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                }
-                
-                if os.path.exists(cookie_file):
-                    ydl_opts['cookiefile'] = cookie_file
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    
-                    channel_id = info.get('channel_id')
-                    if channel_id: return channel_id
-                    
-                    uploader_id = info.get('uploader_id')
-                    if uploader_id: return uploader_id
-                    
-                    channel_url = info.get('channel_url', '')
-                    if channel_url:
-                        return extract_youtube_channel_identifier(channel_url)
-                        
-            except Exception as e:
-                logger.warning(f"Could not extract channel from video URL: {e}")
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error extracting channel identifier: {e}")
-        return None
-
-def is_youtube_channel_whitelisted(url):
-    """Check if YouTube URL is from a whitelisted channel"""
-    if not is_youtube_url(url):
-        return True  # Non-YouTube URLs are allowed by default (can be changed)
-    
-    channel_id = extract_youtube_channel_identifier(url)
-    
-    if not channel_id:
-        logger.warning(f"Could not extract channel from URL: {url}")
-        return False
-    
-    # Normalize for comparison
-    channel_id_lower = channel_id.lower()
-    
-    for whitelisted in YOUTUBE_CHANNEL_WHITELIST:
-        whitelisted_lower = whitelisted.lower()
-        
-        # Direct match or partial match (for handles with/without @)
-        if (channel_id_lower == whitelisted_lower or 
-            channel_id_lower == f"@{whitelisted_lower}" or
-            f"@{channel_id_lower}" == whitelisted_lower):
-            logger.info(f"✅ Channel '{channel_id}' is whitelisted")
-            return True
-    
-    logger.warning(f"❌ Channel '{channel_id}' not in whitelist")
-    return False
-
-def download_from_url(url, download_video=False, save_to_storage=True, user_state=None):
-    """
-    Download audio/video from URL with role-based permissions and whitelist.
-    
-    Permissions:
-    - Admin: All URLs
-    - Media Manager: All URLs
-    - Regular User: Only whitelisted YouTube channels + non-YouTube URLs
-
-    ⚠️ RECHTLICHER HINWEIS:
-    Diese Funktion darf nur für eigene oder lizenzierte Inhalte verwendet werden.
-    Der Nutzer trägt die volle Verantwortung für die Einhaltung der Urheberrechte.
-    """
-
-    import subprocess
-    import requests
-    from urllib.parse import urlparse
-    
-    # --- AUTHENTICATION CHECK ---
-    if not user_state or not user_state.get("id"):
-        return False, None, "❌ Nicht authentifiziert"
-    
-    username = user_state.get("username", "unknown")
-    is_admin = user_state.get("is_admin", False)
-    is_media_manager = user_state.get("is_media_manager", False)
-    
-    # --- PERMISSION CHECK ---
-    if is_youtube_url(url):
-        # Admins and Media Managers can download everything
-        if not (is_admin or is_media_manager):
-            # Regular users: Check whitelist
-            if not is_youtube_channel_whitelisted(url):
-                channel_id = extract_youtube_channel_identifier(url)
-                logger.warning(f"🚫 BLOCKED: User '{username}' tried to download from non-whitelisted channel: {channel_id}")
-                return False, None, (
-                    f"❌ Kanal nicht freigegeben.\n\n"
-                    f"Dieser YouTube-Kanal ist nicht in der Whitelist.\n"
-                    f"Erkannter Kanal: {channel_id or 'unbekannt'}\n\n"
-                    f"Freigegebene Kanäle:\n" + 
-                    "\n".join(f"  • {ch}" for ch in YOUTUBE_CHANNEL_WHITELIST[:5]) +
-                    f"\n\n💡 Kontaktiere einen Administrator oder Medienverwalter."
-                )
-            
-            # Whitelisted channel - log and proceed
-            logger.info(f"✅ ALLOWED: User '{username}' downloading from whitelisted channel")
-        else:
-            # Admin/Media Manager - log but allow
-            role = "Admin" if is_admin else "Medienverwalter"
-            logger.info(f"✅ ALLOWED: {role} '{username}' downloading: {url}")
-    
-    # --- AUDIT LOG ---
-    logger.warning(f"📥 DOWNLOAD: User='{username}' | Role={'Admin' if is_admin else 'MediaMgr' if is_media_manager else 'User'} | URL={url} | Video={download_video}")
-    
-    # Determine output directory
-    if save_to_storage and user_state.get("username"):
-        output_dir = get_user_storage_path(user_state["username"])
-        if not output_dir:
-            output_dir = tempfile.gettempdir()
-            logger.warning("Storage path unavailable, using temp")
-    else:
-        output_dir = tempfile.gettempdir()
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # --- METHOD 1: YT-DLP (Best for YouTube/streaming) ---
-    if is_youtube_url(url):
-        logger.info(f"Attempting yt-dlp download for YouTube: {url}")
-        result = download_with_yt_dlp(url, output_dir, download_video)
-        
-        if result and os.path.exists(result):
-            size_mb = os.path.getsize(result) / (1024*1024)
-            return True, result, f"✅ yt-dlp hat heruntergeladen: ({size_mb:.1f} MB)"
-        else:
-            # STOP HERE! Do not fall back to FFmpeg/Direct for YouTube URLs
-            # because they will just download the 'Sign In' HTML page.
-            return False, None, "❌ YouTube-Download fehlgeschlagen (Cookie/Login erforderlich)"
-    
-    # 2. Non-YouTube Handling (Flexible)
-    # Try yt-dlp first (it handles Twitch, Vimeo, direct files too)
-    try:
-        result = download_with_yt_dlp(url, output_dir, download_video)
-        if result and os.path.exists(result):
-            return True, result, "✅ yt-dlp erfolg"
-    except: pass
-
-    # Fallback 1: FFmpeg (Good for direct streams)
-    if not download_video:
-        try:
-            logger.info(f"Attempting ffmpeg download: {url}")
-            result = download_with_ffmpeg(url, output_dir)
-            if result and os.path.exists(result):
-                return True, result, "✅ ffmpeg erfolg"
-        except Exception as e:
-            logger.warning(f"ffmpeg failed: {e}")
-
-    # Fallback 2: Direct HTTP (Only for actual files)
-    try:
-        logger.info(f"Attempting direct HTTP download: {url}")
-        result = download_with_requests(url, output_dir)
-        if result and os.path.exists(result):
-            # Sanity check: Ensure it's not a tiny HTML error page
-            if os.path.getsize(result) < 5000:
-                with open(result, 'r', errors='ignore') as f:
-                    head = f.read(500)
-                    if "<!DOCTYPE html" in head or "<html" in head:
-                         os.remove(result)
-                         return False, None, "❌ Fehler: URL lieferte HTML statt Audio"
-            
-            return True, result, "✅ HTTP download erfolg"
-    except Exception as e:
-        logger.warning(f"HTTP download failed: {e}")
-
-    return False, None, "❌ Alle Methoden fehlgeschlagen"
 
 # ==========================================
 # 📦 STORAGE BOX HELPER
 # ==========================================
+STORAGE_MOUNT_POINT = "/mnt/akademie_storage"
 
 def get_user_storage_path(username):
     """
@@ -1524,13 +712,13 @@ def get_storage_root(user_state=None):
 
 import shutil
 
+JOB_STATE_DIR = "/var/www/transkript_app/jobs"
 os.makedirs(JOB_STATE_DIR, exist_ok=True)
 
-def create_job_manifest(job_id, audio_path, provider, model, chunks, lang, prompt, temp, user_id):
-    """Save job state to disk with User ID"""
+def create_job_manifest(job_id, audio_path, provider, model, chunks, lang, prompt, temp):
+    """Save job state to disk"""
     manifest = {
         "job_id": job_id,
-        "user_id": user_id,  # Track ownership
         "audio_path": audio_path,
         "provider": provider,
         "model": model,
@@ -1560,8 +748,8 @@ def update_job_chunk_status(job_id, chunk_index, status, text=None):
     with open(path, "w") as f:
         json.dump(manifest, f)
 
-def get_failed_jobs(user_id):
-    """List incomplete jobs filtered by User ID"""
+def get_failed_jobs():
+    """List incomplete jobs"""
     jobs = []
     if not os.path.exists(JOB_STATE_DIR): return []
     
@@ -1570,11 +758,6 @@ def get_failed_jobs(user_id):
             try:
                 with open(os.path.join(JOB_STATE_DIR, f), "r") as jf:
                     data = json.load(jf)
-                    
-                    # Check User ID match
-                    if data.get("user_id") != user_id:
-                        continue
-                        
                     # Check if any chunk is not 'done'
                     pending = sum(1 for c in data["chunks"] if c["status"] != "done")
                     if pending > 0:
@@ -1674,193 +857,40 @@ def split_audio(filepath, chunk_length_ms=600000): # 10 minutes default (safe fo
     except Exception as e:
         logger.error(f"Error splitting audio: {e}")
         return None
-
-# ==========================================
-# URL DOWNLOAD HELPERS
-# ==========================================
-
-def is_youtube_url(url):
-    """Check if URL is from YouTube"""
-    youtube_patterns = [
-        r'(youtube\.com/watch\?v=)',
-        r'(youtu\.be/)',
-        r'(youtube\.com/embed/)',
-        r'(youtube\.com/v/)'
-    ]
-    return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
-
-def download_with_yt_dlp(url, output_dir, keep_video=False):
-    """Download with yt-dlp using cookies, Node.js and optimized client settings"""
-    try:
-        import yt_dlp
-        
-        cookie_file = "/var/www/transkript_app/cookies.txt"
-        
-        ydl_opts = {
-            'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
-            'quiet': False,
-            'no_warnings': False,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'no_color': True,
-            
-            # WICHTIG: 'js_runtimes' Zeile LÖSCHEN! 
-            # yt-dlp findet das installierte Node.js automatisch.
-            
-            # iOS Client erzwingen (beste Umgehung für Bot-Sperre derzeit)
-            'extractor_args': {'youtube': {'player_client': ['ios']}},
-        }
-
-        # Cookies laden
-        if os.path.exists(cookie_file):
-            logger.info(f"🍪 Loading cookies from: {cookie_file}")
-            ydl_opts['cookiefile'] = cookie_file
-        else:
-            logger.warning("⚠️ No cookies.txt found!")
-
-        # Format Einstellungen
-        if keep_video:
-            ydl_opts.update({
-                'format': 'bestvideo+bestaudio/best',
-                'merge_output_format': 'mp4',
-            })
-        else:
-            ydl_opts.update({
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-            })
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            if not info:
-                logger.error("❌ yt-dlp failed: Download blocked or invalid URL.")
-                return None
-
-            title = info.get('title', 'video_download')
-            safe_title = re.sub(r'[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]', '_', title)
-            ext = 'mp4' if keep_video else 'mp3'
-            
-            # Datei suchen
-            expected_file = os.path.join(output_dir, f"{safe_title}.{ext}")
-            if os.path.exists(expected_file):
-                return expected_file
-            
-            # Fallback Suche
-            import glob
-            search_pattern = os.path.join(output_dir, f"{safe_title}*.{ext}")
-            found = glob.glob(search_pattern)
-            if found:
-                return found[0]
-
-        return None
-        
-    except Exception as e:
-        logger.error(f"yt-dlp error: {e}")
-        return None
-
-def download_with_ffmpeg(url, output_dir):
-    """Download audio using ffmpeg directly"""
-    try:
-        import subprocess
-        
-        # Generate output filename
-        output_file = os.path.join(output_dir, f"download_{int(time.time())}.mp3")
-        
-        cmd = [
-            'ffmpeg',
-            '-i', url,
-            '-vn',  # No video
-            '-acodec', 'libmp3lame',
-            '-ab', '192k',
-            '-y',  # Overwrite
-            output_file
-        ]
-        
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=300,  # 5 minutes
-            text=True
-        )
-        
-        if result.returncode == 0 and os.path.exists(output_file):
-            return output_file
-        
-        logger.warning(f"ffmpeg stderr: {result.stderr[:500]}")
-        return None
-        
-    except FileNotFoundError:
-        logger.error("ffmpeg not found in PATH")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.error("ffmpeg timeout")
-        return None
-    except Exception as e:
-        logger.error(f"ffmpeg error: {e}")
-        return None
-
-def download_with_requests(url, output_dir):
-    """Simple HTTP download for direct file URLs"""
-    try:
-        import requests
-        from urllib.parse import urlparse, unquote
-        
-        # Get filename from URL
-        parsed = urlparse(url)
-        filename = os.path.basename(unquote(parsed.path))
-        
-        if not filename or '.' not in filename:
-            filename = f"download_{int(time.time())}.mp3"
-        
-        output_file = os.path.join(output_dir, filename)
-        
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
-        
-        with open(output_file, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-            return output_file
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"HTTP download error: {e}")
-        return None
-
+    
 # ==========================================
 # 👥 USER MANAGEMENT FUNCTIONS
 # ==========================================
 
 def create_user(username, password, email, is_admin=False):
-    """Create a new user with their own Encryption Keychain"""
+    """Create a new user"""
     db = SessionLocal()
     try:
-        if db.query(User).filter(User.username == username).first():
+        # Check if username already exists
+        existing_user = db.query(User).filter(User.username == username).first()
+        if existing_user:
             return False, "❌ Benutzername existiert bereits"
-
-        # 1. Generate Keychain (Returns: salt, encrypted_master_key, decrypted_master_key)
-        keychain = key_wrapper.create_user_keychain(password)
-
+        
+        # Check if email already exists
+        if email:
+            existing_email = db.query(User).filter(User.email == email).first()
+            if existing_email:
+                return False, "❌ E-Mail wird bereits verwendet"
+        
+        # Create new user
         new_user = User(
             username=username,
             password_hash=hash_password(password),
             email=email,
-            is_admin=is_admin,
-            # Store the Lockbox
-            salt=keychain["salt"],
-            encrypted_master_key=keychain["encrypted_master_key"]
+            is_admin=is_admin
         )
         db.add(new_user)
         db.commit()
-        return True, f"✅ Benutzer '{username}' erstellt (Secure Keychain Active)"
+        db.refresh(new_user)
+        
+        logger.info(f"User created: {username} (Admin: {is_admin})")
+        return True, f"✅ Benutzer '{username}' erfolgreich erstellt"
+        
     except Exception as e:
         db.rollback()
         logger.exception(f"Error creating user: {str(e)}")
@@ -1919,27 +949,20 @@ def rename_user(user_id, new_username):
     finally:
         db.close()
 
-def reset_user_password(user_id, new_password, admin_aware=False):
-    """Admin password reset - WARNING: User data will become inaccessible!"""
-    if not admin_aware:
-        return False, "⚠️ WARNUNG: Passwort-Reset macht verschlüsselte Daten unzugänglich. Nutzer muss Daten neu erstellen."
-    
+def reset_user_password(user_id, new_password):
+    """Reset a user's password"""
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             return False, "❌ Benutzer nicht gefunden"
         
-        # Generate NEW keychain (old data becomes inaccessible)
-        new_keychain = key_wrapper.create_user_keychain(new_password)
-        
         user.password_hash = hash_password(new_password)
-        user.salt = new_keychain["salt"]
-        user.encrypted_master_key = new_keychain["encrypted_master_key"]
-        
         db.commit()
         
-        return True, "✅ Passwort zurückgesetzt. WICHTIG: Alte Daten sind nicht mehr zugänglich!"
+        logger.info(f"Password reset for user: {user.username}")
+        return True, f"✅ Passwort für '{user.username}' zurückgesetzt"
+        
     except Exception as e:
         db.rollback()
         logger.exception(f"Error resetting password: {str(e)}")
@@ -1971,55 +994,6 @@ def toggle_admin_status(user_id, current_user_id):
         db.rollback()
         logger.exception(f"Error toggling admin status: {str(e)}")
         return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def toggle_media_manager_status(user_id, current_user_id):
-    """Toggle media manager status for a user (only admins can do this)"""
-    db = SessionLocal()
-    try:
-        # Prevent changing own media manager status
-        if user_id == current_user_id:
-            return False, "❌ Du kannst deinen eigenen Medienverwalter-Status nicht ändern"
-        
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return False, "❌ Benutzer nicht gefunden"
-        
-        # Toggle status
-        user.is_media_manager = not user.is_media_manager
-        db.commit()
-        
-        status = "Medienverwalter" if user.is_media_manager else "Normaler Benutzer"
-        logger.info(f"Media manager status changed for {user.username}: {status}")
-        return True, f"✅ '{user.username}' ist jetzt: {status}"
-        
-    except Exception as e:
-        db.rollback()
-        logger.exception(f"Error toggling media manager status: {str(e)}")
-        return False, f"🔥 Fehler: {str(e)}"
-    finally:
-        db.close()
-
-def get_all_users():
-    """Get all users for admin panel (updated for media manager column)"""
-    db = SessionLocal()
-    try:
-        users = db.query(User).order_by(User.created_at.desc()).all()
-        data = []
-        for u in users:
-            role = "👑 Admin" if u.is_admin else ("🎬 Medienverwalter" if u.is_media_manager else "👤 User")
-            data.append([
-                u.id,
-                u.username,
-                u.email or "—",
-                role,  # Updated to show media manager
-                u.created_at.strftime("%Y-%m-%d %H:%M")
-            ])
-        return data
-    except Exception as e:
-        logger.exception(f"Error getting users: {str(e)}")
-        return []
     finally:
         db.close()
 
@@ -2319,17 +1293,631 @@ def get_default_model_for_user(user_id, provider):
 # ⚙️ ZENTRALE KONFIGURATION
 # ==========================================
 
-def is_provider_allowed(provider_name: str) -> tuple:
-    """
-    Returns: (allowed: bool, reason: str)
-    """
-    if not EU_ONLY_MODE:
-        return True, ""
+DEFAULT_CHAT_PROVIDER = "Mistral"
+DEFAULT_CHAT_MODEL = "mistral-large-latest"
+
+# API Keys (aus Environment oder direkt hier eintragen)
+API_KEYS = {
+    "GLADIA": os.environ.get("GLADIA_API_KEY", "your_key"),
+    "SCALEWAY": os.environ.get("SCALEWAY_API_KEY", "your_key"),
+    "NEBIUS": os.environ.get("NEBIUS_API_KEY", "your_key"),
+    "MISTRAL": os.environ.get("MISTRAL_API_KEY", "your_key"),
+    "OPENROUTER": os.environ.get("OPENROUTER_API_KEY", "your_key"),
+    "GROQ": os.environ.get("GROQ_API_KEY", "your_key"),
+    "POE": os.environ.get("POE_API_KEY", "your_poe_key_here"),
+    "DEEPGRAM": os.environ.get("DEEPGRAM_API_KEY", "your_key"), 
+    "ASSEMBLYAI": os.environ.get("ASSEMBLYAI_API_KEY", "your_key"),
+    "OPENAI": os.environ.get("OPENAI_API_KEY", "your_key"),
+    "COHERE": os.environ.get("COHERE_API_KEY", "your_key"),
+    "TOGETHER": os.environ.get("TOGETHER_API_KEY", "your_key"),
+    "OVH": os.environ.get("OVH_API_KEY", "your_key"),
+    "CEREBRAS": os.environ.get("CEREBRAS_API_KEY", "your_key"),
+    "GOOGLEAI": os.environ.get("GOOGLEAI_API_KEY", "your_key"),
+    "ANTHROPIC": os.environ.get("ANTHROPIC_API_KEY", "your_key"),
+}
+
+# Provider-Datenbank (Modelle, Endpoints, Compliance)
+PROVIDERS = {
+    "Scaleway": {
+        "base_url": "https://api.scaleway.ai/v1",
+        "key_name": "SCALEWAY",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
+        "chat_models": [
+            "gpt-oss-120b", 
+            "mistral-small-3.2-24b-instruct-2506", 
+            "gemma-3-27b-it", 
+            "qwen3-235b-a22b-instruct-2507", 
+            "llama-3.3-70b-instruct", 
+            "deepseek-r1-distill-llama-70b"
+        ],
+        "vision_models": ["pixtral-12b-2409", "mistral-small-3.1-24b-instruct-2503"],
+        "audio_models": ["whisper-large-v3"],
+        "image_models": ["pixtral-12b-2409"],
+        "context_limits": {
+            "gpt-oss-120b": 32768,
+            "mistral-small-3.2-24b-instruct-2506": 32768,
+            "gemma-3-27b-it": 96000,
+            "qwen3-235b-a22b-instruct-2507": 131072,
+            "llama-3.3-70b-instruct": 131072,
+            "deepseek-r1-distill-llama-70b": 8192,
+            "pixtral-12b-2409": 32768,
+            "mistral-small-3.1-24b-instruct-2503": 96000,
+            "whisper-large-v3": 16384,
+        }
+    },
     
-    if provider_name in RESTRICTED_PROVIDERS:
-        return False, f"⛔ {provider_name} ist im EU-Modus nicht erlaubt (Grund: {RESTRICTED_PROVIDERS[provider_name]})"
+    "Gladia": {
+        "base_url": "https://api.gladia.io/v2",
+        "key_name": "GLADIA",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
+        "audio_models": ["gladia-v2"],
+        "context_limits": {
+            "gladia-v2": 1000000 
+        }
+    },
     
-    return True, ""
+    "Nebius": {
+        "base_url": "https://api.tokenfactory.nebius.com/v1",
+        "key_name": "NEBIUS",
+        "badge": "🇪🇺 <b>DSGVO-Konform</b>",
+        "chat_models": [
+            "deepseek-ai/DeepSeek-R1-0528",
+            "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
+            "openai/gpt-oss-120b",
+            "moonshotai/Kimi-K2-Instruct",
+            "moonshotai/Kimi-K2-Thinking",
+            "zai-org/GLM-4.5",
+            "meta-llama/Llama-3.3-70B-Instruct"
+        ],
+        "image_models": ["black-forest-labs/flux-schnell", "black-forest-labs/flux-dev"],
+        "vision_models": ["google/gemma-3-27b-it", "Qwen/Qwen2.5-VL-72B-Instruct", "nvidia/Nemotron-Nano-V2-12b"],
+        "context_limits": {
+            "deepseek-ai/DeepSeek-R1-0528": 163840,
+            "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": 131072,
+            "openai/gpt-oss-120b": 32768,
+            "moonshotai/Kimi-K2-Instruct": 128000,
+            "moonshotai/Kimi-K2-Thinking": 128000,
+            "zai-org/GLM-4.5": 128000,
+            "meta-llama/Llama-3.3-70B-Instruct": 131072,
+            "black-forest-labs/flux-schnell": 4096,
+            "black-forest-labs/flux-dev": 4096,
+        }
+    },
+    
+    "Mistral": {
+        "base_url": "https://api.mistral.ai/v1",
+        "key_name": "MISTRAL",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
+        "chat_models": [
+            "mistral-large-latest",
+            "mistral-medium-2508",
+            "magistral-medium-2509",
+            "open-mistral-nemo-2407"
+        ],
+        "vision_models": ["pixtral-large-2411", "pixtral-12b-2409", "mistral-ocr-latest"],
+        "audio_models": ["voxtral-mini-latest"],
+        "context_limits": {
+            "mistral-large-latest": 128000,
+            "mistral-medium-2508": 128000,
+            "magistral-medium-2509": 128000,
+            "open-mistral-nemo-2407": 128000,
+            "pixtral-large-2411": 128000,
+            "pixtral-12b-2409": 32768,
+            "mistral-ocr-latest": 32768,
+            "voxtral-mini-latest": 16384,
+        }
+    },
+    
+    "Deepgram": {
+        "base_url": "https://api.eu.deepgram.com/v1",
+        "key_name": "DEEPGRAM",
+        "badge": "🇪🇺 <b>EU-Server, US-Firma</b>",
+        "audio_models": ["nova-3-general", "nova-2-general", "nova-2"],
+        "context_limits": {
+            "nova-3-general": 16384,
+            "nova-2-general": 16384,
+            "nova-2": 16384,
+        }
+    },
+    
+    "AssemblyAI": {
+        "base_url": "https://api.eu.assemblyai.com/v2",
+        "key_name": "ASSEMBLYAI",
+        "badge": "🇪🇺 <b>EU-Server, US-Firma</b>",
+        "audio_models": ["universal", "slam-1"],
+        "context_limits": {
+            "universal": 16384,
+            "slam-1": 16384,
+        }
+    },
+    
+    "OpenRouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_name": "OPENROUTER",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            # 1M+ Context
+            "google/gemini-2.0-pro-exp-02-05:free",
+            "google/gemini-2.0-flash-thinking-exp:free",
+            "google/gemini-2.0-flash-exp:free",
+            "google/gemini-2.5-pro-exp-03-25:free",
+            "google/gemini-flash-1.5-8b-exp",
+            # 100K+ Context
+            "deepseek/deepseek-r1-zero:free",
+            "deepseek/deepseek-r1:free",
+            "deepseek/deepseek-v3-base:free",
+            "deepseek/deepseek-chat-v3-0324:free",
+            "deepseek/deepseek-chat:free",
+            "google/gemma-3-4b-it:free",
+            "google/gemma-3-12b-it:free",
+            "qwen/qwen2.5-vl-72b-instruct:free",
+            "nvidia/llama-3.1-nemotron-70b-instruct:free",
+            "meta-llama/llama-3.2-1b-instruct:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "mistralai/mistral-nemo:free",
+            # 64K-100K Context
+            "mistralai/mistral-small-3.1-24b-instruct:free",
+            "google/gemma-3-27b-it:free",
+            "qwen/qwen2.5-vl-3b-instruct:free",
+            "qwen/qwen-2.5-vl-7b-instruct:free",
+            # 32K-64K Context
+            "google/learnlm-1.5-pro-experimental:free",
+            "qwen/qwq-32b:free",
+            "google/gemini-2.0-flash-thinking-exp-1219:free",
+            "bytedance-research/ui-tars-72b:free",
+            "google/gemma-3-1b-it:free",
+            "mistralai/mistral-small-24b-instruct-2501:free",
+            "qwen/qwen-2.5-coder-32b-instruct:free",
+            "qwen/qwen-2.5-72b-instruct:free",
+            # 8K-32K Context
+            "meta-llama/llama-3.2-3b-instruct:free",
+            "qwen/qwq-32b-preview:free",
+            "deepseek/deepseek-r1-distill-qwen-32b:free",
+            "qwen/qwen2.5-vl-32b-instruct:free",
+            "deepseek/deepseek-r1-distill-llama-70b:free",
+            "qwen/qwen-2-7b-instruct:free",
+            "google/gemma-2-9b-it:free",
+            "mistralai/mistral-7b-instruct:free",
+            "microsoft/phi-3-mini-128k-instruct:free",
+            "meta-llama/llama-3-8b-instruct:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            # 4K Context
+            "huggingfaceh4/zephyr-7b-beta:free",
+        ],
+        "vision_models": [
+            "google/gemini-2.0-pro-exp-02-05:free",
+            "google/gemini-2.0-flash-thinking-exp:free",
+            "google/gemini-2.0-flash-exp:free",
+            "google/gemini-2.5-pro-exp-03-25:free",
+            "google/gemini-flash-1.5-8b-exp",
+            "qwen/qwen2.5-vl-72b-instruct:free",
+            "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "mistralai/mistral-small-3.1-24b-instruct:free",
+            "google/gemma-3-27b-it:free",
+            "qwen/qwen2.5-vl-3b-instruct:free",
+            "qwen/qwen-2.5-vl-7b-instruct:free",
+            "bytedance-research/ui-tars-72b:free",
+            "qwen/qwen2.5-vl-32b-instruct:free",
+        ],
+        "audio_models": [
+            "google/gemini-2.0-flash-lite-001",
+            "mistralai/voxtral-small-24b-2507",
+            "google/gemini-2.5-flash-lite"
+        ],
+        "image_models": [
+            "google/gemini-2.5-flash-image",
+            "openai/gpt-5-image-mini",
+            "google/gemini-3-pro-image-preview",
+            "black-forest-labs/flux.2-pro",
+            "black-forest-labs/flux.2-flex"
+        ],
+        "context_limits": {
+            # 1M+ Context
+            "google/gemini-2.0-pro-exp-02-05:free": 2000000,
+            "google/gemini-2.0-flash-thinking-exp:free": 1048576,
+            "google/gemini-2.0-flash-exp:free": 1048576,
+            "google/gemini-2.5-pro-exp-03-25:free": 1000000,
+            "google/gemini-flash-1.5-8b-exp": 1000000,
+            # 100K+ Context
+            "deepseek/deepseek-r1-zero:free": 163840,
+            "deepseek/deepseek-r1:free": 163840,
+            "deepseek/deepseek-v3-base:free": 131072,
+            "deepseek/deepseek-chat-v3-0324:free": 131072,
+            "deepseek/deepseek-chat:free": 131072,
+            "google/gemma-3-4b-it:free": 131072,
+            "google/gemma-3-12b-it:free": 131072,
+            "qwen/qwen2.5-vl-72b-instruct:free": 131072,
+            "nvidia/llama-3.1-nemotron-70b-instruct:free": 131072,
+            "meta-llama/llama-3.2-1b-instruct:free": 131072,
+            "meta-llama/llama-3.2-11b-vision-instruct:free": 131072,
+            "meta-llama/llama-3.1-8b-instruct:free": 131072,
+            "mistralai/mistral-nemo:free": 128000,
+            # 64K-100K Context
+            "mistralai/mistral-small-3.1-24b-instruct:free": 96000,
+            "google/gemma-3-27b-it:free": 96000,
+            "qwen/qwen2.5-vl-3b-instruct:free": 64000,
+            "qwen/qwen-2.5-vl-7b-instruct:free": 64000,
+            # 32K-64K Context
+            "google/learnlm-1.5-pro-experimental:free": 40960,
+            "qwen/qwq-32b:free": 40000,
+            "google/gemini-2.0-flash-thinking-exp-1219:free": 40000,
+            "bytedance-research/ui-tars-72b:free": 32768,
+            "google/gemma-3-1b-it:free": 32768,
+            "mistralai/mistral-small-24b-instruct-2501:free": 32768,
+            "qwen/qwen-2.5-coder-32b-instruct:free": 32768,
+            "qwen/qwen-2.5-72b-instruct:free": 32768,
+            # 8K-32K Context
+            "meta-llama/llama-3.2-3b-instruct:free": 20000,
+            "qwen/qwq-32b-preview:free": 16384,
+            "deepseek/deepseek-r1-distill-qwen-32b:free": 16000,
+            "qwen/qwen2.5-vl-32b-instruct:free": 8192,
+            "deepseek/deepseek-r1-distill-llama-70b:free": 8192,
+            "qwen/qwen-2-7b-instruct:free": 8192,
+            "google/gemma-2-9b-it:free": 8192,
+            "mistralai/mistral-7b-instruct:free": 8192,
+            "microsoft/phi-3-mini-128k-instruct:free": 8192,
+            "meta-llama/llama-3-8b-instruct:free": 8192,
+            "meta-llama/llama-3.3-70b-instruct:free": 8000,
+            # 4K Context
+            "huggingfaceh4/zephyr-7b-beta:free": 4096,
+            # Audio/Image
+            "google/gemini-2.0-flash-lite-001": 1000000,
+            "mistralai/voxtral-small-24b-2507": 32768,
+            "google/gemini-2.5-flash-lite": 1000000,
+            "google/gemini-2.5-flash-image": 1000000,
+            "openai/gpt-5-image-mini": 128000,
+            "google/gemini-3-pro-image-preview": 1000000,
+            "black-forest-labs/flux.2-pro": 4096,
+            "black-forest-labs/flux.2-flex": 4096,
+        }
+    },
+    
+    "Groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "key_name": "GROQ",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            "deepseek-r1-distill-llama-70b",
+            "deepseek-r1-distill-qwen-32b",
+            "gemma2-9b-it",
+            "llama-3.1-8b-instant",
+            "llama-3.2-1b-preview",
+            "llama-3.2-3b-preview",
+            "llama-3.2-11b-vision-preview",
+            "llama-3.2-90b-vision-preview",
+            "llama-3.3-70b-specdec",
+            "llama-3.3-70b-versatile",
+            "llama-guard-3-8b",
+            "llama3-8b-8192",
+            "llama3-70b-8192",
+            "mistral-saba-24b",
+            "qwen-2.5-32b",
+            "qwen-2.5-coder-32b",
+            "qwen-qwq-32b",
+        ],
+        "audio_models": [
+            "distil-whisper-large-v3-en",
+            "whisper-large-v3",
+            "whisper-large-v3-turbo"
+        ],
+        "vision_models": [
+            "llama-3.2-11b-vision-preview",
+            "llama-3.2-90b-vision-preview"
+        ],
+        "context_limits": {
+            "deepseek-r1-distill-llama-70b": 8192,
+            "deepseek-r1-distill-qwen-32b": 8192,
+            "gemma2-9b-it": 8192,
+            "llama-3.1-8b-instant": 131072,
+            "llama-3.2-1b-preview": 131072,
+            "llama-3.2-3b-preview": 131072,
+            "llama-3.2-11b-vision-preview": 131072,
+            "llama-3.2-90b-vision-preview": 131072,
+            "llama-3.3-70b-specdec": 131072,
+            "llama-3.3-70b-versatile": 131072,
+            "llama-guard-3-8b": 8192,
+            "llama3-8b-8192": 8192,
+            "llama3-70b-8192": 8192,
+            "mistral-saba-24b": 32768,
+            "qwen-2.5-32b": 32768,
+            "qwen-2.5-coder-32b": 32768,
+            "qwen-qwq-32b": 32768,
+            "distil-whisper-large-v3-en": 16384,
+            "whisper-large-v3": 16384,
+            "whisper-large-v3-turbo": 16384,
+        }
+    },
+    
+    "Poe": {
+        "base_url": "https://api.poe.com/v1",
+        "key_name": "POE",
+        "badge": "🌐 <b>US-Server</b>!",
+        "chat_models": [
+            "gpt-5.1-instant",
+            "claude-sonnet-4.5",
+            "gemini-3-pro",
+            "gpt-5.1",
+            "gpt-4o",
+            "claude-3.5-sonnet",
+            "deepseek-r1",
+            "grok-4"
+        ],
+        "vision_models": [
+            "claude-sonnet-4.5",
+            "gpt-5.1",
+            "gemini-3-pro",
+            "gpt-4o",
+            "claude-3.5-sonnet"
+        ],
+        "image_models": [
+            "gpt-image-1",
+            "flux-pro-1.1-ultra",
+            "ideogram-v3",
+            "dall-e-3",
+            "playground-v3"
+        ],
+        "audio_models": [
+            "elevenlabs-v3",
+            "sonic-3.0"
+        ],
+        "video_models": [
+            "kling-2.5-turbo-pro",
+            "runway-gen-4-turbo",
+            "veo-3.1"
+        ],
+        "supports_system": True,
+        "supports_streaming": True,
+        "context_limits": {
+            "gpt-5.1-instant": 128000,
+            "claude-sonnet-4.5": 200000,
+            "gemini-3-pro": 2000000,
+            "gpt-5.1": 128000,
+            "gpt-4o": 128000,
+            "claude-3.5-sonnet": 200000,
+            "deepseek-r1": 163840,
+            "grok-4": 131072,
+            "gpt-image-1": 4096,
+            "flux-pro-1.1-ultra": 4096,
+            "ideogram-v3": 4096,
+            "dall-e-3": 4096,
+            "playground-v3": 4096,
+            "elevenlabs-v3": 4096,
+            "sonic-3.0": 4096,
+            "kling-2.5-turbo-pro": 4096,
+            "runway-gen-4-turbo": 4096,
+            "veo-3.1": 4096,
+        }
+    },
+    
+    "OpenAI": {
+        "base_url": "https://api.openai.com/v1",
+        "key_name": "OPENAI",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            "gpt-3.5-turbo",
+            "gpt-3.5-turbo-0125",
+            "gpt-4",
+            "gpt-4-turbo",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1-preview",
+            "o1-mini"
+        ],
+        "vision_models": [
+            "gpt-4-turbo",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1-preview",
+            "o1-mini"
+        ],
+        "context_limits": {
+            "gpt-3.5-turbo": 16385,
+            "gpt-3.5-turbo-0125": 16385,
+            "gpt-3.5-turbo-instruct": 4096,
+            "gpt-4": 8192,
+            "gpt-4-turbo": 128000,
+            "gpt-4o": 128000,
+            "gpt-4o-mini": 128000,
+            "o1-preview": 128000,
+            "o1-mini": 128000,
+        }
+    },
+    
+    "Cohere": {
+        "base_url": "https://api.cohere.ai/v1",
+        "key_name": "COHERE",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            "command-r-plus-08-2024",
+            "command-r-plus",
+            "command-r-08-2024",
+            "command-r",
+            "command",
+            "c4ai-aya-expanse-8b",
+            "c4ai-aya-expanse-32b",
+        ],
+        "context_limits": {
+            "command-r-plus-08-2024": 131072,
+            "command-r-plus-04-2024": 131072,
+            "command-r-plus": 131072,
+            "command-r-08-2024": 131072,
+            "command-r-03-2024": 131072,
+            "command-r": 131072,
+            "command": 4096,
+            "command-nightly": 131072,
+            "command-light": 4096,
+            "command-light-nightly": 4096,
+            "c4ai-aya-expanse-8b": 8192,
+            "c4ai-aya-expanse-32b": 131072,
+        }
+    },
+    
+    "Together": {
+        "base_url": "https://api.together.xyz/v1",
+        "key_name": "TOGETHER",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+            "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free",
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+        ],
+        "vision_models": ["meta-llama/Llama-Vision-Free"],
+        "context_limits": {
+            "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": 131072,
+            "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-free": 8192,
+            "meta-llama/Llama-Vision-Free": 8192,
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free": 8192,
+        }
+    },
+    
+    "OVH": {
+        "base_url": "https://llama-3-1-70b-instruct.endpoints.kepler.ai.cloud.ovh.net/api/openai_compat/v1",
+        "key_name": "OVH",
+        "badge": "🇫🇷 <b>DSGVO-Konform</b>",
+        "chat_models": [
+            "ovh/codestral-mamba-7b-v0.1",
+            "ovh/deepseek-r1-distill-llama-70b",
+            "ovh/llama-3.1-70b-instruct",
+            "ovh/llama-3.1-8b-instruct",
+            "ovh/llama-3.3-70b-instruct",
+            "ovh/mistral-7b-instruct-v0.3",
+            "ovh/mistral-nemo-2407",
+            "ovh/mixtral-8x7b-instruct",
+            "ovh/qwen2.5-coder-32b-instruct",
+        ],
+        "vision_models": [
+            "ovh/llava-next-mistral-7b",
+            "ovh/qwen2.5-vl-72b-instruct"
+        ],
+        "context_limits": {
+            "ovh/codestral-mamba-7b-v0.1": 131072,
+            "ovh/deepseek-r1-distill-llama-70b": 8192,
+            "ovh/llama-3.1-70b-instruct": 131072,
+            "ovh/llama-3.1-8b-instruct": 131072,
+            "ovh/llama-3.3-70b-instruct": 131072,
+            "ovh/llava-next-mistral-7b": 8192,
+            "ovh/mistral-7b-instruct-v0.3": 32768,
+            "ovh/mistral-nemo-2407": 131072,
+            "ovh/mixtral-8x7b-instruct": 32768,
+            "ovh/qwen2.5-coder-32b-instruct": 32768,
+            "ovh/qwen2.5-vl-72b-instruct": 131072,
+        }
+    },
+    
+    "Cerebras": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "key_name": "CEREBRAS",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            "llama3.1-8b",
+            "llama-3.3-70b"
+        ],
+        "context_limits": {
+            "llama3.1-8b": 8192,
+            "llama-3.3-70b": 8192,
+        }
+    },
+    
+    "GoogleAI": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "key_name": "GOOGLEAI",
+        "badge": "🇺🇸 <b>US-Server</b>?",
+        "chat_models": [
+            "gemini-1.0-pro",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-2.0-pro",
+            "gemini-2.5-pro"
+        ],
+        "vision_models": [
+            "gemini-1.5-pro",
+            "gemini-1.0-pro",
+            "gemini-1.5-flash",
+            "gemini-2.0-pro",
+            "gemini-2.5-pro"
+        ],
+        "context_limits": {
+            "gemini-1.0-pro": 32768,
+            "gemini-1.5-flash": 1000000,
+            "gemini-1.5-pro": 1000000,
+            "gemini-2.0-pro": 2000000,
+            "gemini-2.5-pro": 2000000,
+        }
+    },
+    
+    "Anthropic": {
+        "base_url": "https://api.anthropic.com/v1",
+        "key_name": "ANTHROPIC",
+        "badge": "🇺🇸 <b>US-Server</b>!",
+        "chat_models": [
+            "claude-3-7-sonnet-20250219",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20240307",
+            "claude-3-opus-20240229",
+        ],
+        "vision_models": [
+            "claude-3-7-sonnet-20250219",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20240307",
+            "claude-3-opus-20240229",
+        ],
+        "context_limits": {
+            "claude-3-7-sonnet-20250219": 128000,
+            "claude-3-5-sonnet-20241022": 200000,
+            "claude-3-5-haiku-20240307": 200000,
+            "claude-3-5-sonnet-20240620": 200000,
+            "claude-3-opus-20240229": 200000,
+            "claude-3-haiku-20240307": 200000,
+            "claude-3-sonnet-20240229": 200000,
+        }
+    },
+    
+    "HuggingFace": {
+        "base_url": "https://api-inference.huggingface.co/models",
+        "key_name": "HUGGINGFACE",
+        "badge": "🌐 <b>US-Server</b>?",
+        "chat_models": [
+            "microsoft/phi-3-mini-4k-instruct",
+            "microsoft/Phi-3-mini-128k-instruct",
+            "HuggingFaceH4/zephyr-7b-beta",
+            "deepseek-ai/DeepSeek-Coder-V2-Instruct",
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
+            "microsoft/Phi-3.5-mini-instruct",
+            "google/gemma-2-2b-it",
+            "Qwen/Qwen2.5-7B-Instruct",
+            "tiiuae/falcon-7b-instruct",
+            "Qwen/QwQ-32B-preview",
+        ],
+        "vision_models": [
+            "Qwen/Qwen2.5-VL-7B-Instruct",
+            "Qwen/qwen2.5-vl-3b-instruct",
+            "Qwen/qwen2.5-vl-32b-instruct",
+            "Qwen/qwen2.5-vl-72b-instruct",
+        ],
+        "context_limits": {
+            "microsoft/phi-3-mini-4k-instruct": 4096,
+            "microsoft/Phi-3-mini-128k-instruct": 131072,
+            "HuggingFaceH4/zephyr-7b-beta": 8192,
+            "deepseek-ai/DeepSeek-Coder-V2-Instruct": 8192,
+            "mistralai/Mistral-7B-Instruct-v0.3": 32768,
+            "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO": 32768,
+            "microsoft/Phi-3.5-mini-instruct": 4096,
+            "google/gemma-2-2b-it": 2048,
+            "openai-community/gpt2": 1024,
+            "microsoft/phi-2": 2048,
+            "TinyLlama/TinyLlama-1.1B-Chat-v1.0": 2048,
+            "Qwen/Qwen2.5-7B-Instruct": 131072,
+            "tiiuae/falcon-7b-instruct": 8192,
+            "Qwen/QwQ-32B-preview": 32768,
+            "Qwen/Qwen2.5-VL-7B-Instruct": 64000,
+            "Qwen/qwen2.5-vl-3b-instruct": 64000,
+            "Qwen/qwen2.5-vl-32b-instruct": 8192,
+            "Qwen/qwen2.5-vl-72b-instruct": 131072,
+        }
+    },
+}
 
 def get_compliance_html(provider):
     """Holt Badge-Text direkt aus der Provider-Config (Single Row)."""
@@ -2364,22 +1952,34 @@ GLADIA_CONFIG = {
 }
 
 def login_user(username, password):
-    user, umk = authenticate_user(username, password)
-    
-    if user and umk:
-        # Save UMK in Session State (RAM Only)
-        # Never write this 'new_state' to disk/logs!
+    """Login function that returns a session dict"""
+    user = authenticate_user(username, password)
+    if user:
+        # Create the session data dictionary
         new_state = {
             "id": user.id,
             "username": user.username,
-            "is_admin": user.is_admin,
-            "is_media_manager": user.is_media_manager,
-            "umk": umk # THE KEY
+            "is_admin": user.is_admin
         }
         
-        return (True, f"✅ Willkommen, {user.username}!", gr.update(visible=True), gr.update(visible=False), new_state)
+        welcome_msg = f"✅ Willkommen, {user.username}!"
+        # Show app, Hide login, Update State
+        return (
+            True,
+            welcome_msg, 
+            gr.update(visible=True), 
+            gr.update(visible=False), 
+            new_state 
+        )
     
-    return (False, "❌ Login fehlgeschlagen", gr.update(visible=False), gr.update(visible=True), {})
+    # Login failed: Return empty state
+    return (
+        False, # <--- ADDED Success Flag
+        "❌ Ungültige Anmeldedaten", 
+        gr.update(visible=False), 
+        gr.update(visible=True), 
+        {"id": None, "username": None, "is_admin": False}
+    )
 
 def logout_user():
     """Logout function returns empty state"""
@@ -2894,14 +2494,8 @@ def run_assemblyai_transcription(audio_path, model, lang, diar, key):
 
 def run_chat(message, history, provider, model, temp, system_prompt, key, r_effort, r_tokens, user_state):
     """
-    Enhanced chat runner with strict context logging and content extraction fix
+    Enhanced chat runner with strict context logging
     """
-    # VALIDATION
-    allowed, reason = is_provider_allowed(provider)
-    if not allowed:
-        yield f"⛔ **Zugriff verweigert**\n\n{reason}\n\nBitte wählen Sie einen EU-Provider (Scaleway, Mistral, Nebius)."
-        return
-    
     import re
     import json
 
@@ -2913,15 +2507,6 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
     if not is_provider_implemented(clean_provider):
         yield f"⚠️ **{clean_provider} ist noch nicht verfügbar**"
         return
-
-    # --- HELPER: Extract text from Gradio's multimodal list format ---
-    def extract_clean_content(content):
-        if isinstance(content, list):
-            # Handle format: [{'type': 'text', 'text': '...'}]
-            text_parts = [str(item.get("text", "")) for item in content if item.get("type") == "text"]
-            return " ".join(text_parts)
-        return str(content) if content else ""
-    # -----------------------------------------------------------------
     
     try:
         # 1. Build Full Message List
@@ -2933,14 +2518,11 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
         
         # Chat History
         for msg in history:
-            # FIX: Properly extract text if content is a list/dict
-            content = extract_clean_content(msg.get("content"))
+            content = str(msg["content"]) if msg.get("content") else ""
             raw_messages.append({"role": msg["role"], "content": content})
             
         # Current Message
-        # FIX: Also extract content for the current message
-        current_content = extract_clean_content(message)
-        raw_messages.append({"role": "user", "content": current_content})
+        raw_messages.append({"role": "user", "content": str(message)})
 
         # 2. Get Context Limit Logic
         context_limit = get_model_context_limit(provider, model)
@@ -3301,37 +2883,34 @@ def run_chunked_api_transcription(client, model, chunk_paths, lang, prompt, temp
 
     yield "".join(full_transcript_parts).strip()
         
-def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt, diar, trans, target, key, chunk_opt=True, chunk_len=10, user_id=None):
+def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt, diar, trans, target, key, chunk_opt=True, chunk_len=10):
     """
     Unified transcription router.
-    - Gladia: Handles Files (Upload -> URL) OR Direct URLs (YouTube/etc).
-    - Others: Requires local file.
+    - Gladia: Uses Native V2 API (Upload -> URL -> Poll).
+    - Deepgram/AssemblyAI: Uses Native Async/Sync API.
+    - Others: Uses Local Chunking (Optional) -> OpenAI API.
     """
     logger.info("=" * 50)
-    logger.info(f"TRANSCRIPTION START: {provider} | Model: {model} | Input: {audio}")
+    logger.info(f"TRANSCRIPTION START: {provider} | Model: {model} | File: {audio}")
 
     # --- 1. Validation ---
-    is_url = isinstance(audio, str) and audio.startswith("http")
-    
     if not audio:
-        yield "❌ Keine Datei oder URL.", "", ""
+        yield "❌ Keine Datei.", "", ""
         return
 
-    # Check file existence only if it's NOT a URL
-    if not is_url and not os.path.exists(audio):
+    if not os.path.exists(audio):
         yield f"❌ Datei nicht gefunden: {audio}", "", ""
         return
 
-    if not is_url:
-        try:
-            file_size = os.path.getsize(audio)
-            if file_size == 0:
-                yield "❌ Datei ist leer (0 Bytes).", "", ""
-                return
-        except Exception as e:
-            logger.error(f"File check error: {e}")
+    try:
+        file_size = os.path.getsize(audio)
+        if file_size == 0:
+            yield "❌ Datei ist leer (0 Bytes).", "", ""
+            return
+    except Exception as e:
+        logger.error(f"File check error: {e}")
 
-    # --- 2. BRANCH A: GLADIA (Native URL Support) ---
+    # --- 2. BRANCH A: GLADIA (Native Long-File Support) ---
     if provider == "Gladia":
         logger.info("Using Gladia ...")
         
@@ -3340,45 +2919,34 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
             yield "❌ Kein Gladia Key gefunden.", "", ""
             return
 
-        headers = {"x-gladia-key": api_key, "accept": "application/json"}
-        
-        # A. Handle Input (File Upload OR Direct URL)
-        audio_url_for_api = ""
-        
-        if is_url:
-            # Direct URL (YouTube, etc.)
-            audio_url_for_api = audio
-            logs = f"🚀 Sende URL direkt an Gladia API ({audio})..."
-            yield logs, "", ""
-        else:
-            # File Upload
-            logs = "🚀 Starte Gladia Upload..."
-            yield logs, "", ""
-            try:
-                fname = os.path.basename(audio)
-                with open(audio, 'rb') as f:
-                    r = requests.post(
-                        f"{GLADIA_CONFIG['url']}/upload",
-                        headers=headers,
-                        files={'audio': (fname, f, 'audio/wav')}, # Mime type sniffing is auto handled usually
-                        timeout=600 
-                    )
-                if r.status_code != 200:
-                    raise Exception(f"Upload failed: {r.text}")
-                
-                audio_url_for_api = r.json().get("audio_url")
-                logs += "\n✅ Upload fertig. Starte Job..."
-                yield logs, "", ""
-            except Exception as e:
-                yield f"🔥 Upload Fehler: {str(e)}", "", ""
-                return
+        logs = "🚀 Start Gladia Upload..."
+        yield logs, "", ""
 
         try:
+            # A. Upload
+            headers = {"x-gladia-key": api_key, "accept": "application/json"}
+            fname = os.path.basename(audio)
+            
+            with open(audio, 'rb') as f:
+                r = requests.post(
+                    f"{GLADIA_CONFIG['url']}/upload",
+                    headers=headers,
+                    files={'audio': (fname, f, 'audio/wav')},
+                    timeout=600 
+                )
+            
+            if r.status_code != 200:
+                raise Exception(f"Upload failed: {r.text}")
+            
+            upload_url = r.json().get("audio_url")
+            logs += "\n✅ Upload fertig. Starte Job..."
+            yield logs, "", ""
+
             # B. Job Config
             vocab_list = [{"value": w} for w in GLADIA_CONFIG.get('vocab', [])]
             
             payload = {
-                "audio_url": audio_url_for_api,
+                "audio_url": upload_url,
                 "language_config": {
                     "code_switching": (lang == "auto"),
                     "languages": [] if lang == "auto" else [lang]
@@ -3401,8 +2969,6 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
                 raise Exception(f"Job start failed: {r.text}")
             
             result_url = r.json().get("result_url")
-            job_id = r.json().get("id", "unknown")
-            logs += f"\n🆔 Job ID: {job_id}"
             
             # D. Polling
             poll_count = 0
@@ -3416,8 +2982,8 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
                 if poll_count % 2 == 0: 
                     yield f"{logs}\n⏳ Verarbeite... ({format_duration(elapsed)})", "", ""
 
-                if elapsed > 7200: # 2 Hours max (YouTube videos can be long)
-                    raise Exception("Timeout nach 120 Minuten")
+                if elapsed > 3600:
+                    raise Exception("Timeout nach 60 Minuten")
 
                 r = requests.get(result_url, headers=headers)
                 if r.status_code != 200: continue
@@ -3453,180 +3019,106 @@ def run_transcription(audio, provider, model, lang, whisper_temp, whisper_prompt
             logger.exception(f"Gladia Error: {e}")
             yield f"🔥 Fehler: {str(e)}", "", ""
             
-    # --- BRANCH B, C, D (Requires Local File) ---
+    # --- 2. BRANCH B: DEEPGRAM (Native Single-Shot EU) ---
+    elif provider == "Deepgram":
+        logger.info("Using Deepgram Native Sync Flow (EU)")
+        full_text = ""
+        # model, lang, diar aus den UI-Optionen verwenden
+        for log, text in run_deepgram_transcription(audio, model, lang, diar, key):
+            if text: full_text = text
+            yield log, full_text, "(Keine Übersetzung verfügbar)"
+        return # Ende der Funktion
+
+    # --- 2. BRANCH C: ASSEMBLYAI (Native Async EU) ---
+    elif provider == "AssemblyAI":
+        logger.info("Using AssemblyAI Native Async Flow (EU)")
+        full_text = ""
+        # model, lang, diar aus den UI-Optionen verwenden
+        for log, text in run_assemblyai_transcription(audio, model, lang, diar, key):
+            if text: full_text = text
+            yield log, full_text, "(Keine Übersetzung verfügbar)"
+        return # Ende der Funktion
+
+    # --- 3. BRANCH D: GENERIC CHUNKING (Mistral, Scaleway, Groq) ---
     else:
-        # Prevent URL usage for providers that don't support it natively
-        if is_url:
-             yield f"❌ Der Provider '{provider}' unterstützt keine direkten URLs. Bitte Datei herunterladen oder Gladia wählen.", "", ""
-             return        
-    
-        # --- 2. BRANCH B: DEEPGRAM (Native Single-Shot EU) ---
-        if provider == "Deepgram":
-            logger.info("Using Deepgram Native Sync Flow (EU)")
-            full_text = ""
-            # model, lang, diar aus den UI-Optionen verwenden
-            for log, text in run_deepgram_transcription(audio, model, lang, diar, key):
-                if text: full_text = text
-                yield log, full_text, "(Keine Übersetzung verfügbar)"
-            return # Ende der Funktion
+        logger.info(f"Using Generic Provider: {provider}")
+        
+        try:
+            client = get_client(provider, key)
+        except Exception as e:
+            yield f"🔥 Client Fehler: {str(e)}", "", ""
+            return
 
-        # --- 2. BRANCH C: ASSEMBLYAI (Native Async EU) ---
-        elif provider == "AssemblyAI":
-            logger.info("Using AssemblyAI Native Async Flow (EU)")
-            full_text = ""
-            # model, lang, diar aus den UI-Optionen verwenden
-            for log, text in run_assemblyai_transcription(audio, model, lang, diar, key):
-                if text: full_text = text
-                yield log, full_text, "(Keine Übersetzung verfügbar)"
-            return # Ende der Funktion
+        if not model:
+            conf = PROVIDERS.get(provider, {})
+            model = conf.get("audio_models", ["whisper-large-v3"])[0]
 
-        # --- 3. BRANCH D: GENERIC CHUNKING (Mistral, Scaleway, Groq) ---
-        else:
-            logger.info(f"Using Generic Provider: {provider}")
-            
-            try:
-                client = get_client(provider, key)
-            except Exception as e:
-                yield f"🔥 Client Fehler: {str(e)}", "", ""
-                return
+        logs = f"🚀 Starte {provider} ({model})..."
+        yield logs, "", ""
 
-            if not model:
-                conf = PROVIDERS.get(provider, {})
-                model = conf.get("audio_models", ["whisper-large-v3"])[0]
+        chunks = []
+        chunk_dir = None # Default if not splitting
 
-            logs = f"🚀 Starte {provider} ({model})..."
+        try:
+            # --- OPTIONAL CHUNKING LOGIC ---
+            if chunk_opt:
+                yield f"{logs}\n✂️ Teile Audio (alle {chunk_len} Min)...", "", ""
+                chunks, chunk_dir = split_audio_into_chunks(audio, chunk_minutes=int(chunk_len))
+                
+                if not chunks:
+                    yield "❌ Fehler beim Aufteilen der Datei.", "", ""
+                    return
+                logs += f"\n📂 {len(chunks)} Teile erstellt."
+            else:
+                # No chunking: Pass original file as single item list
+                yield f"{logs}\n⚠️ Chunking deaktiviert. Sende Originaldatei...", "", ""
+                if os.path.getsize(audio) > 25 * 1024 * 1024:
+                    logger.warning("File > 25MB and chunking disabled. API might fail.")
+                    logs += "\n⚠️ WARNUNG: Datei > 25MB. Upload könnte fehlschlagen."
+                chunks = [audio]
+
+            # --- CREATE JOB MANIFEST (For Resume Capability) ---
+            job_id = int(time.time())
+            create_job_manifest(job_id, audio, provider, model, chunks, lang, whisper_prompt, whisper_temp)
+            logs += f"\n🆔 Job-ID: {job_id} (Für Resume gespeichert)"
             yield logs, "", ""
 
-            chunks = []
-            chunk_dir = None # Default if not splitting
-
-            try:
-                # --- OPTIONAL CHUNKING LOGIC ---
-                if chunk_opt:
-                    yield f"{logs}\n✂️ Teile Audio (alle {chunk_len} Min)...", "", ""
-                    chunks, chunk_dir = split_audio_into_chunks(audio, chunk_minutes=int(chunk_len))
-                    
-                    if not chunks:
-                        yield "❌ Fehler beim Aufteilen der Datei.", "", ""
-                        return
-                    logs += f"\n📂 {len(chunks)} Teile erstellt."
-                else:
-                    # No chunking: Pass original file as single item list
-                    yield f"{logs}\n⚠️ Chunking deaktiviert. Sende Originaldatei...", "", ""
-                    if os.path.getsize(audio) > 25 * 1024 * 1024:
-                        logger.warning("File > 25MB and chunking disabled. API might fail.")
-                        logs += "\n⚠️ WARNUNG: Datei > 25MB. Upload könnte fehlschlagen."
-                    chunks = [audio]
-
-                # --- CREATE JOB MANIFEST (For Resume Capability) ---
-                job_id = int(time.time())
-                create_job_manifest(job_id, audio, provider, model, chunks, lang, whisper_prompt, whisper_temp, user_id)
-                logs += f"\n🆔 Job-ID: {job_id} (Für Resume gespeichert)"
-                yield logs, "", ""
-
-                # D. Run Sequential Processing
-                full_text = ""
-                
-                # Pass job_id to allow state saving during processing
-                transcriber = run_chunked_api_transcription(
-                    client, model, chunks, lang, whisper_prompt, whisper_temp, job_id=job_id
-                )
-
-                for update in transcriber:
-                    if len(update) < 300 and (update.startswith("⏳") or update.startswith("✅") or update.startswith("⚠️")):
-                        logs += f"\n{update}"
-                        yield logs, full_text, ""
-                    else:
-                        full_text = update
-
-                yield logs + "\n🎉 Fertig!", full_text, "(Keine Übersetzung verfügbar)"
-
-            except Exception as e:
-                logger.exception(f"Provider Error: {e}")
-                yield logs + f"\n🔥 Abbruch: {str(e)}", "", ""
+            # D. Run Sequential Processing
+            full_text = ""
             
-            finally:
-                # E. Cleanup (Only if we actually created chunks)
-                if chunk_dir:
-                    cleanup_chunks(chunk_dir)
+            # Pass job_id to allow state saving during processing
+            transcriber = run_chunked_api_transcription(
+                client, model, chunks, lang, whisper_prompt, whisper_temp, job_id=job_id
+            )
+
+            for update in transcriber:
+                if len(update) < 300 and (update.startswith("⏳") or update.startswith("✅") or update.startswith("⚠️")):
+                    logs += f"\n{update}"
+                    yield logs, full_text, ""
+                else:
+                    full_text = update
+
+            yield logs + "\n🎉 Fertig!", full_text, "(Keine Übersetzung verfügbar)"
+
+        except Exception as e:
+            logger.exception(f"Provider Error: {e}")
+            yield logs + f"\n🔥 Abbruch: {str(e)}", "", ""
+        
+        finally:
+            # E. Cleanup (Only if we actually created chunks)
+            if chunk_dir:
+                cleanup_chunks(chunk_dir)
 
                 
-def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, diar, trans, target, key, chunk_opt, chunk_len, dg_lang, dg_diar, aa_lang, aa_diar, url_input, dl_video, dl_destination, force_local_dl, user_state):
-    # for URLs: If User is Admin/Manager AND checked the box -> Download. Otherwise -> Force Gladia direct mode.
-    
+def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, diar, trans, target, key, chunk_opt, chunk_len, dg_lang, dg_diar, aa_lang, aa_diar, user_state):
     # --- SECURITY CHECK ---
     if not user_state or not user_state.get("id"):
         yield "⛔ Nicht autorisiert. Bitte anmelden.", "", ""
         return
-    
     user_id = user_state["id"]
-    is_privileged = user_state.get("is_admin", False) or user_state.get("is_media_manager", False)
-    
     # ----------------------
     
-    # --- HANDLE URL INPUT ---
-    actual_audio_path = audio
-    cleanup_downloaded = False
-    
-    if url_input and url_input.strip():
-        url = url_input.strip()
-        
-        # YouTube warning
-        if is_youtube_url(url):
-            yield "⚠️ YouTube-URL erkannt. Rechte prüfen!\n", "", ""
-            time.sleep(1)
-
-        # LOGIC:
-        # 1. Privileged users CAN force local download (yt-dlp).
-        # 2. Normal users MUST use Gladia Direct.
-        # 3. If Provider is NOT Gladia, local download is mandatory (only Privileged can do it).
-
-        should_download = False
-        
-        if is_privileged and force_local_dl:
-            # Admin explicitly requested download
-            should_download = True
-            yield "📥 [Admin] Starte lokalen Download via yt-dlp...\n", "", ""
-        
-        elif provider != "Gladia":
-            # Other providers require a file
-            if is_privileged:
-                should_download = True
-                yield f"📥 [Info] Provider '{provider}' benötigt lokale Datei. Starte Download...\n", "", ""
-            else:
-                yield "⛔ Zugriff verweigert: Nur Gladia unterstützt direkte URLs für Standard-Nutzer. Bitte Provider 'Gladia' wählen.", "", ""
-                return
-        else:
-            # Provider is Gladia and NOT forced download -> Use Direct URL
-            yield "🔗 Sende URL direkt an Gladia (Kein Download)...\n", "", ""
-            actual_audio_path = url # Pass URL string directly
-        
-        # EXECUTE DOWNLOAD IF NEEDED
-        if should_download:
-            # Determine save location
-            save_to_storage = (dl_destination == "Storage Box")
-            
-            success, downloaded_path, dl_msg = download_from_url(
-                url=url,
-                download_video=dl_video,
-                save_to_storage=save_to_storage,
-                user_state=user_state
-            )
-            
-            if not success:
-                yield f"❌ Download fehlgeschlagen: {dl_msg}", "", ""
-                return
-            
-            yield f"{dl_msg}\n", "", ""
-            actual_audio_path = downloaded_path
-            
-            # Mark for cleanup if saved to temp
-            if not save_to_storage:
-                cleanup_downloaded = True
-    
-    # --- PROCEED WITH TRANSCRIPTION ---
-    
-    # 1. Prepare parameters (Legacy mapping)
+    # 1. Prepare parameters
     final_lang = lang
     final_diar = diar
     final_trans = trans
@@ -3644,27 +3136,35 @@ def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, d
         final_target = None
     
     try:
+        logger.info(f"Starting transcription: provider={provider}, model={model}, audio={audio}")
+
+        # Basic File Validation
+        if not audio:
+            yield "❌ Keine Audiodatei hochgeladen.", "", ""
+            return
+        if not os.path.exists(audio):
+            yield f"❌ Datei nicht gefunden: {audio}", "", ""
+            return
+        if os.path.getsize(audio) == 0:
+            yield "❌ Audiodatei ist leer.", "", ""
+            return
+
         # 2. Run transcription
         result = None
         for result in run_transcription(
-            actual_audio_path, provider, model, 
+            audio, provider, model, 
             final_lang, w_temp, w_prompt, 
             final_diar, final_trans, final_target, 
-            key, chunk_opt, chunk_len,
-            user_id=user_id
+            key, chunk_opt, chunk_len
         ):
             yield result
 
-        # 3. Save to database
+        # 3. Save to database after completion
         if user_id and result and len(result) > 1 and result[1]:
-            # Don't save empty/error results
-            if "❌" in result[1] or not result[1].strip():
-                return
+            logger.info("Auto-saving transcription to database...")
+            filename = os.path.basename(audio) if audio else None
+            save_lang = final_lang
 
-            logger.info("Auto-saving transcription...")
-            # For URLs, filename is the URL, for files, it's basename
-            filename = url_input if (url_input and not should_download) else (os.path.basename(actual_audio_path) if actual_audio_path else "Audio")
-            
             try:
                 trans_id = save_transcription(
                     user_id=user_id,
@@ -3672,28 +3172,19 @@ def run_and_save_transcription(audio, provider, model, lang, w_temp, w_prompt, d
                     model=model or "N/A",
                     original=result[1],
                     translated=result[2] if len(result) > 2 else None,
-                    language=final_lang,
-                    filename=filename,
-                    user_state=user_state # Pass key
+                    language=save_lang,
+                    filename=filename
                 )
                 updated_log = result[0] + f"\n\n💾 Automatisch gespeichert (ID: {trans_id})"
                 yield (updated_log, result[1], result[2] if len(result) > 2 else "")
 
             except Exception as save_error:
-                logger.error(f"DB Save error: {save_error}")
-                yield (result[0] + f"\n⚠️ DB Fehler: {save_error}", result[1], result[2])
+                updated_log = result[0] + f"\n\n⚠️ Speichern fehlgeschlagen: {str(save_error)}"
+                yield (updated_log, result[1], result[2] if len(result) > 2 else "")
 
     except Exception as e:
-        logger.exception(f"Orchestrator error: {e}")
+        logger.exception(f"Critical error in transcription: {str(e)}")
         yield f"🔥 Kritischer Fehler: {str(e)}", "", ""
-    
-    finally:
-        # Cleanup downloaded file if it was temporary
-        if cleanup_downloaded and actual_audio_path and os.path.exists(actual_audio_path):
-            try:
-                os.remove(actual_audio_path)
-                logger.info(f"Cleaned up temp file: {actual_audio_path}")
-            except: pass
 
 # ==========================================
 # 4. BILDGENERIERUNG 
@@ -3770,19 +3261,10 @@ def run_image_gen(prompt, provider, model, width, height, steps, key, user_state
                 content = getattr(message, 'content', '')
                 return None, f"❌ Keine Bilder generiert. Antwort: {content[:200]}"
             
-            # FIX: Handle Dictionary vs Object access
-            first_image = message.images[0]
-            image_data_url = None
+            image_data_url = message.images[0].image_url.url
             
-            if isinstance(first_image, dict):
-                # It's a dictionary (logs showed this)
-                image_data_url = first_image.get('image_url', {}).get('url')
-            elif hasattr(first_image, 'image_url'):
-                # It's an object
-                image_data_url = first_image.image_url.url
-            
-            if not image_data_url or not image_data_url.startswith('data:image/'):
-                return None, f"❌ Ungültiges Bildformat: {str(image_data_url)[:50]}"
+            if not image_data_url.startswith('data:image/'):
+                return None, f"❌ Ungültiges Bildformat: {image_data_url[:50]}"
             
             base64_data = image_data_url.split('base64,', 1)[1]
             img_data = base64.b64decode(base64_data)
@@ -3794,6 +3276,7 @@ def run_image_gen(prompt, provider, model, width, height, steps, key, user_state
         
         # --- SPECIAL CASE: SCALEWAY ---
         if provider == "Scaleway":
+            # Scaleway doesn't support standard image generation endpoint
             return None, "❌ Scaleway: Bildgenerierung derzeit nicht unterstützt. Bitte Nebius verwenden."
         
         # --- STANDARD PROVIDER: NEBIUS ---
@@ -3943,6 +3426,169 @@ Zusätzliche Hinweise:
 {notes}"""
 }
 
+# ==========================================
+# 📱 PWA & CSS CONFIGURATION
+# ==========================================
+PWA_HEAD = """
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#1976d2">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/custom.css">
+<script src="/static/pwa.js" defer></script>
+
+<style>
+/* --- ACCORDION COMPACTING (Fixed for your version) --- */
+
+/* 1. Target the Container (Grandparent) */
+/* Use :has() to target only blocks that have a label (Accordions) */
+.block:has(> .label-wrap) {
+    padding: 0 !important;       /* Kills the 'padded' class whitespace */
+    margin-bottom: 0 !important; /* Removes gap below the closed accordion */
+    border: none !important;     /* Optional: removes outer border */
+    overflow: hidden !important; /* Keeps corners tight */
+}
+
+/* 2. Target the Header/Label (Parent) */
+.block > .label-wrap { 
+    padding: 0px 8px !important; 
+    margin: 0 !important;
+    min-height: 32px !important; 
+    height: 32px !important; 
+    display: flex !important;
+    align-items: center !important;
+    background-color: transparent !important;
+    border: none !important;
+}
+
+/* 3. Target the Text Span */
+.block > .label-wrap > span {
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 0.9rem !important;
+}
+
+/* 4. Fix the Arrow Icon */
+.block > .label-wrap .icon {
+    margin: 0 !important;
+    transform: scale(0.8);
+}
+
+/* --- HEADER ALIGNMENT --- */
+#user-status-row {
+    justify-content: flex-end !important; /* Force Right Alignment */
+    text-align: right !important;
+    padding-right: 10px !important;
+}
+
+/* --- DESKTOP TWEAKS --- */
+label span { 
+    font-size: 0.85rem !important; 
+    font-weight: 600 !important; 
+    margin-bottom: 2px !important;
+    opacity: 1 !important; 
+}
+
+/* --- BADGE STYLING --- */
+/* Reset Gradio's default prose container for badges */
+.badge-col .prose { 
+    border: none !important; 
+    background: transparent !important; 
+    padding: 0 !important; 
+    margin: 0 !important;
+    box-shadow: none !important;
+}
+.badge-col { border: none !important; box-shadow: none !important; background: transparent !important; }
+
+.custom-badge {
+    /* Put system emoji fonts FIRST for Windows compatibility */
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", Arial, sans-serif !important;
+    font-size: 0.85rem !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important; 
+    background: #ffffff !important;
+    color: #000000 !important;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 0 10px;
+    text-align: center;
+    height: 42px; 
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    
+    /* Critical for emoji rendering on Windows */
+    font-variant-emoji: emoji;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* 📱 MOBILE OPTIMIZATION */
+@media (max-width: 768px) {
+    .gradio-container { padding: 0 !important; margin: 0 !important; width: 100% !important; overflow-x: hidden; }
+
+    /* 1. HEADER */
+    .compact-header { padding: 2px 5px !important; gap: 0 !important; align-items: center; }
+    .compact-header h3 { margin: 0 !important; font-size: 1.1rem !important; }
+
+    /* 2. TABS: Icon Only */
+    .icon-nav > .tab-nav > button {
+        display: block !important; 
+        font-size: 0 !important;      
+        padding: 12px 0 !important;
+        height: 50px !important;
+        text-align: center !important;
+    }
+    .icon-nav > .tab-nav > button::first-letter {
+        font-size: 1.5rem !important; 
+        visibility: visible !important;
+    }
+
+    /* 3. BUTTONS: Mobile Icon Only */
+    .mobile-icon-only {
+        display: block !important; 
+        font-size: 0 !important;        
+        width: 100% !important;
+        min-width: 40px !important;
+        height: 45px !important;
+        padding: 0 !important;
+        text-align: center !important;  
+        line-height: 45px !important;   
+    }
+    .mobile-icon-only::first-letter {
+        font-size: 1.4rem !important;   
+        visibility: visible !important;
+    }
+    #btn-send { background-color: #2563eb !important; }
+    #btn-send::first-letter { color: white !important; }
+    .btn-secondary::first-letter { color: #374151 !important; }
+
+    /* 4. LAYOUT */
+    #chat_window { height: 60vh !important; }
+    footer, h1 { display: none !important; }
+    .custom-badge { font-size: 0.65rem !important; padding: 2px !important; height: auto !important; }
+    
+    /* Force Alle/Badge to be visible */
+    .compact-row { flex-wrap: nowrap !important; overflow-x: auto !important; }
+}
+
+/* Compact Row alignment (Desktop) */
+.compact-row { gap: 8px !important; align-items: end !important; }
+.compact-row .form { border: none !important; background: transparent !important; }
+</style>
+
+<script>
+// 💾 PERSISTENCE V2
+function saveCredsV2(u, p) { if (u && p) { localStorage.setItem("ak_user", u); localStorage.setItem("ak_pass", p); } }
+function clearCredsV2() { localStorage.removeItem("ak_user"); localStorage.removeItem("ak_pass"); }
+function getCredsV2() {
+    const u = localStorage.getItem("ak_user"); const p = localStorage.getItem("ak_pass");
+    return (u && p) ? JSON.stringify([u, p]) : ""; 
+}
+</script>
+
+"""
 
 # ==========================================
 # UI HELPERS
@@ -4101,6 +3747,7 @@ def update_v_ui_old(prov, force_all=False, user_state=None):
     # Return Badge and Model Update
     return styled_badge, gr.update(choices=final_choices, value=default_val)
 
+# --- IMAGE UI UPDATE ---
 # --- IMAGE UI UPDATE ---
 def update_g_ui(prov, force_all=False, user_state=None):
     styled_badge = f"<div class='custom-badge'>{get_compliance_html(prov)}</div>"
@@ -4321,30 +3968,12 @@ def save_chat(hist, prov, mod, user_state):
             logger.warning("Save chat failed: Empty chat history")
             return "❌ Kein Chat zum Speichern"
 
-        # --- FIX: Extract clean text string from multimodal content for TITLE ---
-        def extract_title_text(content):
-            if isinstance(content, list):
-                # Handle multimodal format: [{'type': 'text', 'text': '...'}]
-                text_parts = [str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("type") == "text"]
-                return " ".join(text_parts)
-            elif isinstance(content, dict):
-                # Fallback if it's a single dict
-                return str(content.get("text", ""))
-            return str(content)
-
-        # Get first message content
-        raw_content = hist[0].get("content", "") if isinstance(hist[0], dict) else str(hist[0])
-        clean_content = extract_title_text(raw_content)
-        
-        # Create title from clean text
-        title = clean_content[:50] + "..." if len(clean_content) > 50 else (clean_content or "Chat ohne Titel")
-        # -----------------------------------------------------------------------
+        # Generate title
+        first_content = hist[0].get("content", "") if isinstance(hist[0], dict) else str(hist[0])
+        title = first_content[:50] + "..." if len(first_content) > 50 else first_content
 
         logger.info(f"Saving chat with title: {title}")
-        
-        # Pass the clean string title to the DB function
-        chat_id = save_chat_history(user_id, prov, mod, hist, title, user_state=user_state)
-        
+        chat_id = save_chat_history(user_id, prov, mod, hist, title)
         logger.info(f"Chat saved successfully with ID: {chat_id}")
 
         return f"✅ Chat gespeichert (ID: {chat_id})"
@@ -4861,61 +4490,16 @@ def undo_last_attachment(hist):
             
     return hist, "⚠️ Letzte Nachricht war kein Anhang"
 
-
-
-
-def check_sensitive_filename(filename: str) -> tuple:
-    """
-    Returns: (is_suspicious, warning_message)
-    """
-    suspicious_keywords = [
-        "personal", "bewerbung", "lebenslauf", "cv", "resume",
-        "seelsorge", "beichte", "patient", "diagnose", "arzt",
-        "geheim", "vertraulich", "verschluss", "confidential",
-        "passwort", "password", "credentials", "token"
-    ]
-    
-    lower_name = filename.lower()
-    for keyword in suspicious_keywords:
-        if keyword in lower_name:
-            return True, f"⚠️ Dateiname enthält sensiblen Begriff: '{keyword}'"
-    
-    return False, ""
-
 def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_files, 
                           sb_files, user_state):
     """
     Attach content to chat with automatic chunking support.
     Uses saved user settings for chunking behavior.
     """
-    # SECURITY CHECK 1: Authentication
     if not user_state or not user_state.get("id"):
         return hist, "❌ Bitte anmelden"
     
     user_id = user_state["id"]
-
-    # SECURITY CHECK: File upload warnings (with tracking)
-    if attach_type == "Datei uploaden" and uploaded_files:
-        # Check if user needs warning
-        show_warning, count = check_user_confirmation(user_id, "upload_warning")
-        
-        if show_warning:
-            files_list = uploaded_files if isinstance(uploaded_files, list) else [uploaded_files]
-            for file_obj in files_list:
-                if hasattr(file_obj, 'name'):
-                    is_suspicious, warning = check_sensitive_filename(os.path.basename(file_obj.name))
-                    if is_suspicious:
-                        # Record confirmation
-                        record_user_confirmation(user_id, "upload_warning")
-                        
-                        # Show warning with counter
-                        remaining = 3 - count - 1
-                        if remaining > 0:
-                            warning_suffix = f"\n\n_(Diese Warnung wird noch {remaining}x angezeigt)_"
-                        else:
-                            warning_suffix = "\n\n_(Dies ist die letzte Warnung. Zukünftig wird sie nicht mehr angezeigt.)_"
-                        
-                        return hist, f"{SENSITIVE_FILE_WARNING}\n\n{warning}{warning_suffix}"
     
     # Load user settings
     settings = get_user_settings(user_id)
@@ -5089,12 +4673,16 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
                 return hist, "❌ Vision-ID fehlt"
             
             try:
-                # USE DECRYPTION FUNCTION
-                vis = get_decrypted_vision(int(attach_id), user_id, user_state)
+                db = get_db()
+                vis = db.query(VisionResult).filter(
+                    VisionResult.id == int(attach_id), 
+                    VisionResult.user_id == user_id
+                ).first()
+                db.close()
                 
                 if vis and vis.result:
                     content_block, status_msg = process_text_content(
-                        vis.result,  # ✓ Now decrypted
+                        vis.result,
                         f"Vision #{vis.id}",
                         "vision"
                     )
@@ -5102,7 +4690,6 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
                     status_messages.append(status_msg)
                 else:
                     return hist, f"❌ Vision-Ergebnis #{attach_id} nicht gefunden"
-                    
                     
             except Exception as e:
                 logger.error(f"Vision attachment error: {e}")
@@ -5166,14 +4753,9 @@ def attach_content_to_chat(hist, attach_type, attach_id, custom_text, uploaded_f
 
 def get_user_prompt_choices(user_state):
     """Get list of user's custom prompt names for dropdown"""
-    if not user_state or not user_state.get("id"): 
-        return gr.update(choices=[], value=None)
-    
+    if not user_state or not user_state.get("id"): return []
     prompts = get_user_custom_prompts(user_state["id"])
-    names = [p.name for p in prompts]
-    
-    # FIX: Return gr.update to set choices, not value
-    return gr.update(choices=names, value=None)
+    return [p.name for p in prompts]
 
 def insert_custom_prompt(prompt_name, current_msg, user_state):
     """Insert selected custom prompt text"""
@@ -5198,22 +4780,15 @@ def load_single_chat(chat_id, user_state=None):
     if not chat_id:
         return None, "❌ Ungültige ID"
 
-    # USE THE DECRYPTION FUNCTION!
-    chat = get_decrypted_chat(int(chat_id), user_state["id"], user_state=user_state) 
-    
+    chat = get_single_chat(int(chat_id), user_state["id"])
     if chat:
         try:
-            # chat.messages is already decrypted by get_decrypted_chat()
             messages = json.loads(chat.messages)
             if isinstance(messages, list) and len(messages) > 0:
                 return messages, f"✅ Chat '{chat.title}' geladen"
             else:
                 return None, "⚠️ Chat-Format veraltet"
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error for chat {chat_id}: {e}")
-            return None, f"🔥 Ladefehler: Ungültiges JSON-Format"
         except Exception as e:
-            logger.error(f"Error loading chat {chat_id}: {e}")
             return None, f"🔥 Ladefehler: {str(e)}"
             
     return None, "❌ Chat nicht gefunden"
@@ -5360,59 +4935,31 @@ def generate_and_handle_ui(prompt, provider, model, width, height, steps, key, u
 
 # --- DB SAVE WRAPPER ---
 def process_gallery_save(img_path, provider, prompt, model, user_state):
-    """
-    Encrypts the image file bytes before saving to persistent storage.
-    Fixed: Properly formats the Key for Fernet.
-    """
+    """Explicit wrapper to handle DB saving safely"""
     try:
-        import base64 # Ensure import
-        
         if not user_state or not user_state.get("id"):
             return "❌ Bitte anmelden", gr.update(visible=True)
         
         user_id = user_state["id"]
-        # Get User Master Key
-        umk = user_state.get('umk') if user_state else crypto.global_key
         
         if not img_path or not os.path.exists(img_path):
             return "❌ Datei nicht gefunden (Session abgelaufen?)", gr.update(visible=True)
 
-        # 1. Prepare Paths
+        import shutil
         permanent_dir = "/var/www/transkript_app/generated_images"
         os.makedirs(permanent_dir, exist_ok=True)
-        
-        # We append .enc to signify it's encrypted
-        filename = f"img_{int(time.time())}_{os.path.basename(img_path)}.enc"
+        filename = f"img_{int(time.time())}_{os.path.basename(img_path)}"
         permanent_path = os.path.join(permanent_dir, filename)
+        shutil.copy2(img_path, permanent_path)
 
-        # 2. Encrypt & Save File
-        with open(img_path, "rb") as f_in:
-            file_data = f_in.read()
-            
-        # FIX: Fernet requires URL-safe Base64 encoded key
-        # If umk is raw bytes (32 bytes), encode it.
-        key_for_fernet = umk
-        if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
-            key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
-            
-        from cryptography.fernet import Fernet
-        f = Fernet(key_for_fernet)
-        encrypted_data = f.encrypt(file_data)
-        
-        with open(permanent_path, "wb") as f_out:
-            f_out.write(encrypted_data)
-
-        # 3. Save Metadata to DB
         img_id = save_generated_image(
             user_id=int(user_id), 
             provider=str(provider), 
             model=str(model), 
             prompt=str(prompt), 
-            image_path=str(permanent_path),
-            user_state=user_state 
+            image_path=str(permanent_path)
         )
-        
-        return f"✅ Verschlüsselt gespeichert (ID: {img_id})", gr.update(visible=False)
+        return f"✅ Gespeichert (ID: {img_id})", gr.update(visible=False)
 
     except Exception as e:
         logger.exception(f"Gallery Save Error: {e}")
@@ -5434,8 +4981,7 @@ def manual_save_transcription(original, translated, provider, model, lang, user_
             original=original,
             translated=translated if translated and translated != "(Whisper: Keine Übersetzung verfügbar)" else None,
             language=lang,
-            filename=filename,
-            user_state=user_state
+            filename=filename
         )
 
         return f"✅ Transkript gespeichert (ID: {trans_id})"
@@ -5449,73 +4995,7 @@ def manual_save_transcription(original, translated, provider, model, lang, user_
 # 🖥️ GUI BUILDER
 # ==========================================
 
-mobile_css_fix = """
-@media (max-width: 768px) {
-    /* 1. Target the tabs container */
-    .tab-nav > button {
-        display: flex !important;
-        justify-content: center !important;
-        align-items: center !important;
-        font-size: 0 !important; /* Hide text by shrinking font to 0 */
-        padding: 10px 0 !important;
-    }
-
-    /* 2. Make the icon visible again */
-    /* Gradio icons are usually SVGs or images inside the button */
-    .tab-nav > button > * {
-        font-size: 1.5rem !important; /* Restore size for children (icons) */
-    }
-
-    /* 3. If icons are text-based (emojis at start of string), use your old trick */
-    /* This targets the first letter (the emoji) and makes it visible */
-    .tab-nav > button::first-letter {
-        font-size: 1.5rem !important;
-        visibility: visible !important;
-    }
-}
-"""
-
-# NEW
-with gr.Blocks(
-    title="Akademie KI Suite", 
-    #theme=gr.themes.Soft(), 
-    #head=PWA_HEAD,      # Only Meta tags/JS here
-    #css=CUSTOM_CSS      # CSS goes here to override Theme defaults
-) as demo:
-
-    # Print debug info on startup
-    print("=" * 60)
-    print("🎨 CSS DEBUG INFO:")
-    print(f"CSS length: {len(CUSTOM_CSS)} characters")
-    print(f"First 100 chars: {CUSTOM_CSS[:100]}")
-    print("=" * 60)
-
-    # 0. INJECT PWA SCRIPTS (Required for Gradio 6+)
-    gr.HTML("""
-    <script>
-    // 💾 PERSISTENCE V2
-    window.saveCredsV2 = function(u, p) { 
-        if (u && p) { 
-            localStorage.setItem("ak_user", u); 
-            localStorage.setItem("ak_pass", p); 
-        } 
-    };
-
-    window.clearCredsV2 = function() { 
-        localStorage.removeItem("ak_user"); 
-        localStorage.removeItem("ak_pass"); 
-    };
-
-    window.getCredsV2 = function() {
-        const u = localStorage.getItem("ak_user"); 
-        const p = localStorage.getItem("ak_pass");
-        if (u && p) {
-            return JSON.stringify([u, p]);
-        }
-        return "";  
-    };
-    </script>
-    """, visible=False)
+with gr.Blocks(title="Akademie KI Suite", theme=gr.themes.Soft(), head=PWA_HEAD) as demo:
         
     # 1. Define the Session "Backpack" (Stores data per browser tab)
     session_state = gr.State({"id": None, "username": None, "is_admin": False})
@@ -5568,26 +5048,14 @@ with gr.Blocks(
                     # 1.1 CONTROLS ROW (Inside Accordion)
                     # Scales: Prov(3), Mod(4), Alle(1), Badge(2)
                     with gr.Row(variant="panel", equal_height=True, elem_classes="compact-row"):
+                        chat_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
+                        chat_providers_implemented = [p for p in chat_providers if is_provider_implemented(p)]
                         
-                        def get_allowed_chat_providers():
-                            """Return only allowed AND implemented providers"""
-                            # 1. Get all providers that support chat
-                            all_providers = [p for p in PROVIDERS.keys() if "chat_models" in PROVIDERS[p]]
-                            
-                            # 2. Filter for implemented providers only
-                            implemented_providers = [p for p in all_providers if is_provider_implemented(p)]
-                            
-                            # 3. Apply EU restriction if enabled
-                            if EU_ONLY_MODE:
-                                return [p for p in implemented_providers if p not in RESTRICTED_PROVIDERS]
-                                
-                            return implemented_providers
-
+                        # Provider
                         c_prov = gr.Dropdown(
-                            choices=get_allowed_chat_providers(),  # ← UPDATED LOGIC APPLIED HERE
+                            choices=chat_providers_implemented,
                             value=DEFAULT_CHAT_PROVIDER,
-                            label="Anbieter",
-                            show_label=True, container=True,
+                            label="Anbieter", show_label=True, container=True,
                             scale=3, min_width=80
                         )
                         
@@ -5623,8 +5091,8 @@ with gr.Blocks(
                 # 2. CHAT WINDOW
                 c_bot = gr.Chatbot(
                     height=500, 
-                    #type="messages", 
-                    #show_copy_button=True,
+                    type="messages", 
+                    show_copy_button=True,
                     elem_id="chat_window"
                 )
                 
@@ -5676,7 +5144,7 @@ with gr.Blocks(
                                 value=[[None, "", "", ""]], 
                                 label="Gespeicherte Chats", 
                                 interactive=False, 
-                                #height=200, 
+                                height=200, 
                                 wrap=True
                             )
                             
@@ -5761,7 +5229,7 @@ with gr.Blocks(
                         value=[[None, "", "", ""]], 
                         label="Gespeicherte Chats", 
                         interactive=False, 
-                        #height=200, 
+                        height=200, 
                         wrap=True
                     )
                     
@@ -5884,73 +5352,69 @@ with gr.Blocks(
                         outputs=[c_bot, attach_status]
                     )
 
-                # --- EVENT WIRING for 
-                # # 1. Define the Generation Events (Save into variables)
-                # We need these variables to pass them to the Stop button
-                
-                # A. Submit via Enter Key
-                submit_event = c_msg.submit(
-                    user_msg, 
-                    [c_msg, c_bot], 
-                    [c_msg, c_bot], 
-                    queue=False
-                ).then(
+                # --- EVENT WIRING ---
+
+                # Chat Execution (With Stop)
+                submit_event = c_msg.submit(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
                     bot_msg, 
-                    # Inputs: History, Provider, Model, Temp, System, Key, Effort, Tokens, State
+                    # Add session_state to the inputs list
                     [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
                     c_bot
                 )
 
-                # B. Submit via Send Button
-                click_event = c_btn.click(
-                    user_msg, 
-                    [c_msg, c_bot], 
-                    [c_msg, c_bot], 
-                    queue=False
-                ).then(
+                click_event = c_btn.click(user_msg, [c_msg, c_bot], [c_msg, c_bot], queue=False).then(
                     bot_msg, 
+                    # Add session_state to the inputs list
                     [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
                     c_bot
                 )
                 
-                # 2. Configure Stop Button
-                # 'cancels' must list the exact events created above
-                # 'queue=False' is CRITICAL for the stop button to trigger immediately
-                c_stop_btn.click(
-                    fn=None, 
-                    inputs=None, 
-                    outputs=None, 
-                    cancels=[submit_event, click_event],
-                    queue=False
-                )
+                # Stop Button
+                c_stop_btn.click(fn=None, cancels=[submit_event, click_event])
 
-                # 3. Other Buttons
+                # Save & Clear
                 c_save_btn.click(save_chat, [c_bot, c_prov, c_model, session_state], c_save_status)
                 c_clear_btn.click(lambda: ([], ""), outputs=[c_bot, c_save_status])
 
-                # 4. History & Attachments (Existing logic)
+                # History Logic
                 chat_tab.select(load_chat_list_with_state, inputs=[session_state], outputs=[old_chats, c_history_state])
                 refresh_chats_btn.click(load_chat_list_with_state, inputs=[session_state], outputs=[old_chats, c_history_state])
                 old_chats.select(select_chat_row, inputs=[c_history_state], outputs=[load_chat_id])
                 load_chat_btn.click(load_single_chat, inputs=[load_chat_id, session_state], outputs=[c_bot, chat_load_status])
                 delete_chat_btn.click(delete_chat, inputs=[load_chat_id, session_state], outputs=[chat_load_status, old_chats, c_history_state])
 
+                # Attachment Logic
                 attach_btn.click(
                     attach_content_to_chat, 
+                    # Added session_state
                     inputs=[c_bot, attach_type, attach_id, attach_custom, attach_file, attach_sb_browser, session_state], 
                     outputs=[c_bot, attach_status]
                 )
 
-                c_prompt_refresh.click(get_user_prompt_choices, inputs=[session_state], outputs=c_prompt_select)
-                chat_tab.select(get_user_prompt_choices, inputs=[session_state], outputs=c_prompt_select)
-                c_insert_prompt_btn.click(insert_custom_prompt, inputs=[c_prompt_select, c_msg, session_state], outputs=[c_msg])
+                # Prompt Logic
+                c_prompt_refresh.click(
+                    get_user_prompt_choices, 
+                    inputs=[session_state], 
+                    outputs=c_prompt_select
+                )
+                chat_tab.select(
+                    get_user_prompt_choices, 
+                    inputs=[session_state], 
+                    outputs=c_prompt_select
+                )
+
+                c_insert_prompt_btn.click(
+                    insert_custom_prompt, 
+                    inputs=[c_prompt_select, c_msg, session_state], 
+                    outputs=[c_msg]
+                )
                 
             # --- TAB 2: TRANSKRIPTION ---
             with gr.TabItem("🎙️ Transkription"):
                 with gr.Row():
                     with gr.Column():
                         # --- INPUT SELECTION: Upload vs Storage Box ---
-                        with gr.Tabs() as input_source_tabs:
+                        with gr.Tabs():
                             with gr.TabItem("📤 Upload"):
                                 t_audio = gr.Audio(type="filepath", label="Datei hochladen")
                             
@@ -5959,68 +5423,13 @@ with gr.Blocks(
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*", 
-                                    #height=300,
+                                    height=300,
                                     label="Dateien durchsuchen"
                                 )
                                 with gr.Row():
                                     t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
                                     t_load_sb_btn = gr.Button("✅ Diese verwenden", variant="secondary", scale=1)
                                 t_sb_status = gr.Markdown("")
-
-                            with gr.TabItem("🔗 URL Download"):
-                                gr.Markdown("""
-                                ### ✅ Freigegebene Kanäle:
-                                """)
-                                
-                                # Dynamic whitelist display
-                                whitelist_md = "\n".join([f"- `{ch}`" for ch in YOUTUBE_CHANNEL_WHITELIST])
-                                gr.Markdown(whitelist_md)
-                                
-                                gr.Markdown("""
-                                ---
-                                ### ⚠️ Nur eigene oder lizenzierte Inhalte herunterladen
-                                """)
-                                
-                                t_url_input = gr.Textbox(
-                                    label="URL",
-                                    placeholder="https://www.youtube.com/watch?v=... oder direkte Audio-URL",
-                                    lines=1
-                                )
-
-                                # --- NEW: Admin Options ---
-                                with gr.Group(visible=False) as admin_dl_group:
-                                    gr.Markdown("🔒 **Admin / Medienverwalter Optionen**")
-                                    with gr.Row():
-                                        t_force_dl = gr.Checkbox(
-                                            label="📥 Lokal herunterladen (yt-dlp)", 
-                                            value=False,
-                                            info="Erzwingt Download auf den Server. Nötig für Mistral/Whisper. Bei Gladia optional."
-                                        )
-                                        t_dl_video = gr.Checkbox(
-                                            label="🎥 Video behalten",
-                                            value=False,
-                                            interactive=True
-                                        )
-                                    
-                                    t_dl_destination = gr.Radio(
-                                        choices=["Storage Box", "VPS Temp"],
-                                        value="Storage Box",
-                                        label="Speicherort"
-                                    )
-                                # --------------------------
-                                
-                                # Dynamic Logic: Show Admin Group if User is privileged
-                                def toggle_admin_dl_options(user_state):
-                                    if user_state and (user_state.get("is_admin") or user_state.get("is_media_manager")):
-                                        return gr.update(visible=True)
-                                    return gr.update(visible=False)
-                                
-                                # Trigger check when tab is selected or login changes
-                                input_source_tabs.select(
-                                    toggle_admin_dl_options, 
-                                    inputs=[session_state], 
-                                    outputs=admin_dl_group
-                                )
 
                         # Logic: Storage Box Selection
                         def use_storage_file(selected_files):
@@ -6056,8 +5465,12 @@ with gr.Blocks(
                                         value=True, 
                                         label="🎭 Sprecher",
                                         scale=1,
+                                        # container=False,
+                                        # elem_classes="transparent-checkbox" # <--- Added Class
                                     )
                             
+                                    # t_badge = gr.HTML(value=get_compliance_html("Gladia"))
+                                
                                     t_badge = gr.HTML(
                                         value=f"<div class='custom-badge'>{get_compliance_html('Deepgram')}</div>"
                                     )
@@ -6065,6 +5478,8 @@ with gr.Blocks(
                         # --- SETTINGS ACCORDION ---
                         with gr.Accordion("⚙️ Einstellungen", open=False):
                             
+                            # Note: Badge removed from here as it is now in the top row
+
                             # 1. Language & Model
                             with gr.Row():
                                 t_lang = gr.Dropdown(
@@ -6117,17 +5532,17 @@ with gr.Blocks(
                         def toggle_translation(chk):
                             return gr.update(visible=chk), gr.update(visible=chk)
                         
-                        # 3. Model Refresh Logic
+                        # 3. Model Refresh Logic (Optional specific handler)
                         t_refresh_models.click(
-                            lambda p: update_t_ui(p, force_all=True)[1],
+                            lambda p: update_t_ui(p, force_all=True)[1], # Return only model update
                             inputs=t_prov, 
                             outputs=t_model
                         )
 
                     with gr.Column():
                         # OUTPUTS
-                        t_orig = gr.Textbox(label="📄 Transkript", lines=15)
-                        t_trsl = gr.Textbox(label="🌍 Übersetzung", lines=15, visible=False)
+                        t_orig = gr.Textbox(label="📄 Transkript", lines=15, show_copy_button=True)
+                        t_trsl = gr.Textbox(label="🌍 Übersetzung", lines=15, show_copy_button=True, visible=False)
 
                         # Wire visibility toggle for translation output
                         t_trans.change(toggle_translation, inputs=t_trans, outputs=[t_target, t_trsl])
@@ -6212,7 +5627,6 @@ with gr.Blocks(
                         t_diar, t_trans, t_target, t_key,
                         w_chunk_opt, w_chunk_len,
                         t_lang, t_diar, t_lang, t_diar,
-                        t_url_input, t_dl_video, t_dl_destination, t_force_dl,
                         session_state 
                     ], 
                     outputs=[t_log, t_orig, t_trsl]
@@ -6256,7 +5670,7 @@ with gr.Blocks(
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*",
-                                    #height=300,
+                                    height=300,
                                     label="Bilder durchsuchen"
                                 )
                                 with gr.Row():
@@ -6379,9 +5793,7 @@ with gr.Blocks(
                         g_stat = gr.Textbox(label="Status", interactive=False, visible=True)
                         
                     with gr.Column():
-                        g_out = gr.Image(label="Ergebnis", type="filepath", 
-                                         #show_download_button=False, 
-                                         height=400)
+                        g_out = gr.Image(label="Ergebnis", type="filepath", show_download_button=False, height=400)
                         
                         with gr.Row():
                              g_download_file = gr.File(label="Download", scale=1)
@@ -6426,28 +5838,10 @@ with gr.Blocks(
                 # Optional: Helper to make tables look full
                 def pad_data(data, width, min_rows=6):
                     while len(data) < min_rows:
+                        # Use empty strings instead of None to prevent JS freezes
                         row = [""] * width 
                         data.append(row)
                     return data
-
-                # Helper: Robust Decryption for Lists
-                def decrypt_for_display(encrypted_text, user_state):
-                    if not encrypted_text: return ""
-                    # 1. Get Keys
-                    umk = user_state.get('umk') if user_state else crypto.global_key
-                    
-                    try:
-                        # 2. Try User Key first
-                        return crypto.decrypt_text(encrypted_text, key=umk)
-                    except:
-                        # 3. Fallback to Global Key (Legacy Support)
-                        # This causes the "MAC Check Failed" log, but allows reading old data
-                        try:
-                            res = crypto.decrypt_text(encrypted_text, key=crypto.global_key)
-                            if res == "[Decryption Failed]": return "🔒 [Verschlüsselt]"
-                            return res
-                        except:
-                            return "🔒 [Datenfehler]"
 
                 with gr.Tabs() as history_tabs:
 
@@ -6455,17 +5849,18 @@ with gr.Blocks(
                     # 1. TRANSCRIPTIONS
                     # =========================================================
                     with gr.TabItem("🎙️ Transkriptions-Verlauf") as trans_tab:
+                        # State to store real data (for lookup)
                         trans_state = gr.State([])
 
-                        # 1. TABLE
+                        # 1. TABLE (Initialized with empty skeleton rows)
                         with gr.Group():
                             gr.Markdown("#### 📋 Gespeicherte Transkripte")
                             trans_history = gr.Dataframe(
                                 headers=["ID", "Datum", "Titel", "Provider", "Sprache"],
-                                value=[],  # Start Empty
-                                #value=[[None, "", "", "", ""]] * 6,
+                                value=[[None, "", "", "", ""]] * 6, # <--- INITIALIZES EMPTY GRID
                                 interactive=False,
                                 wrap=True,
+                                height=300,
                                 datatype=["number", "str", "str", "str", "str"],
                                 column_widths=["10%", "20%", "40%", "15%", "15%"]
                             )
@@ -6484,82 +5879,55 @@ with gr.Blocks(
                                 delete_trans_btn = gr.Button("🗑️ Löschen", variant="stop", size="lg")
 
                         # 3. PREVIEW
-                        loaded_trans_display = gr.Textbox(label="Inhalt", lines=8, max_lines=15)
+                        loaded_trans_display = gr.Textbox(label="Inhalt", lines=8, max_lines=15, show_copy_button=True)
                         trans_action_status = gr.Markdown("")
 
                         # --- LOGIC ---
                         def load_trans_data(user_state=None):
-                            """Load transcriptions filtered by current user."""
-                            # 1. Strict Auth Check
-                            if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
-                                return [], []
-                            
-                            user_id = user_state["id"]
-                            
+                            if not user_state or not user_state.get("id"):
+                                return pad_data([], 5), []
                             try:
-                                db = SessionLocal()
-                                # FILTER BY USER_ID
-                                t_list = db.query(Transcription).filter(
-                                    Transcription.user_id == user_id
-                                ).order_by(Transcription.timestamp.desc()).limit(50).all()
-                                db.close()
-                                
-                                clean_data = []
-                                for t in t_list:
-                                    clean_data.append([
-                                        t.id, 
-                                        t.timestamp.strftime("%Y-%m-%d %H:%M"), 
-                                        t.title or "—", 
-                                        t.provider, 
-                                        t.language or "?"
-                                    ])
-                                    
-                                return clean_data, clean_data
-                                
+                                t_list = get_user_transcriptions(user_state["id"])
+                                clean_data = [[t.id, t.timestamp.strftime("%Y-%m-%d %H:%M"), t.title or "—", t.provider, t.language] for t in t_list]
+                                return pad_data(list(clean_data), 5), clean_data
                             except Exception as e:
-                                logger.exception(f"Error loading transcriptions: {e}")
-                                return [], []
-                            
+                                logger.exception(e)
+                                return pad_data([], 5), []
+
                         def load_single_trans(tid, user_state):
                             if not tid or not user_state or not user_state.get("id"): 
                                 return gr.update(), "❌"
-                            
-                            t = get_decrypted_transcription(int(tid), user_state["id"], user_state)
-                            if t:
-                                return (t.original_text, f"✅ Geladen: {t.title}")
-                            else:
-                                return ("", "❌ Nicht gefunden")
-                            
+                            db = SessionLocal()
+                            t = db.query(Transcription).filter(Transcription.id == int(tid), Transcription.user_id == user_state["id"]).first()
+                            db.close()
+                            return (t.original_text, f"✅ Geladen: {t.title}") if t else ("", "❌ Nicht gefunden")
+                        
                         def select_trans_row(evt: gr.SelectData, state_data, user_state):
+                            """Smart Selection: Uses state to find ID from ANY column click"""
                             try:
                                 if not user_state or not user_state.get("id"):
                                     return 0, "", "❌ Bitte anmelden"
 
                                 row_idx = evt.index[0]
+                                # Check if row exists in real data
                                 if state_data and row_idx < len(state_data):
                                     real_row = state_data[row_idx]
-                                    t_id = int(real_row[0]) 
+                                    t_id = int(real_row[0]) # ID is col 0
                                     
+                                    # Call loader with state
                                     content, status = load_single_trans(t_id, user_state)
                                     return t_id, content, status
                             except Exception as e: 
                                 logger.error(f"Select Error: {e}")
                             
-                            return 0, "", ""
+                            return 0, "", "" # Return safe defaults instead of gr.update()
 
-                        # FIX: del_trans now returns exactly 4 values to match outputs
                         def del_trans(tid, user_state):
-                            empty_df, empty_state = pad_data([], 5), []
-                            
                             if not user_state or not user_state.get("id"):
-                                return "", "❌ Auth Fehler", empty_df, empty_state
+                                return "", "❌ Auth Fehler", [], []
                             
-                            if not tid:
-                                d, s = load_trans_data(user_state)
-                                return "", "⚠️ Keine ID", d, s
-
-                            if delete_transcription(int(tid), user_state["id"]):
-                                d, s = load_trans_data(user_state)
+                            if delete_transcription(int(tid or 0), user_state["id"]):
+                                d, s = load_trans_data(user_state) # Pass state recursively
                                 return "", "✅ Gelöscht", d, s
                             
                             d, s = load_trans_data(user_state)
@@ -6567,23 +5935,26 @@ with gr.Blocks(
 
                         # Wiring
                         refresh_trans_btn.click(load_trans_data, inputs=[session_state], outputs=[trans_history, trans_state])
+
+                        # --- AUTO-LOAD ON TAB SELECT ---
                         trans_tab.select(load_trans_data, inputs=[session_state], outputs=[trans_history, trans_state])
 
+                        # Pass 'trans_state' to select so we know what was clicked
                         trans_history.select(
                             select_trans_row, 
                             inputs=[trans_state, session_state], 
                             outputs=[trans_id_input, loaded_trans_display, trans_action_status]
                         )
                         trans_id_input.change(load_single_trans, inputs=[trans_id_input, session_state], outputs=[loaded_trans_display, trans_action_status])
+                        delete_trans_btn.click(del_trans, inputs=[trans_id_input, session_state], outputs=[loaded_trans_display, trans_action_status, trans_history, trans_state])
                         
-                        delete_trans_btn.click(
-                            del_trans, 
-                            inputs=[trans_id_input, session_state], 
-                            outputs=[loaded_trans_display, trans_action_status, trans_history, trans_state]
-                        )
-                        
-                        # FIX: Direct reference to c_msg (defined in Chat Tab)
-                        trans_to_chat_btn.click(lambda x: x, inputs=loaded_trans_display, outputs=c_msg)
+                        # Chat Button
+                        if 'msg_input' in locals():
+                            trans_to_chat_btn.click(
+                                lambda x: x, 
+                                inputs=loaded_trans_display, 
+                                outputs=c_msg 
+                            )
 
                     # =========================================================
                     # 2. GENERATED IMAGES
@@ -6595,10 +5966,10 @@ with gr.Blocks(
                             gr.Markdown("#### 🖼️ Bild-Historie")
                             images_history = gr.Dataframe(
                                 headers=["ID", "Datum", "Prompt", "Modell"],
-                                value=[], # Start Empty
-                                #value=[[None, "", "", ""]] * 6, 
+                                value=[[None, "", "", ""]] * 6, # Initial Skeleton
                                 interactive=False,
                                 wrap=True,
+                                height=300,
                                 datatype=["number", "str", "str", "str"],
                                 column_widths=["10%", "20%", "50%", "20%"]
                             )
@@ -6618,149 +5989,31 @@ with gr.Blocks(
                         with gr.Row():
                             loaded_img_display = gr.Image(label="Vorschau", height=300, type="filepath", interactive=False)
                             with gr.Column():
-                                loaded_img_prompt = gr.Textbox(label="Prompt", lines=10)
+                                loaded_img_prompt = gr.Textbox(label="Prompt", lines=10, show_copy_button=True)
                                 img_action_status = gr.Markdown("")
 
                         # --- LOGIC ---
                         def load_img_data(user_state=None):
-                            """
-                            Load images and force decryption of the prompt for the table view.
-                            """
-                            # 1. Strict Auth Check
-                            if not user_state or not isinstance(user_state, dict) or not user_state.get("id"):
-                                return [], []
-                            
+                            if not user_state or not user_state.get("id"): 
+                                return pad_data([], 4), []
                             try:
-                                # Get Session Key
-                                umk = user_state.get('umk') if user_state else crypto.global_key
-                                user_id = user_state["id"]
-                                
-                                db = SessionLocal()
-                                i_list = db.query(GeneratedImage).filter(
-                                    GeneratedImage.user_id == user_id
-                                ).order_by(GeneratedImage.timestamp.desc()).limit(50).all()
-                                db.close()
-                                
-                                clean = []
-                                
-                                for i in i_list:
-                                    # 2. Decrypt Prompt for Display
-                                    raw_prompt = str(i.prompt)
-                                    dec_prompt = raw_prompt
-
-
-                                    # FIX: Always try to decrypt, don't check for specific header
-                                    try:
-                                        # Try User Key
-                                        candidate = crypto.decrypt_text(raw_prompt, key=umk)
-                                        if candidate and candidate != "[Decryption Failed]":
-                                            dec_prompt = candidate
-                                        else:
-                                            # Fallback for legacy data (Global Key)
-                                            if umk != crypto.global_key:
-                                                legacy = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
-                                                if legacy and legacy != "[Decryption Failed]":
-                                                    dec_prompt = legacy
-                                    except Exception:
-                                        # If it crashes, it's likely already plaintext or totally broken
-                                        pass
-                                    
-                                    # Truncate for table view
-                                    display_prompt = (dec_prompt[:75] + '...') if len(dec_prompt) > 75 else dec_prompt
-                                    
-                                    clean.append([
-                                        i.id, 
-                                        i.timestamp.strftime("%Y-%m-%d"), 
-                                        display_prompt, 
-                                        i.model
-                                    ])
-                                    
-                                return clean, clean
-                                
-                            except Exception as e:
-                                logger.error(f"Img Load Error: {e}") 
-                                return [], []
+                                i_list = get_user_generated_images(user_state["id"])
+                                clean = [[i.id, i.timestamp.strftime("%Y-%m-%d"), i.prompt, i.model] for i in i_list]
+                                return pad_data(list(clean), 4), clean
+                            except: return pad_data([], 4), []
 
                         def load_single_img(tid, user_state=None):
-                            """
-                            Loads DB record, decrypts the PROMPT and the IMAGE file.
-                            Fixed: Key encoding for image decryption & blind prompt decryption.
-                            """
+                            # Security check: technically images are static files, but we check ownership of metadata
                             if not tid or not user_state or not user_state.get("id"): 
                                 return None, "", "❌"
                             
-                            try:
-                                import base64
-                                
-                                db = SessionLocal()
-                                img = db.query(GeneratedImage).filter(
-                                    GeneratedImage.id == int(tid),
-                                    GeneratedImage.user_id == user_state["id"]
-                                ).first()
-                                db.close()
-                                
-                                if not img or not img.image_path or not os.path.exists(img.image_path):
-                                    return None, "", "❌ Nicht gefunden"
-
-                                # Get Key
-                                umk = user_state.get('umk') if user_state else crypto.global_key
-
-                                # 1. Decrypt Prompt (Blind attempt)
-                                raw_prompt = str(img.prompt)
-                                final_prompt = raw_prompt
-                                logger.info(f"Raw prompt {raw_prompt}.")
-
-                                try:
-                                    candidate = crypto.decrypt_text(raw_prompt, key=umk)
-                                    logger.info(f"Decrypted prompt {candidate}.")
-                                    if candidate and candidate != "[Decryption Failed]":
-                                        final_prompt = candidate
-                                    elif umk != crypto.global_key:
-                                        # Fallback
-                                        legacy = crypto.decrypt_text(raw_prompt, key=crypto.global_key)
-                                        logger.info(f"Decrypted (legacy) prompt: {legacy}.")
-                                        if legacy and legacy != "[Decryption Failed]":
-                                            final_prompt = legacy
-                                except Exception:
-                                    pass
-
-                                # 2. Decrypt Image File (if needed)
-                                display_path = img.image_path
-                                
-                                if img.image_path.endswith(".enc"):
-                                    try:
-                                        with open(img.image_path, "rb") as f:
-                                            enc_data = f.read()
-                                        
-                                        # FIX: Ensure Key is B64 for Fernet
-                                        key_for_fernet = umk
-                                        if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
-                                            key_for_fernet = base64.urlsafe_b64encode(key_for_fernet)
-
-                                        from cryptography.fernet import Fernet
-                                        f_eng = Fernet(key_for_fernet)
-                                        dec_data = f_eng.decrypt(enc_data)
-                                        
-                                        # Write to temp file
-                                        original_name = os.path.basename(img.image_path).replace(".enc", "")
-                                        if "." not in original_name: original_name += ".jpg"
-                                        
-                                        temp_decrypted_path = os.path.join(tempfile.gettempdir(), f"dec_{original_name}")
-                                        
-                                        with open(temp_decrypted_path, "wb") as f_out:
-                                            f_out.write(dec_data)
-                                            
-                                        display_path = temp_decrypted_path
-                                        
-                                    except Exception as e:
-                                        logger.error(f"Image decryption failed: {e}")
-                                        return None, final_prompt, f"❌ Bild-Fehler: {str(e)}"
-
-                                return display_path, final_prompt, f"✅ Geladen"
-
-                            except Exception as e:
-                                logger.error(f"Load Single Image Error: {e}")
-                                return None, "", f"🔥 Fehler: {str(e)}"
+                            db = SessionLocal()
+                            img = db.query(GeneratedImage).filter(GeneratedImage.id == int(tid), GeneratedImage.user_id == user_state["id"]).first()
+                            db.close()
+                            
+                            if img and os.path.exists(img.image_path):
+                                return img.image_path, img.prompt, f"✅ Geladen"
+                            return None, "", "❌ Datei fehlt/Zugriff verweigert"
 
                         def select_img_row(evt: gr.SelectData, state_data, user_state):
                             try:
@@ -6772,30 +6025,27 @@ with gr.Blocks(
                                     real_row = state_data[row_idx]
                                     tid = int(real_row[0])
                                     
+                                    # Call loader with state
                                     path, prmt, stat = load_single_img(tid, user_state)
                                     return tid, path, prmt, stat
                             except: pass
                             return 0, None, "", ""
 
                         def del_img(tid, user_state):
-                            empty_df, empty_state = pad_data([], 4), []
                             if not user_state or not user_state.get("id"):
-                                return None, "", "❌ Auth", empty_df, empty_state
+                                return None, "", "❌ Auth", [], []
 
                             delete_generated_image(int(tid or 0), user_state["id"])
                             d, s = load_img_data(user_state)
                             return None, "", "✅ Gelöscht", d, s
 
                         refresh_images_btn.click(load_img_data, inputs=[session_state], outputs=[images_history, img_state])
+                        
                         images_tab.select(load_img_data, inputs=[session_state], outputs=[images_history, img_state])
 
                         img_id_input.change(load_single_img, inputs=[img_id_input, session_state], outputs=[loaded_img_display, loaded_img_prompt, img_action_status])
                         
-                        delete_img_btn.click(
-                            del_img, 
-                            inputs=[img_id_input, session_state], 
-                            outputs=[loaded_img_display, loaded_img_prompt, img_action_status, images_history, img_state]
-                        )
+                        delete_img_btn.click(del_img, inputs=[img_id_input, session_state], outputs=[loaded_img_display, loaded_img_prompt, img_action_status, images_history, img_state])
                         
                         images_history.select(
                             select_img_row, 
@@ -6803,8 +6053,12 @@ with gr.Blocks(
                             outputs=[img_id_input, loaded_img_display, loaded_img_prompt, img_action_status]
                         )
 
-                        # FIX: Direct reference to c_msg
-                        img_to_chat_btn.click(lambda x: x, inputs=loaded_img_prompt, outputs=c_msg)
+                        if 'msg_input' in locals():
+                            img_to_chat_btn.click(
+                                lambda x: x, 
+                                inputs=loaded_img_prompt, 
+                                outputs=c_msg
+                            )
 
                     # =========================================================
                     # 3. CUSTOM PROMPTS
@@ -6824,9 +6078,10 @@ with gr.Blocks(
                                 gr.Markdown("#### 📂 Gespeicherte Vorlagen")
                                 saved_prompts = gr.Dataframe(
                                     headers=["ID", "Name", "Kategorie"],
-                                    value=[[None, "", ""]] * 6,
+                                    value=[[None, "", ""]] * 6, # Skeleton
                                     interactive=False,
                                     wrap=True,
+                                    height=300,
                                     datatype=["number", "str", "str"],
                                     column_widths=["15%", "50%", "35%"]
                                 )
@@ -6878,9 +6133,8 @@ with gr.Blocks(
                             return "✅ Gespeichert", d, s
 
                         def del_p(tid, user_state=None):
-                            empty_df, empty_state = pad_data([], 3), []
                             if not user_state or not user_state.get("id"):
-                                return "❌ Auth Fehler", empty_df, empty_state
+                                return "❌ Auth Fehler", [], []
 
                             delete_custom_prompt(int(tid or 0), user_state["id"])
                             d, s = load_prompts_data(user_state)
@@ -6891,20 +6145,19 @@ with gr.Blocks(
                         prompts_tab.select(load_prompts_data, inputs=[session_state], outputs=[saved_prompts, prompt_state])
 
                         prompt_id_load.change(load_single_prompt, inputs=[prompt_id_load, session_state], outputs=loaded_prompt_display)
-                        
-                        delete_prompt_btn.click(
-                            del_p, 
-                            inputs=[prompt_id_load, session_state], 
-                            outputs=[loaded_prompt_display, saved_prompts, prompt_state]
-                        )
+                        delete_prompt_btn.click(del_p, inputs=[prompt_id_load, session_state], outputs=[loaded_prompt_display, saved_prompts, prompt_state])
                         saved_prompts.select(
-                            select_prompt_row,
+                            select_prompt_row, 
                             inputs=[prompt_state, session_state],
                             outputs=[prompt_id_load, loaded_prompt_display]
                         )
                                                 
-                        # FIX: Direct reference to c_msg
-                        prompt_to_chat_btn.click(lambda x: x, inputs=loaded_prompt_display, outputs=c_msg)
+                        if 'msg_input' in locals():
+                            prompt_to_chat_btn.click(
+                                lambda x: x, 
+                                inputs=loaded_prompt_display, 
+                                outputs=c_msg
+                            )
 
                     
                     # =========================================================
@@ -6929,10 +6182,8 @@ with gr.Blocks(
                         resume_result = gr.Textbox(label="Ergebnis", lines=10)
 
                         # Logic
-                        def list_failed_jobs(user_state):
-                            if not user_state or not user_state.get("id"):
-                                return [["Bitte anmelden", "", "", ""]]
-                            data = get_failed_jobs(user_state["id"]) # <--- PASS ID
+                        def list_failed_jobs():
+                            data = get_failed_jobs()
                             return data if data else [["Keine offenen Jobs", "", "", ""]]
 
                         def resume_job_process(jid):
@@ -6969,10 +6220,10 @@ with gr.Blocks(
                                 yield f"🔥 Fehler: {e}", ""
 
                         # Wiring
-                        refresh_jobs_btn.click(list_failed_jobs, inputs=[session_state], outputs=failed_jobs_table)
+                        refresh_jobs_btn.click(list_failed_jobs, outputs=failed_jobs_table)
                         
                         # --- FIX: AUTO-LOAD ON TAB SELECT ---
-                        jobs_tab.select(list_failed_jobs, inputs=[session_state], outputs=failed_jobs_table)
+                        jobs_tab.select(list_failed_jobs, outputs=failed_jobs_table)
 
                         resume_btn.click(resume_job_process, inputs=resume_job_id_input, outputs=[resume_log, resume_result])
                         
@@ -6988,14 +6239,9 @@ with gr.Blocks(
                         gr.Markdown("## 🎯 Bevorzugte Modelle verwalten")
                         gr.Markdown("Wähle welche Modelle in den Dropdown-Menüs erscheinen sollen und lege die Reihenfolge fest.")
                         
-                        
-                        def get_implemented_provider_choices():
-                            """Return list of providers that are marked as implemented"""
-                            return [p for p in PROVIDERS.keys() if is_provider_implemented(p)]
-                        
                         with gr.Row():
                             pref_provider = gr.Dropdown(
-                                choices=get_implemented_provider_choices(),
+                                choices=list(PROVIDERS.keys()),
                                 value="Scaleway",
                                 label="Provider auswählen"
                             )
@@ -7012,7 +6258,7 @@ with gr.Blocks(
                                     value=[["", ""]],
                                     interactive=False,
                                     wrap=True,
-                                    #height=400
+                                    height=400
                                 )
                             
                             with gr.Column(scale=1):
@@ -7026,7 +6272,7 @@ with gr.Blocks(
                                     value=[["", "", "", ""]],
                                     interactive=False,
                                     wrap=True,
-                                    #height=400,
+                                    height=400,
                                     datatype=["number", "str", "str", "bool"]
                                 )
                                 
@@ -7351,56 +6597,6 @@ with gr.Blocks(
                             
                             check_btn = gr.Button("📊 Context-Limit prüfen")
                             limit_display = gr.Markdown("")
-
-                        with gr.Group():
-                            gr.Markdown("#### 🔑 Passwort ändern")
-                            gr.Markdown("*Master Key wird automatisch neu verschlüsselt*")
-                            
-                            with gr.Row():
-                                pw_old = gr.Textbox(
-                                    label="Aktuelles Passwort",
-                                    type="password",
-                                    placeholder="***"
-                                )
-                            with gr.Row():
-                                pw_new = gr.Textbox(
-                                    label="Neues Passwort",
-                                    type="password",
-                                    placeholder="Mindestens 8 Zeichen"
-                                )
-                                pw_new_confirm = gr.Textbox(
-                                    label="Passwort bestätigen",
-                                    type="password",
-                                    placeholder="Wiederholen"
-                                )
-                            
-                            change_pw_btn = gr.Button("🔑 Passwort ändern", variant="primary")
-                            change_pw_status = gr.Markdown("")
-
-                        # Add the handler function:
-                        def handle_password_change(old_pw, new_pw, confirm_pw, user_state):
-                            if not user_state or not user_state.get("id"):
-                                return "❌ Nicht angemeldet"
-                            
-                            if not old_pw or not new_pw:
-                                return "❌ Alle Felder ausfüllen"
-                            
-                            if new_pw != confirm_pw:
-                                return "❌ Neue Passwörter stimmen nicht überein"
-                            
-                            if len(new_pw) < 8:
-                                return "⚠️ Passwort sollte mindestens 8 Zeichen haben"
-                            
-                            # Use the existing secure function
-                            success, message = change_password_secure(user_state["id"], old_pw, new_pw)
-                            return message
-
-                        # Wire it up:
-                        change_pw_btn.click(
-                            handle_password_change,
-                            inputs=[pw_old, pw_new, pw_new_confirm, session_state],
-                            outputs=[change_pw_status]
-                        )
                         
                         with gr.Row():
                             save_settings_btn = gr.Button("💾 Einstellungen speichern", variant="primary", size="lg")
@@ -7633,7 +6829,7 @@ with gr.Blocks(
                             value=[["", "", "", "", ""]],
                             interactive=False,
                             wrap=True,
-                            #height=400,
+                            height=400,
                             datatype=["number", "str", "str", "str", "str"],
                             column_widths=["10%", "25%", "25%", "20%", "20%"]
                         )
@@ -7693,21 +6889,6 @@ with gr.Blocks(
                                 """)
                                 toggle_admin_btn = gr.Button("⬆️⬇️ Admin-Status umschalten", variant="secondary")
                                 toggle_admin_status = gr.Markdown("")
-
-                            with gr.TabItem("🎬 Medienverwalter"):
-                                gr.Markdown("""
-                                ### 🎬 Medienverwalter-Status umschalten:
-                                - User kann alle YouTube-URLs herunterladen (nicht nur Whitelist)
-                                """)
-                                toggle_media_btn = gr.Button("🎬 Medienverwalter-Status umschalten", variant="secondary")
-                                toggle_media_status = gr.Markdown("")
-
-                            # Event Handler
-                            toggle_media_btn.click(
-                                toggle_media_manager_status,
-                                inputs=[selected_user_id, session_state],
-                                outputs=[toggle_media_status, users_table]
-                            )
                             
                             # DELETE USER
                             with gr.TabItem("🗑️ Benutzer löschen"):
@@ -7745,85 +6926,6 @@ with gr.Blocks(
                             return gr.update()
                         
                         users_table.select(select_user_from_table, outputs=selected_user_id)
-
-                    with gr.TabItem("📝 Kanal-Whitelist"):
-                        gr.Markdown("### 📝 YouTube-Kanal Whitelist verwalten")
-                        
-                        current_whitelist = gr.Dataframe(
-                            headers=["Kanal-Identifier"],
-                            value=[[ch] for ch in YOUTUBE_CHANNEL_WHITELIST],
-                            interactive=False,
-                            #height=300
-                        )
-                        
-                        with gr.Row():
-                            new_channel = gr.Textbox(
-                                label="Neuen Kanal hinzufügen",
-                                placeholder="z.B. @meinkanal oder UCxyz123..."
-                            )
-                            add_channel_btn = gr.Button("➕ Hinzufügen", variant="primary")
-                        
-                        with gr.Row():
-                            remove_channel = gr.Textbox(
-                                label="Kanal entfernen",
-                                placeholder="Exakte Schreibweise eingeben"
-                            )
-                            remove_channel_btn = gr.Button("➖ Entfernen", variant="stop")
-                        
-                        whitelist_status = gr.Markdown("")
-                        
-                        gr.Markdown("""
-                        **💡 Hinweis:** Änderungen werden in `app.py` gespeichert und 
-                        benötigen einen Neustart des Services.
-                        
-                        Unterstützte Formate:
-                        - `AkademieKanal` (User-URL)
-                        - `@theologisches-forum` (Handle)
-                        - `UCxyz123abc...` (Channel-ID)
-                        """)
-
-                    def add_to_whitelist(channel_name):
-                        """Add channel to whitelist (requires file write)"""
-                        if not channel_name or channel_name.strip() == "":
-                            return "❌ Kanal-Name erforderlich", gr.update()
-                        
-                        channel_name = channel_name.strip()
-                        
-                        if channel_name in YOUTUBE_CHANNEL_WHITELIST:
-                            return "⚠️ Kanal bereits in Whitelist", gr.update()
-                        
-                        try:
-                            # Update in-memory list
-                            YOUTUBE_CHANNEL_WHITELIST.append(channel_name)
-                            
-                            # Update config file
-                            config_path = "/var/www/transkript_app/app.py"
-                            with open(config_path, 'r', encoding='utf-8') as f:
-                                content = f.read()
-                            
-                            # Find and update the whitelist section
-                            import re
-                            pattern = r'(YOUTUBE_CHANNEL_WHITELIST = \[)(.*?)(\])'
-                            
-                            def replace_whitelist(match):
-                                entries = ',\n    '.join([f'"{ch}"' for ch in YOUTUBE_CHANNEL_WHITELIST])
-                                return f'{match.group(1)}\n    {entries}\n{match.group(3)}'
-                            
-                            new_content = re.sub(pattern, replace_whitelist, content, flags=re.DOTALL)
-                            
-                            with open(config_path, 'w', encoding='utf-8') as f:
-                                f.write(new_content)
-                            
-                            # Update display
-                            updated_data = [[ch] for ch in YOUTUBE_CHANNEL_WHITELIST]
-                            
-                            return "✅ Hinzugefügt. Bitte Service neustarten: `systemctl restart akademie_suite`", gr.update(value=updated_data)
-                            
-                        except Exception as e:
-                            logger.error(f"Error updating whitelist: {e}")
-                            return f"❌ Fehler: {str(e)}", gr.update()
-
-                    add_channel_btn.click(add_to_whitelist, inputs=[new_channel], outputs=[whitelist_status, current_whitelist])
                 
                 # =========================================================
                 # EVENT HANDLERS
@@ -8039,31 +7141,27 @@ with gr.Blocks(
         message, show_app, show_login, empty_state = logout_user()
         return message, show_app, show_login, "👤 Nicht angemeldet", gr.update(visible=False), gr.update(visible=False), empty_state
     
-    # 1. Perform Python Login
     login_btn.click(
-        fn=handle_login,
+        handle_login,
         inputs=[login_username, login_password],
         outputs=[
             login_message, main_app, login_screen, login_status, 
             logout_btn, admin_tab, session_state,
             t_storage_browser, v_storage_browser, attach_sb_browser
-        ],
-        # INLINE JS: Save credentials directly to LocalStorage
-        # js="(u, p) => { localStorage.setItem('ak_user', u); localStorage.setItem('ak_pass', p); }"
-        js="(u, p) => { localStorage.setItem('ak_user', u); localStorage.setItem('ak_pass', p); return [u, p]; }"
-    
+        ]
+    ).then(
+        fn=None,
+        inputs=[login_username, login_password],
+        js="(u, p) => saveCredsV2(u, p)"  # Calls V2 function
     )
 
     # 2. Logout Button Click
     # Python logout + JS clears LocalStorage
     logout_btn.click(
-        fn=handle_logout,
+        handle_logout,
         inputs=None,
         outputs=[login_message, main_app, login_screen, login_status, logout_btn, admin_tab, session_state],
-        # INLINE JS: Clear LocalStorage
-        # js="() => { localStorage.removeItem('ak_user'); localStorage.removeItem('ak_pass'); }"
-        js="() => { localStorage.removeItem('ak_user'); localStorage.removeItem('ak_pass'); }"
-    
+        js="() => clearCredsV2()" # Calls V2 function
     )
 
     # 3. AUTO-LOGIN ON LOAD (PWA Persistence)
@@ -8075,10 +7173,7 @@ with gr.Blocks(
         fn=None,
         inputs=None,
         outputs=[hidden_creds_bridge],
-        #js="() => { const u = localStorage.getItem('ak_user'); const p = localStorage.getItem('ak_pass'); return (u && p) ? JSON.stringify([u, p]) : ''; }"
-        js="() => { const u = localStorage.getItem('ak_user'); const p = localStorage.getItem('ak_pass'); return (u && p) ? JSON.stringify([u, p]) : ''; }"
-    
-        #js="async () => { await new Promise(r => setTimeout(r, 800)); return getCredsV2(); }"
+        js="async () => { await new Promise(r => setTimeout(r, 800)); return getCredsV2(); }"
     )
 
     # Python Trigger
@@ -8100,58 +7195,56 @@ with gr.Blocks(
 # ==========================================
 
 def initialize_application():
-    """Complete application initialization with security checks"""
+    """Complete application initialization"""
     
     print("=" * 60)
-    print("🔐 KI SUITE - SECURE STARTUP")
+    print("🚀 KI SUITE - STARTUP")
     print("=" * 60)
     
     # 1. Database Schema
     print("\n1️⃣ Checking database schema...")
     ensure_database_schema()
-    Base.metadata.create_all(bind=engine)  # Create new encrypted tables
     
-    # 2. Encryption Check
-    print("\n2️⃣ Checking encryption status...")
-    ensure_encryption()  # Migrates old data if needed
-    
-    # 3. Crypto Health Check
-    print("\n3️⃣ Cryptography status:")
-    print(f"   Master Key: {'✅ Loaded' if crypto.master_key else '❌ Missing'}")
-    print(f"   Post-Quantum: {'✅ Enabled (Kyber-512)' if HAS_PQ else '⚠️ Disabled (pqcrypto not installed)'}")
-    
-    # 4. Provider Mode
-    print("\n4️⃣ Provider access mode:")
-    print(f"   EU-Only Mode: {'✅ ENABLED (US providers blocked)' if EU_ONLY_MODE else '⚠️ DISABLED'}")
-    
-    # 5. Default Users
-    print("\n5️⃣ Checking default users...")
+    # 2. Default Users
+    print("\n2️⃣ Checking default users...")
     create_default_users()
     
-    # 6. Security Recommendations
-    print("\n6️⃣ Security recommendations:")
-    if not EU_ONLY_MODE:
-        print("   ⚠️ WARNING: US providers are enabled! Set EU_ONLY_MODE=True")
-    if not HAS_PQ:
-        print("   ⚠️ INFO: Install pqcrypto for post-quantum encryption")
+    # 3. Provider Status
+    print("\n3️⃣ Provider status:")
+    for provider in PROVIDERS.keys():
+        status = "✅ Ready" if is_provider_implemented(provider) else "⚠️ Not implemented"
+        print(f"   {provider}: {status}")
+    
+    # 4. API Keys Check
+    print("\n4️⃣ API Keys status:")
+    for key_name, key_value in API_KEYS.items():
+        if key_value and key_value != "your_key":
+            print(f"   {key_name}: ✅ Configured")
+        else:
+            print(f"   {key_name}: ⚠️ Not configured")
     
     print("\n" + "=" * 60)
-    print("✅ Secure initialization complete!")
+    print("✅ Initialization complete!")
     print("=" * 60 + "\n")
 
 # Call this before launching
 initialize_application()
 
 # ==========================================
-# 🚀 LAUNCH CONFIGURATION - CLEAN VERSION
+# 🚀 LAUNCH CONFIGURATION
 # ==========================================
 if __name__ == "__main__":
-    # Configuration
+    from fastapi import FastAPI, Request, status
+    from fastapi.responses import JSONResponse
+    import uvicorn
+
+    # 1. Configuration Constants
     APP_DIR = "/var/www/transkript_app"
     LOG_FILE = os.path.join(APP_DIR, "app.log")
     STATIC_DIR = os.path.join(APP_DIR, "static")
     IMAGES_DIR = os.path.join(APP_DIR, "generated_images")
 
+    # 2. Ensure directories and permissions exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
     
     if not os.path.exists(LOG_FILE):
@@ -8161,32 +7254,40 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ Could not create log file: {e}")
 
-    print(f"🚀 Starting Server on Port 7860...")
-    print(f"📂 Serving files from: {APP_DIR}")
-    
-    # Print CSS debug
-    print("=" * 60)
-    print("🎨 CSS DEBUG INFO:")
-    print(f"CSS length: {len(CUSTOM_CSS)} characters")
-    print("=" * 60)
+    # 3. Define FastAPI Wrapper for Security
+    app = FastAPI()
 
-    # ==========================================
-    # ✅ SIMPLE LAUNCH WITH CSS
-    # ==========================================
-    demo.queue()
-    
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        theme=gr.themes.Soft(),
-        css=CUSTOM_CSS,
-        head=PWA_HEAD,
+    @app.middleware("http")
+    async def block_api_endpoints(request: Request, call_next):
+        # Allow internal UI paths (/run, /queue), block external API access
+        if request.url.path.startswith("/api"):
+             return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "External API access is disabled."}
+            )
+        response = await call_next(request)
+        return response
+
+    print(f"🚀 Starting Server on Port 7860 (Fast Shutdown Enabled)...")
+    print(f"📂 Serving files from: {APP_DIR}")
+
+    # 4. Mount Gradio
+    app = gr.mount_gradio_app(
+        app, 
+        demo, 
+        path="/", 
         allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
-        show_error=True,
-        footer_links=[], 
-        app_kwargs={ # 🔒 Disable OpenAPI/API documentation endpoints
-            "docs_url": None,
-            "redoc_url": None,
-            "openapi_url": None
-        }
     )
+
+    # 5. Run with Timeout Configuration
+    # timeout_graceful_shutdown=1 forces the server to kill connections 
+    # and release DB locks instantly when you run `systemctl restart`
+    config = uvicorn.Config(
+        app, 
+        host="0.0.0.0", 
+        port=7860, 
+        timeout_graceful_shutdown=1,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    server.run()

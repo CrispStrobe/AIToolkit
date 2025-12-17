@@ -1,5 +1,7 @@
 """
 Central configuration for the Akademie KI Suite
+
+/var/www/transkript_app/config.py:
 """
 import os
 
@@ -700,9 +702,6 @@ PWA_HEAD = f"""
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#ffffff">
 
-<!-- ✅ LOAD CUSTOM CSS FROM STATIC FILE -->
-<link rel="stylesheet" href="/file=/var/www/transkript_app/static/custom.css">
-
 <!-- Existing PWA manifest and icons -->
 <link rel="manifest" href="/file=/var/www/transkript_app/static/manifest.json">
 <link rel="apple-touch-icon" href="/file=/var/www/transkript_app/static/icon-192.png">
@@ -712,15 +711,22 @@ CUSTOM_CSS = """
 
 /* ==========================================
    ACCORDION COMPACTING
+   ACCORDION COMPACTING
    ========================================== */
 
+.block:has(> .label-wrap) {
 .block:has(> .label-wrap) {
     padding: 0 !important;
     margin-bottom: 0 !important;
     border: none !important;
     overflow: hidden !important;
+    margin-bottom: 0 !important;
+    border: none !important;
+    overflow: hidden !important;
 }
 
+.block > .label-wrap { 
+    padding: 0px 8px !important; 
 .block > .label-wrap { 
     padding: 0px 8px !important; 
     margin: 0 !important;
@@ -734,12 +740,35 @@ CUSTOM_CSS = """
 
 .block > .label-wrap > span {
     margin: 0 !important;
+    min-height: 32px !important; 
+    height: 32px !important; 
+    display: flex !important;
+    align-items: center !important;
+    background-color: transparent !important;
+    border: none !important;
+}
+
+.block > .label-wrap > span {
+    margin: 0 !important;
     padding: 0 !important;
+    font-size: 0.9rem !important;
     font-size: 0.9rem !important;
 }
 
 .block > .label-wrap .icon {
+.block > .label-wrap .icon {
     margin: 0 !important;
+    transform: scale(0.8);
+}
+
+/* ==========================================
+   HEADER ALIGNMENT
+   ========================================== */
+
+#user-status-row {
+    justify-content: flex-end !important;
+    text-align: right !important;
+    padding-right: 10px !important;
     transform: scale(0.8);
 }
 
@@ -755,7 +784,14 @@ CUSTOM_CSS = """
 
 /* ==========================================
    DESKTOP TWEAKS
+   DESKTOP TWEAKS
    ========================================== */
+
+label span { 
+    font-size: 0.85rem !important; 
+    font-weight: 600 !important; 
+    margin-bottom: 2px !important;
+    opacity: 1 !important; 
 
 label span { 
     font-size: 0.85rem !important; 
@@ -782,6 +818,21 @@ label span {
     background: transparent !important; 
 }
 
+
+.badge-col .prose { 
+    border: none !important; 
+    background: transparent !important; 
+    padding: 0 !important; 
+    margin: 0 !important;
+    box-shadow: none !important;
+}
+
+.badge-col { 
+    border: none !important; 
+    box-shadow: none !important; 
+    background: transparent !important; 
+}
+
 .custom-badge {
     font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", Arial, sans-serif !important;
     font-size: 0.85rem !important;
@@ -790,7 +841,17 @@ label span {
     background: #ffffff !important;
     color: #000000 !important;
     border: 1px solid #e5e7eb;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", Arial, sans-serif !important;
+    font-size: 0.85rem !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important; 
+    background: #ffffff !important;
+    color: #000000 !important;
+    border: 1px solid #e5e7eb;
     border-radius: 8px;
+    padding: 0 10px;
+    text-align: center;
+    height: 42px; 
     padding: 0 10px;
     text-align: center;
     height: 42px; 
@@ -805,8 +866,19 @@ label span {
 .compact-row { 
     gap: 8px !important; 
     align-items: end !important; 
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    font-variant-emoji: emoji;
+    -webkit-font-smoothing: antialiased;
 }
 
+.compact-row { 
+    gap: 8px !important; 
+    align-items: end !important; 
+}
+
+.compact-row .form { 
+    border: none !important; 
+    background: transparent !important; 
 .compact-row .form { 
     border: none !important; 
     background: transparent !important; 
@@ -814,9 +886,15 @@ label span {
 
 /* ==========================================
    MOBILE RESPONSIVE (< 768px)
+   MOBILE RESPONSIVE (< 768px)
    ========================================== */
 
+
 @media (max-width: 768px) {
+    
+    /* ===================================
+       GLOBAL SPACING REDUCTION
+       =================================== */
     
     /* ===================================
        GLOBAL SPACING REDUCTION
@@ -825,8 +903,10 @@ label span {
     .gradio-container {
         padding: 0 !important;
         margin: 0 !important;
+        margin: 0 !important;
         width: 100vw !important;
         max-width: 100vw !important;
+        overflow-x: hidden !important;
         overflow-x: hidden !important;
     }
     
@@ -880,6 +960,9 @@ label span {
         font-size: 1.5rem !important;
         line-height: 1 !important;
     }
+    
+    /* Selected tab styling */
+    .icon-nav > .tab-nav > button.selected {
     
     /* Selected tab styling */
     .icon-nav > .tab-nav > button.selected {
@@ -994,7 +1077,32 @@ label span {
         gap: 2px !important;
     }
     
+    /* ===================================
+       COMPACT ACCORDIONS
+       =================================== */
+    
+    .accordion-header {
+        padding: 6px 8px !important;
+        font-size: 14px !important;
+    }
+    
+    .accordion-content {
+        padding: 8px !important;
+    }
+}
+
+/* ==========================================
+   VERY SMALL SCREENS (< 400px)
+   ========================================== */
+
+@media (max-width: 400px) {
+    .gr-row {
+        gap: 2px !important;
+    }
+    
     .mobile-icon-only {
+        min-width: 40px !important;
+        height: 40px !important;
         min-width: 40px !important;
         height: 40px !important;
     }
