@@ -4410,10 +4410,19 @@ def run_image_gen(prompt, provider, model, width, height, steps, key, user_state
                 content = getattr(message, 'content', '')
                 return None, f"❌ Keine Bilder generiert. Antwort: {content[:200]}"
             
-            image_data_url = message.images[0].image_url.url
+            # FIX: Handle Dictionary vs Object access
+            first_image = message.images[0]
+            image_data_url = None
             
-            if not image_data_url.startswith('data:image/'):
-                return None, f"❌ Ungültiges Bildformat: {image_data_url[:50]}"
+            if isinstance(first_image, dict):
+                # It's a dictionary (logs showed this)
+                image_data_url = first_image.get('image_url', {}).get('url')
+            elif hasattr(first_image, 'image_url'):
+                # It's an object
+                image_data_url = first_image.image_url.url
+            
+            if not image_data_url or not image_data_url.startswith('data:image/'):
+                return None, f"❌ Ungültiges Bildformat: {str(image_data_url)[:50]}"
             
             base64_data = image_data_url.split('base64,', 1)[1]
             img_data = base64.b64decode(base64_data)
@@ -4425,7 +4434,6 @@ def run_image_gen(prompt, provider, model, width, height, steps, key, user_state
         
         # --- SPECIAL CASE: SCALEWAY ---
         if provider == "Scaleway":
-            # Scaleway doesn't support standard image generation endpoint
             return None, "❌ Scaleway: Bildgenerierung derzeit nicht unterstützt. Bitte Nebius verwenden."
         
         # --- STANDARD PROVIDER: NEBIUS ---
@@ -7121,10 +7129,28 @@ with gr.Blocks(
                 # Optional: Helper to make tables look full
                 def pad_data(data, width, min_rows=6):
                     while len(data) < min_rows:
-                        # Use empty strings instead of None to prevent JS freezes
                         row = [""] * width 
                         data.append(row)
                     return data
+
+                # Helper: Robust Decryption for Lists
+                def decrypt_for_display(encrypted_text, user_state):
+                    if not encrypted_text: return ""
+                    # 1. Get Keys
+                    umk = user_state.get('umk') if user_state else crypto.global_key
+                    
+                    try:
+                        # 2. Try User Key first
+                        return crypto.decrypt_text(encrypted_text, key=umk)
+                    except:
+                        # 3. Fallback to Global Key (Legacy Support)
+                        # This causes the "MAC Check Failed" log, but allows reading old data
+                        try:
+                            res = crypto.decrypt_text(encrypted_text, key=crypto.global_key)
+                            if res == "[Decryption Failed]": return "🔒 [Verschlüsselt]"
+                            return res
+                        except:
+                            return "🔒 [Datenfehler]"
 
                 with gr.Tabs() as history_tabs:
 
@@ -7132,18 +7158,16 @@ with gr.Blocks(
                     # 1. TRANSCRIPTIONS
                     # =========================================================
                     with gr.TabItem("🎙️ Transkriptions-Verlauf") as trans_tab:
-                        # State to store real data (for lookup)
                         trans_state = gr.State([])
 
-                        # 1. TABLE (Initialized with empty skeleton rows)
+                        # 1. TABLE
                         with gr.Group():
                             gr.Markdown("#### 📋 Gespeicherte Transkripte")
                             trans_history = gr.Dataframe(
                                 headers=["ID", "Datum", "Titel", "Provider", "Sprache"],
-                                value=[[None, "", "", "", ""]] * 6, # <--- INITIALIZES EMPTY GRID
+                                value=[[None, "", "", "", ""]] * 6,
                                 interactive=False,
                                 wrap=True,
-                                #height=300,
                                 datatype=["number", "str", "str", "str", "str"],
                                 column_widths=["10%", "20%", "40%", "15%", "15%"]
                             )
@@ -7162,105 +7186,87 @@ with gr.Blocks(
                                 delete_trans_btn = gr.Button("🗑️ Löschen", variant="stop", size="lg")
 
                         # 3. PREVIEW
-                        loaded_trans_display = gr.Textbox(label="Inhalt", lines=8, max_lines=15, 
-                                                          #show_copy_button=True
-                                                          )
+                        loaded_trans_display = gr.Textbox(label="Inhalt", lines=8, max_lines=15)
                         trans_action_status = gr.Markdown("")
 
                         # --- LOGIC ---
                         def load_trans_data(user_state=None):
+                            # SECURITY: Strict User ID Filter
                             if not user_state or not user_state.get("id"):
                                 return pad_data([], 5), []
                             try:
                                 t_list = get_user_transcriptions(user_state["id"])
-                                # Clean data: ID, Date, Title, Provider, Language
                                 clean_data = [[t.id, t.timestamp.strftime("%Y-%m-%d %H:%M"), t.title or "—", t.provider, t.language] for t in t_list]
                                 return pad_data(list(clean_data), 5), clean_data
                             except Exception as e:
                                 logger.exception(e)
                                 return pad_data([], 5), []
 
-                        
-
                         def load_single_trans(tid, user_state):
                             if not tid or not user_state or not user_state.get("id"): 
                                 return gr.update(), "❌"
                             
-                            # Use the decryption function!
-                            t = get_decrypted_transcription(int(tid), user_state["id"])
-                            
+                            t = get_decrypted_transcription(int(tid), user_state["id"], user_state)
                             if t:
                                 return (t.original_text, f"✅ Geladen: {t.title}")
                             else:
                                 return ("", "❌ Nicht gefunden")
                             
                         def select_trans_row(evt: gr.SelectData, state_data, user_state):
-                            """Smart Selection: Uses state to find ID from ANY column click"""
                             try:
                                 if not user_state or not user_state.get("id"):
                                     return 0, "", "❌ Bitte anmelden"
 
                                 row_idx = evt.index[0]
-                                # Check if row exists in real data
                                 if state_data and row_idx < len(state_data):
                                     real_row = state_data[row_idx]
-                                    t_id = int(real_row[0]) # ID is col 0
+                                    t_id = int(real_row[0]) 
                                     
-                                    # Call loader with state
                                     content, status = load_single_trans(t_id, user_state)
                                     return t_id, content, status
                             except Exception as e: 
                                 logger.error(f"Select Error: {e}")
                             
-                            return 0, "", "" # Return safe defaults instead of gr.update()
+                            return 0, "", ""
 
+                        # FIX: del_trans now returns exactly 4 values to match outputs
                         def del_trans(tid, user_state):
-                            """
-                            Delete transcription and refresh list. 
-                            MUST return 4 values: (Textbox content, Status string, Dataframe data, State data)
-                            """
-                            # Default return for errors: Clear text, Error msg, Empty list, Empty state
                             empty_df, empty_state = pad_data([], 5), []
-
+                            
                             if not user_state or not user_state.get("id"):
-                                return "", "❌ Fehler: Nicht angemeldet", empty_df, empty_state
+                                return "", "❌ Auth Fehler", empty_df, empty_state
                             
                             if not tid:
-                                # Just refresh if no ID provided
                                 d, s = load_trans_data(user_state)
-                                return "", "⚠️ Keine ID ausgewählt", d, s
+                                return "", "⚠️ Keine ID", d, s
 
                             if delete_transcription(int(tid), user_state["id"]):
-                                # Success: Reload data
                                 d, s = load_trans_data(user_state)
-                                return "", "✅ Transkript gelöscht", d, s
+                                return "", "✅ Gelöscht", d, s
                             
-                            # Failure: Reload data anyway to be safe
                             d, s = load_trans_data(user_state)
-                            return "", "❌ Fehler beim Löschen", d, s
+                            return "", "❌ Fehler", d, s
 
                         # Wiring
                         refresh_trans_btn.click(load_trans_data, inputs=[session_state], outputs=[trans_history, trans_state])
-
-                        # --- AUTO-LOAD ON TAB SELECT ---
                         trans_tab.select(load_trans_data, inputs=[session_state], outputs=[trans_history, trans_state])
 
-                        # Pass 'trans_state' to select so we know what was clicked
                         trans_history.select(
                             select_trans_row, 
                             inputs=[trans_state, session_state], 
                             outputs=[trans_id_input, loaded_trans_display, trans_action_status]
                         )
                         trans_id_input.change(load_single_trans, inputs=[trans_id_input, session_state], outputs=[loaded_trans_display, trans_action_status])
-                        delete_trans_btn.click(del_trans, inputs=[trans_id_input, session_state], outputs=[loaded_trans_display, trans_action_status, trans_history, trans_state])
                         
-                        # Chat Button
-                        if 'msg_input' in locals():
-                            trans_to_chat_btn.click(
-                                lambda x: x, 
-                                inputs=loaded_trans_display, 
-                                outputs=c_msg 
-                            )
+                        delete_trans_btn.click(
+                            del_trans, 
+                            inputs=[trans_id_input, session_state], 
+                            outputs=[loaded_trans_display, trans_action_status, trans_history, trans_state]
+                        )
+                        
+                        if 'msg_input' in locals() or 'c_msg' in locals():
+                            target = c_msg if 'c_msg' in locals() else msg_input
+                            trans_to_chat_btn.click(lambda x: x, inputs=loaded_trans_display, outputs=target)
 
                     # =========================================================
                     # 2. GENERATED IMAGES
@@ -7272,10 +7278,9 @@ with gr.Blocks(
                             gr.Markdown("#### 🖼️ Bild-Historie")
                             images_history = gr.Dataframe(
                                 headers=["ID", "Datum", "Prompt", "Modell"],
-                                value=[[None, "", "", ""]] * 6, # Initial Skeleton
+                                value=[[None, "", "", ""]] * 6, 
                                 interactive=False,
                                 wrap=True,
-                                #height=300,
                                 datatype=["number", "str", "str", "str"],
                                 column_widths=["10%", "20%", "50%", "20%"]
                             )
@@ -7295,13 +7300,12 @@ with gr.Blocks(
                         with gr.Row():
                             loaded_img_display = gr.Image(label="Vorschau", height=300, type="filepath", interactive=False)
                             with gr.Column():
-                                loaded_img_prompt = gr.Textbox(label="Prompt", lines=10, 
-                                                               #show_copy_button=True
-                                                               )
+                                loaded_img_prompt = gr.Textbox(label="Prompt", lines=10)
                                 img_action_status = gr.Markdown("")
 
                         # --- LOGIC ---
                         def load_img_data(user_state=None):
+                            # SECURITY: Strict User ID Filter
                             if not user_state or not user_state.get("id"): 
                                 return pad_data([], 4), []
                             
@@ -7309,38 +7313,28 @@ with gr.Blocks(
                                 i_list = get_user_generated_images(user_state["id"])
                                 clean = []
                                 
-                                # Get Key for decryption
-                                umk = user_state.get('umk') if user_state else crypto.global_key
-
                                 for img in i_list:
-                                    # Decrypt Prompt for Display
-                                    display_prompt = img.prompt
-                                    if img.is_encrypted and display_prompt:
-                                        try:
-                                            display_prompt = crypto.decrypt_text(display_prompt, key=umk)
-                                            # Legacy fallback
-                                            if display_prompt == "[Decryption Failed]" and umk != crypto.global_key:
-                                                display_prompt = crypto.decrypt_text(img.prompt, key=crypto.global_key)
-                                        except:
-                                            display_prompt = "🔒 [Verschlüsselt]"
-
-                                    # Truncate prompt for table view
-                                    short_prompt = (display_prompt[:50] + "...") if len(display_prompt) > 50 else display_prompt
+                                    # FIX: Decrypt Prompt for Table Display
+                                    p_text = img.prompt
+                                    if img.is_encrypted:
+                                        p_text = decrypt_for_display(img.prompt, user_state)
+                                        
+                                    # Truncate
+                                    short = (p_text[:50] + "...") if len(p_text) > 50 else p_text
                                     
                                     clean.append([
                                         img.id, 
                                         img.timestamp.strftime("%Y-%m-%d"), 
-                                        short_prompt, 
+                                        short, 
                                         img.model
                                     ])
                                     
                                 return pad_data(list(clean), 4), clean
                             except Exception as e: 
-                                logger.error(f"Image load error: {e}")
+                                logger.error(f"Img Load Error: {e}")
                                 return pad_data([], 4), []
 
                         def load_single_img(tid, user_state=None):
-                            logger.info("loading single image:", tid)
                             if not tid or not user_state or not user_state.get("id"): 
                                 return None, "", "❌"
                             
@@ -7352,19 +7346,12 @@ with gr.Blocks(
                                 ).first()
                                 
                                 if img and os.path.exists(img.image_path):
-                                    # Decrypt prompt
-                                    prompt = img.prompt
-                                    if img.is_encrypted and prompt:
-                                        umk = user_state.get('umk') if user_state else crypto.global_key
-                                        try:
-                                            prompt = crypto.decrypt_text(prompt, key=umk)
-                                            if prompt == "[Decryption Failed]" and umk != crypto.global_key:
-                                                prompt = crypto.decrypt_text(img.prompt, key=crypto.global_key)
-                                        except Exception as e:
-                                            logger.error(f"Prompt decryption failed: {e}")
-                                            prompt = "[Entschlüsselungsfehler]"
+                                    # FIX: Decrypt Full Prompt
+                                    full_prompt = img.prompt
+                                    if img.is_encrypted:
+                                        full_prompt = decrypt_for_display(img.prompt, user_state)
                                     
-                                    return img.image_path, prompt, f"✅ Geladen"
+                                    return img.image_path, full_prompt, f"✅ Geladen"
                                 
                                 return None, "", "❌ Nicht gefunden"
                             finally:
@@ -7380,27 +7367,30 @@ with gr.Blocks(
                                     real_row = state_data[row_idx]
                                     tid = int(real_row[0])
                                     
-                                    # Call loader with state
                                     path, prmt, stat = load_single_img(tid, user_state)
                                     return tid, path, prmt, stat
                             except: pass
                             return 0, None, "", ""
 
                         def del_img(tid, user_state):
+                            empty_df, empty_state = pad_data([], 4), []
                             if not user_state or not user_state.get("id"):
-                                return None, "", "❌ Auth", [], []
+                                return None, "", "❌ Auth", empty_df, empty_state
 
                             delete_generated_image(int(tid or 0), user_state["id"])
                             d, s = load_img_data(user_state)
                             return None, "", "✅ Gelöscht", d, s
 
                         refresh_images_btn.click(load_img_data, inputs=[session_state], outputs=[images_history, img_state])
-                        
                         images_tab.select(load_img_data, inputs=[session_state], outputs=[images_history, img_state])
 
                         img_id_input.change(load_single_img, inputs=[img_id_input, session_state], outputs=[loaded_img_display, loaded_img_prompt, img_action_status])
                         
-                        delete_img_btn.click(del_img, inputs=[img_id_input, session_state], outputs=[loaded_img_display, loaded_img_prompt, img_action_status, images_history, img_state])
+                        delete_img_btn.click(
+                            del_img, 
+                            inputs=[img_id_input, session_state], 
+                            outputs=[loaded_img_display, loaded_img_prompt, img_action_status, images_history, img_state]
+                        )
                         
                         images_history.select(
                             select_img_row, 
@@ -7408,12 +7398,9 @@ with gr.Blocks(
                             outputs=[img_id_input, loaded_img_display, loaded_img_prompt, img_action_status]
                         )
 
-                        if 'msg_input' in locals():
-                            img_to_chat_btn.click(
-                                lambda x: x, 
-                                inputs=loaded_img_prompt, 
-                                outputs=c_msg
-                            )
+                        if 'msg_input' in locals() or 'c_msg' in locals():
+                            target = c_msg if 'c_msg' in locals() else msg_input
+                            img_to_chat_btn.click(lambda x: x, inputs=loaded_img_prompt, outputs=target)
 
                     # =========================================================
                     # 3. CUSTOM PROMPTS
@@ -7433,10 +7420,9 @@ with gr.Blocks(
                                 gr.Markdown("#### 📂 Gespeicherte Vorlagen")
                                 saved_prompts = gr.Dataframe(
                                     headers=["ID", "Name", "Kategorie"],
-                                    value=[[None, "", ""]] * 6, # Skeleton
+                                    value=[[None, "", ""]] * 6,
                                     interactive=False,
                                     wrap=True,
-                                    #height=300,
                                     datatype=["number", "str", "str"],
                                     column_widths=["15%", "50%", "35%"]
                                 )
@@ -7488,8 +7474,9 @@ with gr.Blocks(
                             return "✅ Gespeichert", d, s
 
                         def del_p(tid, user_state=None):
+                            empty_df, empty_state = pad_data([], 3), []
                             if not user_state or not user_state.get("id"):
-                                return "❌ Auth Fehler", [], []
+                                return "❌ Auth Fehler", empty_df, empty_state
 
                             delete_custom_prompt(int(tid or 0), user_state["id"])
                             d, s = load_prompts_data(user_state)
@@ -7500,19 +7487,21 @@ with gr.Blocks(
                         prompts_tab.select(load_prompts_data, inputs=[session_state], outputs=[saved_prompts, prompt_state])
 
                         prompt_id_load.change(load_single_prompt, inputs=[prompt_id_load, session_state], outputs=loaded_prompt_display)
-                        delete_prompt_btn.click(del_p, inputs=[prompt_id_load, session_state], outputs=[loaded_prompt_display, saved_prompts, prompt_state])
+                        
+                        delete_prompt_btn.click(
+                            del_p, 
+                            inputs=[prompt_id_load, session_state], 
+                            outputs=[loaded_prompt_display, saved_prompts, prompt_state]
+                        )
                         saved_prompts.select(
-                            select_prompt_row, 
+                            select_prompt_row,
                             inputs=[prompt_state, session_state],
                             outputs=[prompt_id_load, loaded_prompt_display]
                         )
                                                 
-                        if 'msg_input' in locals():
-                            prompt_to_chat_btn.click(
-                                lambda x: x, 
-                                inputs=loaded_prompt_display, 
-                                outputs=c_msg
-                            )
+                        if 'msg_input' in locals() or 'c_msg' in locals():
+                            target = c_msg if 'c_msg' in locals() else msg_input
+                            prompt_to_chat_btn.click(lambda x: x, inputs=loaded_prompt_display, outputs=target)
 
                     
                     # =========================================================
