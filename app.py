@@ -5479,15 +5479,24 @@ with gr.Blocks(
     #head=PWA_HEAD,      # Only Meta tags/JS here
     #css=CUSTOM_CSS      # CSS goes here to override Theme defaults
 ) as demo:
+    # ✅ INJECT CSS FIRST (This works even with mount_gradio_app!)
+    gr.HTML(f"""
+    <style>
+    {CUSTOM_CSS}
+    </style>
+    """, visible=False)
+    
+    # ✅ INJECT PWA HEAD
+    gr.HTML(f"""
+    {PWA_HEAD}
+    """, visible=False)
+
     # Print debug info on startup
     print("=" * 60)
     print("🎨 CSS DEBUG INFO:")
     print(f"CSS length: {len(CUSTOM_CSS)} characters")
     print(f"First 100 chars: {CUSTOM_CSS[:100]}")
     print("=" * 60)
-
-    # ✅ Inject PWA_HEAD at the very beginning
-    # gr.HTML(PWA_HEAD, visible=False)
 
     # 0. INJECT PWA SCRIPTS (Required for Gradio 6+)
     gr.HTML("""
@@ -8142,21 +8151,20 @@ def initialize_application():
 initialize_application()
 
 # ==========================================
-# 🚀 LAUNCH CONFIGURATION
-# ==========================================
-# ==========================================
-# 🚀 LAUNCH CONFIGURATION
+# 🚀 LAUNCH CONFIGURATION - SECURE VERSION
 # ==========================================
 if __name__ == "__main__":
+    from fastapi import FastAPI, Request, status
+    from fastapi.responses import JSONResponse
     import uvicorn
-    
-    # 1. Configuration Constants
+
+    # Configuration
     APP_DIR = "/var/www/transkript_app"
     LOG_FILE = os.path.join(APP_DIR, "app.log")
     STATIC_DIR = os.path.join(APP_DIR, "static")
     IMAGES_DIR = os.path.join(APP_DIR, "generated_images")
-    
-    # 2. Ensure directories exist
+
+    # Ensure directories exist
     os.makedirs(IMAGES_DIR, exist_ok=True)
     
     if not os.path.exists(LOG_FILE):
@@ -8165,30 +8173,49 @@ if __name__ == "__main__":
             os.chmod(LOG_FILE, 0o666) 
         except Exception as e:
             print(f"⚠️ Could not create log file: {e}")
-    
+
+    # ==========================================
+    # ✅ CREATE FASTAPI APP WITH SECURITY
+    # ==========================================
+    app = FastAPI(
+        docs_url=None,      # ✅ Disable /docs
+        redoc_url=None,     # ✅ Disable /redoc
+        openapi_url=None    # ✅ Disable /openapi.json
+    )
+
+    @app.middleware("http")
+    async def block_api_endpoints(request: Request, call_next):
+        # Block any remaining API endpoints
+        if request.url.path in ["/api", "/api/", "/openapi.json", "/docs", "/redoc"]:
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "API access is disabled."}
+            )
+        response = await call_next(request)
+        return response
+
     print(f"🚀 Starting Server on Port 7860...")
     print(f"📂 Serving files from: {APP_DIR}")
-    
-    # Print CSS debug info
-    print("=" * 60)
-    print("🎨 CSS DEBUG INFO:")
-    print(f"CSS length: {len(CUSTOM_CSS)} characters")
-    print(f"First 100 chars: {CUSTOM_CSS[:100]}")
-    print("=" * 60)
-    
+
     # ==========================================
-    # ✅ USE demo.launch() WITH CSS PARAMETER
+    # ✅ MOUNT GRADIO (CSS via HTML injection)
     # ==========================================
-    demo.queue()
-    
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        theme=gr.themes.Soft(),    # ✅ Theme here
-        css=CUSTOM_CSS,             # ✅ CSS here - this WILL work!
-        head=PWA_HEAD,              # ✅ Head here
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
-        show_error=True,
-        # API blocking via Gradio instead of FastAPI middleware:
-        footer_links=["gradio", "settings"]  # Hide API docs link
+    print(f"🚀 Mounting Gradio app...")
+    app = gr.mount_gradio_app(
+        app, 
+        demo, 
+        path="/",
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"]
     )
+
+    # Run Server
+    print(f"🚀 Starting Server on Port 7860...")
+    config = uvicorn.Config(
+        app, 
+        host="0.0.0.0", 
+        port=7860, 
+        timeout_graceful_shutdown=1,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    server.run()
