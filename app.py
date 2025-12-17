@@ -8365,7 +8365,7 @@ with gr.Blocks(
         outputs=[
             login_message, main_app, login_screen, login_status, 
             logout_btn, admin_tab, session_state,
-            t_storage_browser, v_storage_browser, attach_sb_browser
+            #t_storage_browser, v_storage_browser, attach_sb_browser
         ]
     )
 
