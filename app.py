@@ -5479,6 +5479,13 @@ with gr.Blocks(
     head=PWA_HEAD,      # Only Meta tags/JS here
     css=CUSTOM_CSS      # CSS goes here to override Theme defaults
 ) as demo:
+    # Print debug info on startup
+    print("=" * 60)
+    print("🎨 CSS DEBUG INFO:")
+    print(f"CSS length: {len(CUSTOM_CSS)} characters")
+    print(f"First 100 chars: {CUSTOM_CSS[:100]}")
+    print("=" * 60)
+    
     # 0. INJECT PWA SCRIPTS (Required for Gradio 6+)
     gr.HTML("""
     <script>

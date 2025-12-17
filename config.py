@@ -701,18 +701,56 @@ PWA_HEAD = """
 """
 
 CUSTOM_CSS = """
-/* 1. Reset & Standardize */
-:root, body, .gradio-container {
-    background-color: #f9fafb !important;
+/* ==========================================
+   🔴 DEBUG MODE - Remove after testing
+   ========================================== */
+
+/* Bright red border to confirm CSS is loading */
+.gradio-container {
+    border: 5px solid red !important;
+    background-color: #fffacd !important; /* Light yellow background */
 }
 
+/* ==========================================
+   REMOVE ALL WHITESPACE & PADDING
+   ========================================== */
+
+/* Remove default container padding */
 .gradio-container {
+    padding: 0 !important;
+    margin: 0 !important;
     max-width: 100% !important;
-    min-height: 100vh !important;
+    width: 100% !important;
+}
+
+/* Remove padding from main content area */
+.main {
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Remove gaps in rows and columns */
+.gr-row, .gr-column {
+    gap: 0 !important;
     padding: 0 !important;
 }
 
-/* 2. Compact Header */
+/* Ensure full width usage */
+body {
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow-x: hidden !important;
+}
+
+/* Remove side margins from tabs */
+.tabs {
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* ==========================================
+   COMPACT HEADER
+   ========================================== */
 .compact-header {
     background: white;
     border-bottom: 1px solid #e5e7eb;
@@ -720,51 +758,102 @@ CUSTOM_CSS = """
     min-height: 50px;
 }
 
-/* 3. MOBILE RESPONSIVENESS (< 768px) */
+/* ==========================================
+   BADGE STYLING
+   ========================================== */
+.custom-badge {
+    background-color: #374151;
+    color: #ffffff !important;
+    padding: 4px 12px;
+    border-radius: 8px;
+    border: 1px solid #4b5563;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 38px;
+    font-size: 0.85em;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.custom-badge b {
+    color: #ffffff !important;
+}
+
+/* ==========================================
+   MOBILE RESPONSIVENESS (< 768px)
+   ========================================== */
 @media (max-width: 768px) {
     
-    /* --- TABS: Hide Text, Show Emoji --- */
-    /* Target the buttons inside the Tabs component with class 'icon-nav' */
+    /* Make mobile layout truly full width */
+    .gradio-container {
+        padding: 0 !important;
+        width: 100vw !important;
+        max-width: 100vw !important;
+    }
+    
+    /* Remove any remaining side padding */
+    .contain {
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+    }
+    
+    /* TABS: Hide Text, Show Emoji Only */
     .icon-nav > div > button {
-        font-size: 0 !important;        /* Hide the text label */
-        padding: 12px 0 !important;     /* Adjust padding for icon-only look */
-        min-width: 40px !important;     /* Ensure clickable width */
+        font-size: 0 !important;
+        padding: 12px 0 !important;
+        min-width: 40px !important;
         display: flex !important;
         justify-content: center !important;
         align-items: center !important;
     }
 
-    /* Make the First Letter (Emoji) Visible and Large */
     .icon-nav > div > button::first-letter {
-        font-size: 1.6rem !important;   /* Size of the emoji */
-        visibility: visible !important; /* Force visibility */
+        font-size: 1.6rem !important;
+        visibility: visible !important;
         line-height: 1 !important;
     }
 
-    /* Selected Tab Indicator adjustment */
     .icon-nav > div > button.selected {
         border-bottom: 3px solid #2563eb !important;
         background: #f3f4f6 !important;
     }
 
-    /* --- Chat Window Height Fix --- */
+    /* Chat Window Height Fix */
     #chat_window {
         height: 65vh !important;
         max-height: 65vh !important;
     }
 
-    /* --- Hide Footer --- */
-    footer { display: none !important; }
+    /* Hide Footer */
+    footer { 
+        display: none !important; 
+    }
     
-    /* --- Mobile Buttons --- */
+    /* Mobile Button Icons */
     .mobile-icon-only {
         font-size: 0 !important;
         min-height: 45px !important;
     }
+    
     .mobile-icon-only::first-letter {
         font-size: 1.4rem !important;
         visibility: visible !important;
     }
+}
+
+/* ==========================================
+   🔴 DEBUG: Test-specific styles
+   ========================================== */
+
+/* Add bright green border to header if CSS works */
+.compact-header {
+    border: 3px solid lime !important;
+}
+
+/* Make all buttons bright blue to verify */
+button {
+    background: linear-gradient(45deg, #00ff00, #00ffff) !important;
 }
 """
 
