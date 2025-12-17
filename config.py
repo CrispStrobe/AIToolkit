@@ -709,15 +709,6 @@ PWA_HEAD = f"""
 """
 
 CUSTOM_CSS = """
-/* ==========================================
-   🔴 DEBUG MODE - Remove after testing
-   ========================================== */
-
-/* Bright red border to confirm CSS is loading */
-.gradio-container {
-    border: 5px solid red !important;
-    background-color: #fffacd !important; /* Light yellow background */
-}
 
 /* ==========================================
    REMOVE ALL WHITESPACE & PADDING
@@ -848,20 +839,6 @@ body {
         font-size: 1.4rem !important;
         visibility: visible !important;
     }
-}
-
-/* ==========================================
-   🔴 DEBUG: Test-specific styles
-   ========================================== */
-
-/* Add bright green border to header if CSS works */
-.compact-header {
-    border: 3px solid lime !important;
-}
-
-/* Make all buttons bright blue to verify */
-button {
-    background: linear-gradient(45deg, #00ff00, #00ffff) !important;
 }
 """
 
