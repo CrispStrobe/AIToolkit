@@ -75,8 +75,7 @@ except ImportError:
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
 
-# Store original method
-_original_ls = FileExplorer.ls
+logger.info("🔧 Starting FileExplorer monkeypatch...")
 
 def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
     """
@@ -100,22 +99,27 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
     try:
         subdir_items = sorted(os.listdir(full_subdir_path))
         logger.info(f"   Found {len(subdir_items)} items in directory")
-        logger.debug(f"   Items: {subdir_items[:10]}")
+        if subdir_items:
+            logger.info(f"   First 10 items: {subdir_items[:10]}")
     except (FileNotFoundError, PermissionError) as e:
         logger.error(f"   ❌ Cannot list directory: {e}")
         return []
 
     files, folders = [], []
     
-    # Build glob pattern relative to current subdirectory
+    # Build glob pattern
     glob_pattern = os.path.join(full_subdir_path, self.glob)
-    logger.info(f"   Constructed glob pattern: {glob_pattern}")
+    logger.info(f"   Full glob pattern: {glob_pattern}")
     
     # Get all matching files using real glob
-    matching_paths = set(glob_module.glob(glob_pattern, recursive=True))
-    logger.info(f"   Glob matched {len(matching_paths)} paths")
-    if matching_paths:
-        logger.debug(f"   Sample matches: {list(matching_paths)[:5]}")
+    try:
+        matching_paths = set(glob_module.glob(glob_pattern, recursive=True))
+        logger.info(f"   Glob matched {len(matching_paths)} paths")
+        if matching_paths:
+            logger.info(f"   Sample matches: {list(matching_paths)[:5]}")
+    except Exception as e:
+        logger.error(f"   Glob error: {e}")
+        matching_paths = set()
     
     matched_count = 0
     skipped_count = 0
@@ -129,15 +133,14 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
             logger.warning(f"   ⚠️ Cannot access {item}: {e}")
             continue
 
-        # Check if file matches using real glob
-        valid_by_glob = full_path in matching_paths or not is_file
+        # Folders are always valid
+        valid_by_glob = not is_file or full_path in matching_paths
         
         if is_file and not valid_by_glob:
             skipped_count += 1
             logger.debug(f"   ⏭️ Skipped (no glob match): {item}")
             continue
 
-        # Handle ignore_glob
         if self.ignore_glob:
             import fnmatch
             if fnmatch.fnmatch(full_path, self.ignore_glob):
@@ -147,37 +150,32 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
         
         matched_count += 1
         target = files if is_file else folders
-        target.append(
-            {
-                "name": item,
-                "type": "file" if is_file else "folder",
-                "valid": valid_by_glob,
-            }
-        )
+        target.append({
+            "name": item,
+            "type": "file" if is_file else "folder",
+            "valid": valid_by_glob,
+        })
+        logger.debug(f"   ✅ Added: {item} ({'file' if is_file else 'folder'})")
 
-    logger.info(f"   ✅ Returning {len(folders)} folders, {len(files)} files")
-    logger.info(f"   📊 Matched: {matched_count}, Skipped: {skipped_count}")
+    logger.info(f"   📊 Final: {len(folders)} folders, {len(files)} files")
+    logger.info(f"   📊 Stats: {matched_count} matched, {skipped_count} skipped")
     logger.info("=" * 60)
     
     return folders + files
 
-# Apply the monkeypatch BEFORE any FileExplorer instances are created
-FileExplorer.ls = patched_ls
-
-# Verify it worked
-if FileExplorer.ls == patched_ls:
-    logger.info("✅ FileExplorer.ls successfully monkeypatched!")
-else:
-    logger.error("❌ FileExplorer.ls monkeypatch FAILED!")
-
-# Test it immediately
-logger.info("🧪 Testing monkeypatch...")
+# Apply monkeypatch - need to handle the @server decorator
 try:
-    test_explorer = FileExplorer(root_dir="/tmp", glob="*")
-    result = test_explorer.ls()
-    logger.info(f"🧪 Test result: {len(result) if result else 0} items")
+    # Get the underlying function if wrapped
+    if hasattr(FileExplorer.ls, '__wrapped__'):
+        logger.info("   Found @server wrapped method")
+        FileExplorer.ls.__wrapped__ = patched_ls
+    else:
+        logger.info("   Patching directly")
+        FileExplorer.ls = patched_ls
+    
+    logger.info("✅ FileExplorer.ls monkeypatch applied!")
 except Exception as e:
-    logger.error(f"🧪 Test failed: {e}")
+    logger.error(f"❌ Monkeypatch failed: {e}")
 
 # ==========================================
 
