@@ -107,19 +107,31 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
 
     files, folders = [], []
     
-    # Build glob pattern
-    glob_pattern = os.path.join(full_subdir_path, self.glob)
-    logger.info(f"   Full glob pattern: {glob_pattern}")
+    # Expand brace syntax manually
+    import re
+    glob_pattern_base = self.glob
+    matching_paths = set()
     
-    # Get all matching files using real glob
-    try:
-        matching_paths = set(glob_module.glob(glob_pattern, recursive=True))
-        logger.info(f"   Glob matched {len(matching_paths)} paths")
-        if matching_paths:
-            logger.info(f"   Sample matches: {list(matching_paths)[:5]}")
-    except Exception as e:
-        logger.error(f"   Glob error: {e}")
-        matching_paths = set()
+    # Check if pattern has brace expansion like *.{a,b,c}
+    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', glob_pattern_base)
+    if brace_match:
+        prefix, extensions, suffix = brace_match.groups()
+        extension_list = extensions.split(',')
+        logger.info(f"   Detected brace expansion: {len(extension_list)} patterns")
+        
+        for ext in extension_list:
+            pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
+            matches = glob_module.glob(pattern, recursive=True)
+            matching_paths.update(matches)
+            logger.debug(f"      Pattern {prefix}{ext}{suffix}: {len(matches)} matches")
+    else:
+        # No brace expansion, use pattern as-is
+        pattern = os.path.join(full_subdir_path, glob_pattern_base)
+        matching_paths = set(glob_module.glob(pattern, recursive=True))
+    
+    logger.info(f"   Total glob matched: {len(matching_paths)} paths")
+    if matching_paths:
+        logger.info(f"   Sample matches: {list(matching_paths)[:5]}")
     
     matched_count = 0
     skipped_count = 0
