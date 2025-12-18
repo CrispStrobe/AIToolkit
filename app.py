@@ -1622,35 +1622,31 @@ def ensure_user_storage_dirs(username):
 def save_to_user_storage(username, filename, file_data, encrypt=True, user_state=None):
     """
     Save file to user's storage box with optional encryption.
-    
-    Args:
-        username: User's username
-        filename: Desired filename
-        file_data: bytes or file path
-        encrypt: Whether to encrypt the file
-        user_state: User session state (for UMK)
-    
-    Returns:
-        (success: bool, storage_path: str, message: str)
     """
     logger.info(f"💾 save_to_user_storage: user={username}, file={filename}, encrypt={encrypt}")
     
     try:
-        # 1. Get user storage path
         user_path = get_user_storage_path(username)
         if not user_path:
             return False, None, "❌ Storage path nicht verfügbar"
         
-        # 2. Generate safe filename
+        # Generate safe filename
         safe_filename = re.sub(r'[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]', '_', filename)
+        
+        # CHANGE: Use underscore instead of dot for encrypted extension
         if encrypt:
-            safe_filename += ".enc"
+            # Split extension: "image.jpg" -> "image_jpg_enc"
+            name, ext = os.path.splitext(safe_filename)
+            if ext:
+                safe_filename = f"{name}{ext.replace('.', '_')}_enc"
+            else:
+                safe_filename = f"{safe_filename}_enc"
         
         storage_path = os.path.join(user_path, safe_filename)
         
         logger.info(f"📂 Target storage path: {storage_path}")
         
-        # 3. Read file data if it's a path
+        # Read file data if it's a path
         if isinstance(file_data, str) and os.path.exists(file_data):
             logger.debug(f"📥 Reading file from path: {file_data}")
             with open(file_data, 'rb') as f:
@@ -1661,7 +1657,7 @@ def save_to_user_storage(username, filename, file_data, encrypt=True, user_state
         
         logger.info(f"📊 File size: {len(file_data)} bytes")
         
-        # 4. Encrypt if requested
+        # Encrypt if requested
         if encrypt:
             logger.info("🔐 Encrypting file...")
             umk = user_state.get('umk') if user_state else crypto.global_key
@@ -1670,7 +1666,6 @@ def save_to_user_storage(username, filename, file_data, encrypt=True, user_state
                 logger.error("❌ No encryption key available")
                 return False, None, "❌ Kein Verschlüsselungsschlüssel"
             
-            # Ensure key is properly formatted for Fernet
             import base64
             key_for_fernet = umk
             if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
@@ -1681,12 +1676,11 @@ def save_to_user_storage(username, filename, file_data, encrypt=True, user_state
             file_data = f.encrypt(file_data)
             logger.info(f"✅ File encrypted. New size: {len(file_data)} bytes")
         
-        # 5. Write to storage
+        # Write to storage
         logger.info(f"💾 Writing to storage: {storage_path}")
         with open(storage_path, 'wb') as f:
             f.write(file_data)
         
-        # 6. Set proper permissions (user-only)
         os.chmod(storage_path, 0o600)
         
         logger.info(f"✅ File saved successfully: {storage_path}")
@@ -1745,8 +1739,11 @@ def load_from_user_storage(username, filepath, decrypt=True, user_state=None):
         
         logger.info(f"📊 File size: {len(file_data)} bytes")
         
+        # Decrypt if needed (check both formats)
+        needs_decryption = filepath.endswith('_enc') or filepath.endswith('.enc')
+        
         # 5. Decrypt if needed
-        if decrypt and filepath.endswith('.enc'):
+        if decrypt and needs_decryption:
             logger.info("🔓 Decrypting file...")
             umk = user_state.get('umk') if user_state else crypto.global_key
             
@@ -6399,7 +6396,7 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{mp3,wav,m4a,ogg,flac,aac,wma,enc}",  # Show audio + all .enc files
+                                    glob="**/*.@(mp3|wav|m4a|ogg|flac|mp3_enc|wav_enc|m4a_enc|ogg_enc|flac_enc)",
                                     label="Audiodateien durchsuchen",
                                     height=200,
                                     file_count="single"
@@ -6750,7 +6747,7 @@ with gr.Blocks(
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,tiff,svg,enc}",  # Show images + all .enc files
+                                    glob="**/*.@(png|jpg|jpeg|webp|bmp|gif|png_enc|jpg_enc|jpeg_enc|webp_enc|bmp_enc|gif_enc)",
                                     label="Bilddateien durchsuchen",
                                     height=200,
                                     file_count="single"
