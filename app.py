@@ -6146,7 +6146,8 @@ with gr.Blocks(
                                 attach_sb_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*",  # <-- CHANGE: Show ALL files (already working, but for consistency)
-                                    height=200
+                                    height=200,
+                                    # file_count="multiple"
                                 )
                                 sb_refresh_btn = gr.Button("🔄", size="sm")
 
@@ -6398,9 +6399,10 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
+                                    glob="**/*.{mp3,wav,m4a,ogg,flac,aac,wma,enc}",  # Show audio + all .enc files
                                     label="Audiodateien durchsuchen",
-                                    height=200
+                                    height=200,
+                                    file_count="single"
                                 )
                                 with gr.Row():
                                     t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
@@ -6748,9 +6750,10 @@ with gr.Blocks(
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
+                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,tiff,svg,enc}",  # Show images + all .enc files
                                     label="Bilddateien durchsuchen",
-                                    height=200
+                                    height=200,
+                                    file_count="single"
                                 )
                                 with gr.Row():
                                     v_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
