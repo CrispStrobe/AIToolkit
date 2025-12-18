@@ -27,3 +27,15 @@ Thumbs.db
 
 # Environment variables (API Keys, Secrets)
 .env
+
+# YouTube API Secrets & Tokens
+client_secrets.json
+*.pickle
+tokens/
+
+# Local Video Files (avoiding large binary commits)
+*.mp4
+
+# App-specific hidden keys
+.master_key
+.pq_keypair

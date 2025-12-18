@@ -1720,6 +1720,132 @@ def list_user_storage_files(username, pattern="*"):
         logger.exception(f"❌ Error listing storage: {e}")
         return False, [], f"❌ Fehler: {str(e)}"
 
+# --- pCLOUD BULK DOWNLOADER INTEGRATION ---
+def run_pcloud_bulk_import(url, user_state):
+    if not user_state or not user_state.get("id"):
+        yield "❌ Bitte anmelden."
+        return
+
+    # Permission Check: Only Admins and Media Managers should handle bulk imports (70GB+)
+    if not (user_state.get("is_admin") or user_state.get("is_media_manager")):
+        yield "⛔ Zugriff verweigert: Nur Medienverwalter dürfen Massen-Imports durchführen."
+        return
+
+    from pcloud_dl import PCloudDownloader # Import the class from your script
+    
+    username = user_state.get("username")
+    output_dir = get_user_storage_path(username)
+    
+    downloader = PCloudDownloader(url, output_dir)
+    code = downloader.code
+    if not code:
+        yield "❌ Ungültiger pCloud Link."
+        return
+
+    yield f"🔍 Analysiere Link: {code}..."
+    files = downloader.get_metadata()
+    
+    if not files:
+        yield "❌ Keine Dateien gefunden oder Link gesperrt."
+        return
+
+    total_gb = sum(f['size'] for f in files) / 1e9
+    logs = f"📂 Gefunden: {len(files)} Dateien ({total_gb:.2f} GB)\n"
+    logs += f"📍 Ziel: Storage Box / {username}\n"
+    yield logs
+
+    for i, f_info in enumerate(files):
+        fname = f_info['name']
+        fsize = f_info['size']
+        step = i + 1
+        
+        logs += f"\n⏳ [{step}/{len(files)}] Lade: {fname} ({fsize/1e6:.1f} MB)..."
+        yield logs
+        
+        try:
+            # We recreate the download_file logic here to yield progress
+            dl_api = f"https://{downloader.api_host}/getpublinkdownload?code={downloader.code}&fileid={f_info['fileid']}"
+            res = downloader.session.get(dl_api).json()
+            
+            if res.get("result") == 0:
+                direct_url = f"https://{res['hosts'][0]}{res['path']}"
+                target_path = os.path.join(output_dir, fname)
+                
+                with downloader.session.get(direct_url, stream=True) as r:
+                    r.raise_for_status()
+                    with open(target_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=1024*1024):
+                            f.write(chunk)
+                logs += " ✅"
+                yield logs
+            else:
+                logs += f" ❌ Fehler: {res.get('error')}"
+                yield logs
+        except Exception as e:
+            logs += f" ❌ Kritischer Fehler: {str(e)}"
+            yield logs
+
+    yield logs + "\n\n🎉 Bulk-Import abgeschlossen!"
+
+def pcloud_scan_handler(url):
+    if not url: return "❌ Bitte Link eingeben.", gr.update(choices=[], visible=False), ""
+    
+    downloader = PCloudDownloader(url)
+    folder_name, files = downloader.scan_link()
+    
+    if not folder_name:
+        return "❌ Link konnte nicht gescannt werden.", gr.update(choices=[], visible=False), ""
+    
+    # Create choices for the checkbox group: "Filename (Size MB)"
+    choices = [f"{f['name']} ({f['size']/1e6:.1f} MB)" for f in files]
+    
+    # Logic for default subpath suggestion
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    default_subpath = f"pcloud/shared/{date_str}_{folder_name}"
+    
+    status = f"✅ Gefunden: '{folder_name}' mit {len(files)} Dateien."
+    return status, gr.update(choices=choices, value=choices, visible=True), default_subpath
+
+def pcloud_download_handler(url, selected_files, custom_subpath, user_state):
+    if not user_state or not user_state.get("id"): yield "❌ Nicht angemeldet."; return
+    if not selected_files: yield "⚠️ Bitte mindestens eine Datei auswählen."; return
+
+    username = user_state.get("username")
+    base_storage = get_user_storage_path(username) # e.g. /mnt/storage/admin
+    
+    # Path logic: Use custom or default
+    final_subpath = custom_subpath.strip("/") if custom_subpath else "pcloud/shared/default"
+    full_target_dir = os.path.join(base_storage, final_subpath)
+    os.makedirs(full_target_dir, exist_ok=True)
+
+    downloader = PCloudDownloader(url)
+    _, all_files = downloader.scan_link()
+    
+    # Filter only files selected in UI (matching by the formatted label)
+    files_to_dl = [f for f in all_files if f"{f['name']} ({f['size']/1e6:.1f} MB)" in selected_files]
+
+    logs = f"🚀 Starte Import nach: {final_subpath}\n"
+    yield logs
+
+    for i, f_info in enumerate(files_to_dl):
+        fname = f_info['name']
+        logs += f"\n⏳ [{i+1}/{len(files_to_dl)}] {fname}..."
+        yield logs
+        
+        dl_url = downloader.get_download_url(f_info['fileid'])
+        if dl_url:
+            target_path = os.path.join(full_target_dir, fname)
+            with downloader.session.get(dl_url, stream=True) as r:
+                with open(target_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=1024*1024):
+                        f.write(chunk)
+            logs += " ✅"
+        else:
+            logs += " ❌ Link-Fehler"
+        yield logs
+
+    yield logs + "\n\n🎉 Fertig!"
+
 # ==========================================
 # AUDIO HELPERS
 # ==========================================
@@ -7078,6 +7204,37 @@ with gr.Blocks(
 
                         # FIX: Direct reference to c_msg
                         img_to_chat_btn.click(lambda x: x, inputs=loaded_img_prompt, outputs=c_msg)
+
+                    # =========================================================
+                    # 5. pCLOUD IMPORT (NEW SUBTAB)
+                    # =========================================================
+                    with gr.TabItem("☁️ pCloud Import") as pcloud_tab:
+                        gr.Markdown("### ☁️ pCloud Bulk Import (Selektiv)")
+                        
+                        with gr.Row():
+                            pcloud_url = gr.Textbox(label="pCloud Link", placeholder="https://e.pcloud.link/...", scale=4)
+                            scan_btn = gr.Button("🔍 Link scannen", variant="secondary", scale=1)
+                        
+                        pcloud_scan_status = gr.Markdown("")
+                        
+                        # File Selector (Hidden until scan)
+                        file_selector = gr.CheckboxGroup(label="Dateien auswählen", visible=False)
+                        
+                        with gr.Row():
+                            subpath_input = gr.Textbox(
+                                label="Ziel-Unterpfad (in deiner Storage Box)", 
+                                placeholder="pcloud/shared/MeinOrdner",
+                                info="Leer lassen für automatischen Pfad: pcloud/shared/DATUM_TITEL"
+                            )
+                        
+                        with gr.Row():
+                            pcloud_start_btn = gr.Button("📥 Download starten", variant="primary")
+                            
+                        pcloud_logs = gr.Textbox(label="Log", lines=8, interactive=False)
+
+                        # UI Wiring
+                        scan_btn.click(pcloud_scan_handler, inputs=[pcloud_url], outputs=[pcloud_scan_status, file_selector, subpath_input])
+                        pcloud_start_btn.click(pcloud_download_handler, inputs=[pcloud_url, file_selector, subpath_input, session_state], outputs=[pcloud_logs])
 
                     # =========================================================
                     # 3. CUSTOM PROMPTS
