@@ -8467,10 +8467,8 @@ with gr.Blocks(
                 "", gr.update(visible=False), gr.update(visible=True), 
                 "👤 Nicht angemeldet", gr.update(visible=False), 
                 gr.update(visible=False), {"id": None, "username": None, "is_admin": False},
-                gr.update(), gr.update(), gr.update()
+                gr.update(), gr.update(), gr.update()  # ADD: 3 FileExplorer updates
             )
-
-        # print(f"🔄 Auto-login RAW data: {json_str}") # Debug
 
         try:
             creds = json.loads(json_str)
@@ -8482,7 +8480,7 @@ with gr.Blocks(
             username, password = creds[0], creds[1]
             print(f"🔑 Authenticating stored user: {username}")
             
-            # Call the existing login handler
+            # Call the existing login handler (which now returns 10 values)
             return handle_login(username, password)
             
         except Exception as e:
@@ -8491,7 +8489,7 @@ with gr.Blocks(
                 "", gr.update(visible=False), gr.update(visible=True), 
                 "👤 Fehler beim Auto-Login", gr.update(visible=False), 
                 gr.update(visible=False), {"id": None, "username": None, "is_admin": False},
-                gr.update(), gr.update(), gr.update()
+                gr.update(), gr.update(), gr.update()  # ADD: 3 FileExplorer updates
             )
 
     def handle_login(username, password):
@@ -8501,22 +8499,28 @@ with gr.Blocks(
         status_text = f"👤 {state_data['username']}" if success else "👤"
         show_admin_tab = state_data.get("is_admin", False)
         
+        # Get file explorer root for this user
+        storage_root = None
         if success:
             try:
-                ensure_user_storage_dirs(username)
-                logger.info(f"✅ Storage initialized for '{username}'")
+                if ensure_user_storage_dirs(username):
+                    storage_root = get_file_explorer_root(state_data)
+                    logger.info(f"✅ Storage initialized for '{username}': {storage_root}")
             except Exception as e:
                 logger.exception(f"❌ Storage setup error: {e}")
         
         return (
-            message,                        
-            show_app,                       
-            show_login,                     
-            status_text,                    
-            gr.update(visible=True),        
-            gr.update(visible=show_admin_tab), 
-            state_data
-            # No FileExplorer updates here - handled by tab .select() events
+            message,                        # login_message
+            show_app,                       # main_app
+            show_login,                     # login_screen
+            status_text,                    # login_status
+            gr.update(visible=True),        # logout_btn
+            gr.update(visible=show_admin_tab), # admin_tab
+            state_data,                     # session_state
+            # FileExplorer updates (3 values)
+            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # t_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # v_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update()   # attach_sb_browser
         )
     
     def handle_logout():
