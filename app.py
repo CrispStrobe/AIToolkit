@@ -74,43 +74,52 @@ TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 # ==========================================
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
+# ==========================================
+# 🔧 AGGRESSIVE MONKEYPATCH: FileExplorer UI Fix
+# ==========================================
 import fnmatch
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
 from gradio.components.base import server
 
-def apply_file_explorer_patch():
+def apply_aggressive_patch():
     def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+        """
+        A robust patch that ensures:
+        1. Folders are always returned (crucial for tree rendering)
+        2. Glob patterns with braces {} are supported
+        3. Paths are normalized for the Gradio frontend
+        """
         if subdirectory is None:
             subdirectory = []
 
+        # Use Gradio's internal helper to get the absolute OS path
         full_subdir_path = self._safe_join(subdirectory)
         
         try:
-            # Get all items in the current directory
             subdir_items = sorted(os.listdir(full_subdir_path))
         except (FileNotFoundError, PermissionError):
             return []
 
-        # 1. Handle our custom glob (including brace expansion support)
-        # Convert {mp3,wav} to a list of patterns if necessary
+        # --- Handle Glob Patterns ---
         patterns = []
         if "{" in self.glob and "}" in self.glob:
-            prefix, rest = self.glob.split("{", 1)
-            options, suffix = rest.split("}", 1)
-            for opt in options.split(","):
-                patterns.append(f"{prefix}{opt}{suffix}")
+            import re
+            match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
+            if match:
+                prefix, choices, suffix = match.groups()
+                for c in choices.split(','):
+                    patterns.append(f"{prefix}{c}{suffix}")
         else:
             patterns = [self.glob]
 
-        # 2. Pre-calculate matched paths for the whole directory
-        matched_files = set()
+        # Get all matching absolute paths
+        matched_paths = set()
         for p in patterns:
-            # We use glob.glob to handle the recursion and patterns
-            search_path = os.path.join(full_subdir_path, p)
-            # recursive=True is handled by the ** in the pattern itself
-            matches = glob_module.glob(search_path, recursive=True)
-            matched_files.update([os.path.abspath(m) for m in matches])
+            # We search within the specific subdirectory for performance
+            search_pattern = os.path.join(full_subdir_path, p)
+            matches = glob_module.glob(search_pattern, recursive=True)
+            matched_paths.update([os.path.abspath(m) for m in matches])
 
         files, folders = [], []
         for item in subdir_items:
@@ -121,33 +130,36 @@ def apply_file_explorer_patch():
             except (PermissionError, OSError):
                 continue
 
-            # Check if this item is ignored
+            # Skip ignored items
             if self.ignore_glob and fnmatch.fnmatch(item, self.ignore_glob):
                 continue
 
             if is_dir:
-                # Folders must ALWAYS be included, otherwise the UI tree stops
+                # IMPORTANT: UI needs folders to build the tree, even if they don't match the glob
                 folders.append({
                     "name": item,
                     "type": "folder",
                     "valid": True,
                 })
             else:
-                # Files are only added if they match the glob
-                if full_path in matched_files:
+                # Only add file if it matches the glob
+                if full_path in matched_paths:
                     files.append({
                         "name": item,
                         "type": "file",
                         "valid": True,
                     })
 
+        # Log for debugging
+        logger.info(f"UI Sync: Sending {len(folders)} folders and {len(files)} files for path: {full_subdir_path}")
         return folders + files
 
-    # The magic: Re-wrap with @server so Gradio's API engine sees it
+    # The secret sauce: Re-wrap with the Gradio @server decorator
+    # this ensures the FastAPI endpoint is updated correctly.
     FileExplorer.ls = server(patched_ls)
-    logger.info("✅ Aggressive FileExplorer.ls patch applied with @server wrapper")
+    logger.info("✅ Aggressive FileExplorer.ls UI sync patch applied.")
 
-apply_file_explorer_patch()
+apply_aggressive_patch()
 # ==========================================
 
 # Increase max file size
