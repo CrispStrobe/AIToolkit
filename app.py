@@ -1778,34 +1778,41 @@ def load_from_user_storage(username, filepath, decrypt=True, user_state=None):
 
 def list_user_storage_files(username, pattern="*"):
     """
-    List files in user's storage directory.
-    
-    Returns:
-        (success: bool, files: list, message: str)
+    List files in user's storage directory + shared directory.
     """
     logger.info(f"📋 list_user_storage_files: user={username}, pattern={pattern}")
     
     try:
+        all_files = []
+        
+        # 1. User's personal storage
         user_path = get_user_storage_path(username)
-        if not user_path:
-            return False, [], "❌ Storage nicht verfügbar"
+        if user_path and os.path.exists(user_path):
+            import glob
+            search_pattern = os.path.join(user_path, pattern)
+            user_files = glob.glob(search_pattern)
+            for f in user_files:
+                rel_path = os.path.relpath(f, user_path)
+                all_files.append(rel_path)
         
-        import glob
-        search_pattern = os.path.join(user_path, pattern)
-        files = glob.glob(search_pattern)
+        # 2. Shared storage (if exists)
+        shared_path = os.path.join(STORAGE_MOUNT_POINT, "share")
+        if os.path.exists(shared_path):
+            import glob
+            search_pattern = os.path.join(shared_path, pattern)
+            shared_files = glob.glob(search_pattern)
+            for f in shared_files:
+                rel_path = os.path.relpath(f, shared_path)
+                all_files.append(f"share/{rel_path}")  # Prefix to show it's from share
         
-        # Make paths relative for display
-        relative_files = [os.path.relpath(f, user_path) for f in files]
+        logger.info(f"📁 Found {len(all_files)} files for user '{username}'")
         
-        logger.info(f"📁 Found {len(relative_files)} files for user '{username}'")
-        logger.debug(f"   Files: {relative_files[:10]}{'...' if len(relative_files) > 10 else ''}")
-        
-        return True, relative_files, f"✅ {len(relative_files)} Dateien"
+        return True, all_files, f"✅ {len(all_files)} Dateien"
         
     except Exception as e:
         logger.exception(f"❌ Error listing storage: {e}")
         return False, [], f"❌ Fehler: {str(e)}"
-
+    
 # --- pCLOUD BULK DOWNLOADER INTEGRATION ---
 def run_pcloud_bulk_import(url, user_state):
     if not user_state or not user_state.get("id"):
@@ -6391,13 +6398,9 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3.enc,wav.enc,m4a.enc,ogg.enc,flac.enc}", 
-                                    label="Audiodateien durchsuchen"
-                                )
-                                t_storage_file_list = gr.Dropdown(
-                                    label="Verfügbare Dateien (entschlüsselte Namen)",
-                                    choices=[],
-                                    interactive=True
+                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3.enc,wav.enc,m4a.enc,ogg.enc,flac.enc}",
+                                    label="Audiodateien durchsuchen",
+                                    height=200
                                 )
                                 with gr.Row():
                                     t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
@@ -6461,6 +6464,11 @@ with gr.Blocks(
                                 )
 
                         # Logic: Storage Box Selection
+                        def refresh_transcription_storage_browser(user_state):
+                            """Reset FileExplorer to update root based on user permissions"""
+                            root = get_file_explorer_root(user_state)
+                            return gr.update(root_dir=root, value=None)
+
                         def refresh_transcription_storage_list(user_state):
                             """Load and display decrypted filenames"""
                             if not user_state or not user_state.get("username"):
@@ -6488,21 +6496,39 @@ with gr.Blocks(
                                 return None, "❌ Keine Datei ausgewählt"
                             
                             try:
+                                # Handle list (FileExplorer can return list)
+                                if isinstance(selected_file, list):
+                                    selected_file = selected_file[0] if selected_file else None
+                                
+                                if not selected_file:
+                                    return None, "❌ Keine Datei ausgewählt"
+                                
                                 local_temp = copy_storage_file_to_temp(selected_file, user_state)
-                                display_name = selected_file[:-4] if selected_file.endswith('.enc') else selected_file
+                                display_name = os.path.basename(selected_file)
+                                if display_name.endswith('.enc'):
+                                    display_name = display_name[:-4]
                                 return local_temp, f"✅ Geladen: {display_name}"
                             except Exception as e:
                                 logger.exception(f"Storage file load error: {e}")
                                 return None, f"🔥 Fehler: {str(e)}"
 
+                        # Wire up events:
                         t_refresh_sb_btn.click(
-                            refresh_transcription_storage_list, 
-                            inputs=[session_state], 
-                            outputs=[t_storage_file_list, t_sb_status]
+                            refresh_transcription_storage_browser,
+                            inputs=[session_state],
+                            outputs=[t_storage_browser]
                         )
+
+                        # Update on tab select
+                        input_source_tabs.select(
+                            refresh_transcription_storage_browser,
+                            inputs=[session_state],
+                            outputs=[t_storage_browser]
+                        )
+
                         t_load_sb_btn.click(
-                            use_storage_file_transcription, 
-                            inputs=[t_storage_file_list, session_state], 
+                            use_storage_file_transcription,
+                            inputs=[t_storage_browser, session_state],
                             outputs=[t_audio, t_sb_status]
                         )
 
