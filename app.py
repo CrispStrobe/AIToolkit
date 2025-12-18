@@ -200,6 +200,7 @@ logger.info("✅ FileExplorer.ls monkeypatch applied!")
 # Patch __init__ 
 _original_init = FileExplorer.__init__
 
+
 def patched_init(self, *args, **kwargs):
     logger.info(f"🏗️ FileExplorer.__init__ called")
     logger.info(f"   root_dir: {kwargs.get('root_dir', 'NOT SET')}")
@@ -215,7 +216,14 @@ def patched_init(self, *args, **kwargs):
         # Call ls directly
         test_result = self.ls()
         logger.info(f"   Direct ls() call returned: {type(test_result)}")
-        logger.info(f"   Result: {test_result}")
+        logger.info(f"   Result length: {len(test_result) if test_result else 0}")
+        
+        # FORCE the component to have this data
+        if test_result and hasattr(self, '_value'):
+            logger.info(f"   Setting initial _value to first file")
+            # Try to set an initial value
+            self._value = test_result[0]['name']
+            
     except Exception as e:
         logger.error(f"   Direct ls() call failed: {e}")
         import traceback
@@ -6629,8 +6637,7 @@ with gr.Blocks(
                             root = get_file_explorer_root(user_state)
                             return gr.update(
                                 root_dir=root, 
-                                value=None, 
-                                glob="*.{mp3,wav,m4a,ogg,flac,mp3_enc,wav_enc,m4a_enc,ogg_enc,flac_enc}"
+                                value=[]  # Force empty value to trigger reload
                             )
 
                         def refresh_transcription_storage_list(user_state):
@@ -6927,9 +6934,8 @@ with gr.Blocks(
                             """Reset FileExplorer to update root based on user permissions"""
                             root = get_file_explorer_root(user_state)
                             return gr.update(
-                                root_dir=root, 
-                                value=None, 
-                                glob="*.{png,jpg,jpeg,webp,bmp,gif,png_enc,jpg_enc,jpeg_enc,webp_enc,bmp_enc,gif_enc}"
+                                root_dir=root,
+                                value=[]  # Force empty value to trigger reload
                             )
 
                         def use_storage_image_vision(selected_file, user_state):
@@ -8739,10 +8745,10 @@ with gr.Blocks(
             gr.update(visible=True),        # logout_btn
             gr.update(visible=show_admin_tab), # admin_tab
             state_data,                     # session_state
-            # FileExplorer updates (3 values)
-            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # t_storage_browser
-            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # v_storage_browser
-            gr.update(root_dir=storage_root) if storage_root else gr.update()   # attach_sb_browser
+            # FileExplorer updates with forced refresh
+            gr.update(root_dir=storage_root, value=[]) if storage_root else gr.update(),  # t_storage_browser
+            gr.update(root_dir=storage_root, value=[]) if storage_root else gr.update(),  # v_storage_browser
+            gr.update(root_dir=storage_root, value=[]) if storage_root else gr.update()   # attach_sb_browser
         )
     
     def handle_logout():
