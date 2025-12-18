@@ -72,84 +72,134 @@ except ImportError:
 TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 
 # ==========================================
-# 🔧 CUSTOM FileExplorer with glob support
+# 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
 from gradio.components.base import server
 import re
 
-logger.info("🔧 Creating custom FileExplorer class...")
+logger.info("🔧 Starting comprehensive FileExplorer monkeypatch...")
 
-class CustomFileExplorer(FileExplorer):
-    """FileExplorer with proper glob brace expansion support"""
+def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+    """
+    Patched version that uses real glob with brace expansion support
+    """
+    logger.info("=" * 60)
+    logger.info("🔧 PATCHED FileExplorer.ls CALLED!")
+    logger.info("=" * 60)
     
-    @server
-    def ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-        """
-        Override with brace expansion support for glob patterns like *.{mp3,wav,m4a}
-        """
-        logger.info(f"🔍 CustomFileExplorer.ls called for subdirectory: {subdirectory}")
-        
-        if subdirectory is None:
-            subdirectory = []
+    if subdirectory is None:
+        subdirectory = []
 
-        full_subdir_path = self._safe_join(subdirectory)
-        logger.info(f"   Path: {full_subdir_path}, Glob: {self.glob}")
+    full_subdir_path = self._safe_join(subdirectory)
+    
+    logger.info(f"🔍 FileExplorer.ls called:")
+    logger.info(f"   Root dir: {self.root_dir}")
+    logger.info(f"   Subdirectory: {subdirectory}")
+    logger.info(f"   Full path: {full_subdir_path}")
+    logger.info(f"   Glob pattern: {self.glob}")
+
+    try:
+        subdir_items = sorted(os.listdir(full_subdir_path))
+        logger.info(f"   Found {len(subdir_items)} items in directory")
+        if subdir_items:
+            logger.info(f"   First 10 items: {subdir_items[:10]}")
+    except (FileNotFoundError, PermissionError) as e:
+        logger.error(f"   ❌ Cannot list directory: {e}")
+        return []
+
+    files, folders = [], []
+    
+    # Expand brace syntax manually
+    matching_paths = set()
+    
+    # Check if pattern has brace expansion like *.{a,b,c}
+    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
+    if brace_match:
+        prefix, extensions, suffix = brace_match.groups()
+        extension_list = extensions.split(',')
+        logger.info(f"   Detected brace expansion: {len(extension_list)} patterns")
+        
+        for ext in extension_list:
+            pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
+            matches = glob_module.glob(pattern, recursive=True)
+            matching_paths.update(matches)
+            logger.debug(f"      Pattern {prefix}{ext}{suffix}: {len(matches)} matches")
+    else:
+        # No brace expansion, use pattern as-is
+        pattern = os.path.join(full_subdir_path, self.glob)
+        matching_paths = set(glob_module.glob(pattern, recursive=True))
+    
+    logger.info(f"   Total glob matched: {len(matching_paths)} paths")
+    if matching_paths:
+        logger.info(f"   Sample matches: {list(matching_paths)[:5]}")
+    
+    matched_count = 0
+    skipped_count = 0
+    
+    for item in subdir_items:
+        full_path = os.path.join(full_subdir_path, item)
 
         try:
-            subdir_items = sorted(os.listdir(full_subdir_path))
-            logger.info(f"   Found {len(subdir_items)} items")
-        except (FileNotFoundError, PermissionError):
-            return []
+            is_file = not os.path.isdir(full_path)
+        except (PermissionError, OSError) as e:
+            logger.warning(f"   ⚠️ Cannot access {item}: {e}")
+            continue
 
-        files, folders = [], []
+        # Folders are always valid
+        valid_by_glob = not is_file or full_path in matching_paths
         
-        # Expand brace syntax manually
-        matching_paths = set()
-        brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
-        
-        if brace_match:
-            prefix, extensions, suffix = brace_match.groups()
-            for ext in extensions.split(','):
-                pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
-                matching_paths.update(glob_module.glob(pattern, recursive=True))
-        else:
-            pattern = os.path.join(full_subdir_path, self.glob)
-            matching_paths = set(glob_module.glob(pattern, recursive=True))
-        
-        logger.info(f"   Matched {len(matching_paths)} files with glob")
-        
-        for item in subdir_items:
-            full_path = os.path.join(full_subdir_path, item)
-            
-            try:
-                is_file = not os.path.isdir(full_path)
-            except (PermissionError, OSError):
+        if is_file and not valid_by_glob:
+            skipped_count += 1
+            logger.debug(f"   ⏭️ Skipped (no glob match): {item}")
+            continue
+
+        if self.ignore_glob:
+            import fnmatch
+            if fnmatch.fnmatch(full_path, self.ignore_glob):
+                skipped_count += 1
+                logger.debug(f"   ⏭️ Skipped (ignore_glob): {item}")
                 continue
+        
+        matched_count += 1
+        target = files if is_file else folders
+        target.append({
+            "name": item,
+            "type": "file" if is_file else "folder",
+            "valid": valid_by_glob,
+        })
+        logger.debug(f"   ✅ Added: {item} ({'file' if is_file else 'folder'})")
 
-            valid_by_glob = not is_file or full_path in matching_paths
-            
-            if is_file and not valid_by_glob:
-                continue
+    result = folders + files
+    logger.info(f"   📊 Final: {len(folders)} folders, {len(files)} files")
+    logger.info(f"   📊 Stats: {matched_count} matched, {skipped_count} skipped")
+    logger.info("=" * 60)
+    
+    return result
 
-            if self.ignore_glob:
-                import fnmatch
-                if fnmatch.fnmatch(full_path, self.ignore_glob):
-                    continue
-            
-            target = files if is_file else folders
-            target.append({
-                "name": item,
-                "type": "file" if is_file else "folder",
-                "valid": valid_by_glob,
-            })
+# Store the original ls method
+_original_ls = FileExplorer.ls
 
-        logger.info(f"   Returning {len(folders)} folders, {len(files)} files")
-        return folders + files
+# Replace the method with our patched version, wrapped with @server
+FileExplorer.ls = server(patched_ls)
 
-logger.info("✅ CustomFileExplorer class created!")
-# ==========================================
+# CRITICAL: Also update any existing instances' method binding
+# Force re-registration by clearing the method cache if it exists
+if hasattr(FileExplorer, '_server_fns'):
+    logger.info("   Clearing _server_fns cache")
+    FileExplorer._server_fns = {}
+
+if hasattr(FileExplorer, 'fns'):
+    logger.info("   Updating fns registry")
+    for key in list(FileExplorer.fns.keys()):
+        if 'ls' in key:
+            logger.info(f"   Removing old ls registration: {key}")
+            del FileExplorer.fns[key]
+
+logger.info("✅ FileExplorer.ls monkeypatch applied with server re-registration!")
+
+
 
 # ==========================================
 
@@ -6226,7 +6276,7 @@ with gr.Blocks(
                             attach_file = gr.File(label="Datei", visible=False, file_count="multiple", type="filepath")
                             
                             with gr.Group(visible=False) as sb_group:
-                                attach_sb_browser = CustomFileExplorer(
+                                attach_sb_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*",
                                     height=200,
@@ -6480,7 +6530,7 @@ with gr.Blocks(
                             
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
-                                t_storage_browser = CustomFileExplorer(
+                                t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc}",  # Add '_enc' to catch .mp3.enc files!
                                     label="Audiodateien durchsuchen",
@@ -6833,9 +6883,9 @@ with gr.Blocks(
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
                                 # REPLACE Dropdown with FileExplorer
-                                v_storage_browser = CustomFileExplorer(
+                                v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,enc}",  # Add 'enc' to catch .jpg.enc files!
+                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png_enc}",  # Add 'enc' to catch .jpg.enc files!
                                     label="Bilddateien durchsuchen",
                                     height=200,
                                     file_count="single"
