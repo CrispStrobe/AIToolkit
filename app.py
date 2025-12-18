@@ -6481,8 +6481,8 @@ with gr.Blocks(
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = CustomFileExplorer(
-                                    root_dir=TEMP_EXPLORER_ROOT,  # Start with temp, update on login
-                                    glob="**/*.{mp3,wav,m4a,ogg,flac}",
+                                    root_dir=STORAGE_MOUNT_POINT,
+                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc}",  # Add '_enc' to catch .mp3.enc files!
                                     label="Audiodateien durchsuchen",
                                     height=200,
                                     file_count="single"
@@ -6554,13 +6554,7 @@ with gr.Blocks(
                             """Reset FileExplorer to update root based on user permissions"""
                             root = get_file_explorer_root(user_state)
                             logger.info(f"🔄 Refreshing transcription browser with root: {root}")
-                            return CustomFileExplorer(
-                                root_dir=root,
-                                glob="**/*.{mp3,wav,m4a,ogg,flac}",
-                                label="Audiodateien durchsuchen",
-                                height=200,
-                                file_count="single"
-                            )
+                            return gr.update(root_dir=root)
 
                         def refresh_transcription_storage_list(user_state):
                             """Load and display decrypted filenames"""
@@ -6840,8 +6834,8 @@ with gr.Blocks(
                                 gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = CustomFileExplorer(
-                                    root_dir=TEMP_EXPLORER_ROOT,  # Start with temp, update on login
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif}",
+                                    root_dir=STORAGE_MOUNT_POINT,
+                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,enc}",  # Add 'enc' to catch .jpg.enc files!
                                     label="Bilddateien durchsuchen",
                                     height=200,
                                     file_count="single"
@@ -6856,13 +6850,7 @@ with gr.Blocks(
                             """Reset FileExplorer to update root based on user permissions"""
                             root = get_file_explorer_root(user_state)
                             logger.info(f"🔄 Refreshing vision browser with root: {root}")
-                            return CustomFileExplorer(
-                                root_dir=root,
-                                glob="**/*.{png,jpg,jpeg,webp,bmp,gif}",
-                                label="Bilddateien durchsuchen",
-                                height=200,
-                                file_count="single"
-                            )
+                            return gr.update(root_dir=root)
 
                         def use_storage_image_vision(selected_file, user_state):
                             if not selected_file:
@@ -8672,9 +8660,9 @@ with gr.Blocks(
             gr.update(visible=show_admin_tab), # admin_tab
             state_data,                     # session_state
             # FileExplorer updates with forced refresh
-            gr.update(root_dir=storage_root, value=[]) if storage_root else gr.update(),  # t_storage_browser
-            gr.update(root_dir=storage_root, value=[]) if storage_root else gr.update(),  # v_storage_browser
-            gr.update(root_dir=storage_root, value=[]) if storage_root else gr.update()   # attach_sb_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # t_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # v_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update()   # attach_sb_browser
         )
     
     def handle_logout():
