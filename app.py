@@ -74,92 +74,104 @@ TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 # ==========================================
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
-# ==========================================
-# 🔧 AGGRESSIVE MONKEYPATCH: FileExplorer UI Fix
-# ==========================================
-import fnmatch
 import glob as glob_module
-from gradio.components.file_explorer import FileExplorer
-from gradio.components.base import server
+import os
+import re
 
-def apply_aggressive_patch():
-    def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-        """
-        A robust patch that ensures:
-        1. Folders are always returned (crucial for tree rendering)
-        2. Glob patterns with braces {} are supported
-        3. Paths are normalized for the Gradio frontend
-        """
-        if subdirectory is None:
-            subdirectory = []
+logger.info("🔧 Starting AGGRESSIVE FileExplorer monkeypatch...")
 
-        # Use Gradio's internal helper to get the absolute OS path
-        full_subdir_path = self._safe_join(subdirectory)
+# ✅ STEP 1: Patch the module BEFORE importing the class
+import gradio.components.file_explorer as fe_module
+
+# Store original for reference
+_original_ls_source = """
+def ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+    if subdirectory is None:
+        subdirectory = []
+    full_subdir_path = self._safe_join(subdirectory)
+    
+    logger.info("=" * 60)
+    logger.info("🔧 PATCHED ls() CALLED VIA SERVER ENDPOINT!")
+    logger.info(f"   Root: {self.root_dir}")
+    logger.info(f"   Subdirectory: {subdirectory}")
+    logger.info(f"   Full path: {full_subdir_path}")
+    logger.info(f"   Glob: {self.glob}")
+    logger.info("=" * 60)
+    
+    try:
+        subdir_items = sorted(os.listdir(full_subdir_path))
+        logger.info(f"   📁 Items in directory: {len(subdir_items)}")
+    except (FileNotFoundError, PermissionError) as e:
+        logger.error(f"   ❌ Cannot list: {e}")
+        return []
+    
+    files, folders = [], []
+    matching_paths = set()
+    
+    # Expand brace patterns
+    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
+    if brace_match:
+        prefix, extensions, suffix = brace_match.groups()
+        for ext in extensions.split(','):
+            pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
+            matching_paths.update(glob_module.glob(pattern, recursive=True))
+            logger.info(f"   Pattern {prefix}{ext}{suffix}: {len(glob_module.glob(pattern, recursive=True))} matches")
+    else:
+        pattern = os.path.join(full_subdir_path, self.glob)
+        matching_paths = set(glob_module.glob(pattern, recursive=True))
+    
+    logger.info(f"   ✅ Total matched by glob: {len(matching_paths)}")
+    
+    for item in subdir_items:
+        full_path = os.path.join(full_subdir_path, item)
         
         try:
-            subdir_items = sorted(os.listdir(full_subdir_path))
-        except (FileNotFoundError, PermissionError):
-            return []
-
-        # --- Handle Glob Patterns ---
-        patterns = []
-        if "{" in self.glob and "}" in self.glob:
-            import re
-            match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
-            if match:
-                prefix, choices, suffix = match.groups()
-                for c in choices.split(','):
-                    patterns.append(f"{prefix}{c}{suffix}")
-        else:
-            patterns = [self.glob]
-
-        # Get all matching absolute paths
-        matched_paths = set()
-        for p in patterns:
-            # We search within the specific subdirectory for performance
-            search_pattern = os.path.join(full_subdir_path, p)
-            matches = glob_module.glob(search_pattern, recursive=True)
-            matched_paths.update([os.path.abspath(m) for m in matches])
-
-        files, folders = [], []
-        for item in subdir_items:
-            full_path = os.path.abspath(os.path.join(full_subdir_path, item))
-            
-            try:
-                is_dir = os.path.isdir(full_path)
-            except (PermissionError, OSError):
+            is_file = not os.path.isdir(full_path)
+        except (PermissionError, OSError):
+            continue
+        
+        valid_by_glob = not is_file or full_path in matching_paths
+        
+        if is_file and not valid_by_glob:
+            continue
+        
+        if self.ignore_glob:
+            import fnmatch
+            if fnmatch.fnmatch(full_path, self.ignore_glob):
                 continue
+        
+        target = files if is_file else folders
+        target.append({
+            "name": item,
+            "type": "file" if is_file else "folder",
+            "valid": valid_by_glob,
+        })
+    
+    result = folders + files
+    logger.info(f"   📊 Returning: {len(folders)} folders, {len(files)} files")
+    logger.info("=" * 60)
+    return result
+"""
 
-            # Skip ignored items
-            if self.ignore_glob and fnmatch.fnmatch(item, self.ignore_glob):
-                continue
+# Execute the patched function in the module's namespace
+exec(_original_ls_source, fe_module.__dict__)
 
-            if is_dir:
-                # IMPORTANT: UI needs folders to build the tree, even if they don't match the glob
-                folders.append({
-                    "name": item,
-                    "type": "folder",
-                    "valid": True,
-                })
-            else:
-                # Only add file if it matches the glob
-                if full_path in matched_paths:
-                    files.append({
-                        "name": item,
-                        "type": "file",
-                        "valid": True,
-                    })
+# Now get the patched function and apply @server decorator
+from gradio.components.base import server
+patched_ls_func = fe_module.__dict__['ls']
 
-        # Log for debugging
-        logger.info(f"UI Sync: Sending {len(folders)} folders and {len(files)} files for path: {full_subdir_path}")
-        return folders + files
+# ✅ STEP 2: Re-apply @server decorator
+fe_module.FileExplorer.ls = server(patched_ls_func)
 
-    # The secret sauce: Re-wrap with the Gradio @server decorator
-    # this ensures the FastAPI endpoint is updated correctly.
-    FileExplorer.ls = server(patched_ls)
-    logger.info("✅ Aggressive FileExplorer.ls UI sync patch applied.")
+logger.info("✅ FileExplorer.ls patched at module level!")
+logger.info(f"   Type: {type(fe_module.FileExplorer.ls)}")
 
-apply_aggressive_patch()
+# ✅ STEP 3: Now import for use
+from gradio.components.file_explorer import FileExplorer
+
+# Verify patch is active
+logger.info(f"   Imported class ls type: {type(FileExplorer.ls)}")
+
 # ==========================================
 
 # Increase max file size
