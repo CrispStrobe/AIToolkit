@@ -71,168 +71,99 @@ except ImportError:
 # ==========================================
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
+
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
+from gradio.components.base import server as server_decorator
+import inspect
 
 logger.info("🔧 Starting FileExplorer monkeypatch...")
 
+# Get the original method
+original_ls_method = FileExplorer.ls
+
+# Find if it's wrapped
+if hasattr(original_ls_method, '__self__'):
+    logger.info("   Method is bound")
+if callable(original_ls_method):
+    logger.info("   Method is callable")
+    
+# Get the source to understand the decorator
+try:
+    import types
+    # Try to get the actual function
+    if hasattr(original_ls_method, '__func__'):
+        actual_func = original_ls_method.__func__
+        logger.info(f"   Found __func__: {actual_func}")
+    elif hasattr(original_ls_method, 'func'):
+        actual_func = original_ls_method.func
+        logger.info(f"   Found .func: {actual_func}")
+    else:
+        actual_func = original_ls_method
+        logger.info(f"   Using method directly: {actual_func}")
+except Exception as e:
+    logger.error(f"   Error inspecting method: {e}")
+
 def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
     """
-    Patched version that uses real glob instead of fnmatch
+    Patched version that uses real glob with brace expansion support
     """
-    logger.info("=" * 60)
-    logger.info("🔧 PATCHED FileExplorer.ls CALLED!")
-    logger.info("=" * 60)
-    
     if subdirectory is None:
         subdirectory = []
 
     full_subdir_path = self._safe_join(subdirectory)
-    
-    logger.info(f"🔍 FileExplorer.ls called:")
-    logger.info(f"   Root dir: {self.root_dir}")
-    logger.info(f"   Subdirectory: {subdirectory}")
-    logger.info(f"   Full path: {full_subdir_path}")
-    logger.info(f"   Glob pattern: {self.glob}")
 
     try:
         subdir_items = sorted(os.listdir(full_subdir_path))
-        logger.info(f"   Found {len(subdir_items)} items in directory")
-        if subdir_items:
-            logger.info(f"   First 10 items: {subdir_items[:10]}")
-    except (FileNotFoundError, PermissionError) as e:
-        logger.error(f"   ❌ Cannot list directory: {e}")
+    except (FileNotFoundError, PermissionError):
         return []
 
     files, folders = [], []
     
     # Expand brace syntax manually
     import re
-    glob_pattern_base = self.glob
     matching_paths = set()
     
-    # Check if pattern has brace expansion like *.{a,b,c}
-    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', glob_pattern_base)
+    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
     if brace_match:
         prefix, extensions, suffix = brace_match.groups()
-        extension_list = extensions.split(',')
-        logger.info(f"   Detected brace expansion: {len(extension_list)} patterns")
-        
-        for ext in extension_list:
+        for ext in extensions.split(','):
             pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
-            matches = glob_module.glob(pattern, recursive=True)
-            matching_paths.update(matches)
-            logger.debug(f"      Pattern {prefix}{ext}{suffix}: {len(matches)} matches")
+            matching_paths.update(glob_module.glob(pattern, recursive=True))
     else:
-        # No brace expansion, use pattern as-is
-        pattern = os.path.join(full_subdir_path, glob_pattern_base)
+        pattern = os.path.join(full_subdir_path, self.glob)
         matching_paths = set(glob_module.glob(pattern, recursive=True))
-    
-    logger.info(f"   Total glob matched: {len(matching_paths)} paths")
-    if matching_paths:
-        logger.info(f"   Sample matches: {list(matching_paths)[:5]}")
-    
-    matched_count = 0
-    skipped_count = 0
     
     for item in subdir_items:
         full_path = os.path.join(full_subdir_path, item)
-
         try:
             is_file = not os.path.isdir(full_path)
-        except (PermissionError, OSError) as e:
-            logger.warning(f"   ⚠️ Cannot access {item}: {e}")
+        except (PermissionError, OSError):
             continue
 
-        # Folders are always valid
         valid_by_glob = not is_file or full_path in matching_paths
         
         if is_file and not valid_by_glob:
-            skipped_count += 1
-            logger.debug(f"   ⏭️ Skipped (no glob match): {item}")
             continue
 
         if self.ignore_glob:
             import fnmatch
             if fnmatch.fnmatch(full_path, self.ignore_glob):
-                skipped_count += 1
-                logger.debug(f"   ⏭️ Skipped (ignore_glob): {item}")
                 continue
         
-        matched_count += 1
         target = files if is_file else folders
         target.append({
             "name": item,
             "type": "file" if is_file else "folder",
             "valid": valid_by_glob,
         })
-        logger.debug(f"   ✅ Added: {item} ({'file' if is_file else 'folder'})")
 
-    result = folders + files
-    logger.info(f"   📊 Final: {len(folders)} folders, {len(files)} files")
-    logger.info(f"   📊 Stats: {matched_count} matched, {skipped_count} skipped")
-    logger.info("=" * 60)
-    
-    return result
+    return folders + files
 
-# Check if ls is wrapped by @server decorator
-original_ls = FileExplorer.ls
-logger.info(f"   Original ls type: {type(original_ls)}")
-logger.info(f"   Has __wrapped__: {hasattr(original_ls, '__wrapped__')}")
-
-if hasattr(original_ls, 'fn'):
-    # It's a ServerFunction object, replace the inner function
-    logger.info("   Found ServerFunction, patching .fn")
-    original_ls.fn = patched_ls
-elif hasattr(original_ls, '__wrapped__'):
-    # It's wrapped, replace __wrapped__
-    logger.info("   Found __wrapped__, patching it")
-    original_ls.__wrapped__ = patched_ls
-else:
-    # Replace directly
-    logger.info("   Replacing directly")
-    from gradio.components.base import server
-    FileExplorer.ls = server(patched_ls)
+# Replace using unbound method assignment
+FileExplorer.ls = server_decorator(patched_ls)
 
 logger.info("✅ FileExplorer.ls monkeypatch applied!")
-
-# Patch __init__ 
-# Patch __init__ 
-_original_init = FileExplorer.__init__
-
-
-def patched_init(self, *args, **kwargs):
-    logger.info(f"🏗️ FileExplorer.__init__ called")
-    logger.info(f"   root_dir: {kwargs.get('root_dir', 'NOT SET')}")
-    logger.info(f"   glob: {kwargs.get('glob', 'NOT SET')}")
-    
-    # Call original
-    result = _original_init(self, *args, **kwargs)
-    
-    logger.info(f"   ✅ FileExplorer created with root_dir={self.root_dir}")
-    logger.info(f"   Calling ls() directly to test...")
-    
-    try:
-        # Call ls directly
-        test_result = self.ls()
-        logger.info(f"   Direct ls() call returned: {type(test_result)}")
-        logger.info(f"   Result length: {len(test_result) if test_result else 0}")
-        
-        # FORCE the component to have this data
-        if test_result and hasattr(self, '_value'):
-            logger.info(f"   Setting initial _value to first file")
-            # Try to set an initial value
-            self._value = test_result[0]['name']
-            
-    except Exception as e:
-        logger.error(f"   Direct ls() call failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-    
-    return result
-
-FileExplorer.__init__ = patched_init
-logger.info("✅ FileExplorer.__init__ also patched!")
 
 # ==========================================
 
