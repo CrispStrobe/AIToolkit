@@ -1470,29 +1470,26 @@ def get_allowed_paths(username: str, is_admin: bool = False) -> list:
 def get_file_explorer_root(user_state):
     """
     Returns the appropriate root directory for FileExplorer based on user permissions.
-    For non-admins: Returns their personal folder (which exists)
-    For admins: Returns the base users directory
-    Always ensures the path exists before returning.
+    For non-admins: Returns their personal folder /mnt/storage/{username}
+    For admins: Returns /mnt/storage (to see all user folders)
     """
     if not user_state or not user_state.get("username"):
-        # Fallback - return storage mount point if it exists
         if os.path.exists(STORAGE_MOUNT_POINT):
             return STORAGE_MOUNT_POINT
-        return "/tmp"  # Last resort fallback
+        return "/tmp"
     
     username = user_state.get("username")
     is_admin = user_state.get("is_admin", False)
     
     if is_admin:
-        # Admins see all user folders
-        admin_path = "/mnt/storage"
-        if os.path.exists(admin_path):
-            return admin_path
+        # Admins see all user folders at /mnt/storage/
+        if os.path.exists(STORAGE_MOUNT_POINT):
+            return STORAGE_MOUNT_POINT
     
-    # Non-admin users: Return their personal folder
-    personal_path = os.path.join("/mnt/storage", username)
+    # Non-admin: /mnt/storage/{username}
+    personal_path = os.path.join(STORAGE_MOUNT_POINT, username)
     
-    # Ensure personal directory exists
+    # Ensure exists
     try:
         if not os.path.exists(personal_path):
             os.makedirs(personal_path, exist_ok=True)
@@ -1501,12 +1498,11 @@ def get_file_explorer_root(user_state):
     except Exception as e:
         logger.error(f"❌ Failed to create personal storage: {e}")
     
-    # Verify it exists and is accessible
     if os.path.exists(personal_path) and os.access(personal_path, os.R_OK | os.W_OK):
         logger.info(f"✅ Using personal storage for '{username}': {personal_path}")
         return personal_path
     
-    # Fallback if personal path failed
+    # Fallback
     logger.warning(f"⚠️ Personal storage not accessible for '{username}', using fallback")
     if os.path.exists(STORAGE_MOUNT_POINT):
         return STORAGE_MOUNT_POINT
