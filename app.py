@@ -76,14 +76,12 @@ TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 # ==========================================
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
-from gradio.components.base import server
-import re
 
-logger.info("🔧 Starting comprehensive FileExplorer monkeypatch...")
+logger.info("🔧 Starting FileExplorer monkeypatch...")
 
 def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
     """
-    Patched version that uses real glob with brace expansion support
+    Patched version that uses real glob instead of fnmatch
     """
     logger.info("=" * 60)
     logger.info("🔧 PATCHED FileExplorer.ls CALLED!")
@@ -112,10 +110,12 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
     files, folders = [], []
     
     # Expand brace syntax manually
+    import re
+    glob_pattern_base = self.glob
     matching_paths = set()
     
     # Check if pattern has brace expansion like *.{a,b,c}
-    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
+    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', glob_pattern_base)
     if brace_match:
         prefix, extensions, suffix = brace_match.groups()
         extension_list = extensions.split(',')
@@ -128,7 +128,7 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
             logger.debug(f"      Pattern {prefix}{ext}{suffix}: {len(matches)} matches")
     else:
         # No brace expansion, use pattern as-is
-        pattern = os.path.join(full_subdir_path, self.glob)
+        pattern = os.path.join(full_subdir_path, glob_pattern_base)
         matching_paths = set(glob_module.glob(pattern, recursive=True))
     
     logger.info(f"   Total glob matched: {len(matching_paths)} paths")
@@ -178,27 +178,63 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
     
     return result
 
-# Store the original ls method
-_original_ls = FileExplorer.ls
+# Apply monkeypatch - try different approaches
+try:
+    # Check what we're dealing with
+    original_ls = FileExplorer.ls
+    logger.info(f"   Original ls type: {type(original_ls)}")
+    logger.info(f"   Original ls: {original_ls}")
+    
+    # Try to access the wrapped function
+    if hasattr(original_ls, '__func__'):
+        logger.info(f"   Has __func__")
+        # Replace the underlying function
+        original_ls.__func__ = patched_ls
+    elif hasattr(original_ls, 'fn'):
+        logger.info(f"   Has .fn attribute")
+        original_ls.fn = patched_ls
+    else:
+        logger.info(f"   Replacing method directly")
+        from gradio.components.base import server
+        FileExplorer.ls = server(patched_ls)
+    
+    logger.info("✅ FileExplorer.ls monkeypatch applied!")
+except Exception as e:
+    logger.error(f"❌ Monkeypatch failed: {e}")
+    import traceback
+    logger.error(traceback.format_exc())
 
-# Replace the method with our patched version, wrapped with @server
-FileExplorer.ls = server(patched_ls)
+# Patch __init__ to test
+_original_init = FileExplorer.__init__
 
-# CRITICAL: Also update any existing instances' method binding
-# Force re-registration by clearing the method cache if it exists
-if hasattr(FileExplorer, '_server_fns'):
-    logger.info("   Clearing _server_fns cache")
-    FileExplorer._server_fns = {}
+def patched_init(self, *args, **kwargs):
+    logger.info(f"🏗️ FileExplorer.__init__ called")
+    logger.info(f"   root_dir: {kwargs.get('root_dir', 'NOT SET')}")
+    logger.info(f"   glob: {kwargs.get('glob', 'NOT SET')}")
+    
+    # Call original
+    result = _original_init(self, *args, **kwargs)
+    
+    logger.info(f"   ✅ FileExplorer created with root_dir={self.root_dir}")
+    logger.info(f"   Calling ls() directly to test...")
+    
+    try:
+        test_result = self.ls()
+        logger.info(f"   Direct ls() call returned: {type(test_result)}")
+        logger.info(f"   Result length: {len(test_result) if test_result else 0}")
+        if test_result:
+            logger.info(f"   Sample: {test_result[:3]}")
+    except Exception as e:
+        logger.error(f"   Direct ls() call failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    
+    return result
 
-if hasattr(FileExplorer, 'fns'):
-    logger.info("   Updating fns registry")
-    for key in list(FileExplorer.fns.keys()):
-        if 'ls' in key:
-            logger.info(f"   Removing old ls registration: {key}")
-            del FileExplorer.fns[key]
+FileExplorer.__init__ = patched_init
+logger.info("✅ FileExplorer.__init__ also patched!")
 
-logger.info("✅ FileExplorer.ls monkeypatch applied with server re-registration!")
-
+# ==========================================
 
 
 # ==========================================
