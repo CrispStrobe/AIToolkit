@@ -1438,43 +1438,7 @@ def download_from_url(url, download_video=False, save_to_storage=True, user_stat
 # ==========================================
 # 📦 STORAGE BOX HELPER
 # ==========================================
-def refresh_storage_list_helper(user_state, file_types):
-    """
-    Generic helper to scan user storage and return dropdown choices.
-    file_types: tuple of extensions like ('.mp3', '.wav')
-    """
-    if not user_state or not user_state.get("username"):
-        return gr.update(choices=[], value=None), "❌ Bitte anmelden"
-    
-    username = user_state.get("username")
-    success, files, msg = list_user_storage_files(username, pattern="*")
-    
-    if not success:
-        return gr.update(choices=[], value=None), msg
 
-    # Create a list of (Display Label, Actual Filename)
-    choices = []
-    for f in files:
-        f_lower = f.lower()
-        # Check if file matches types OR is an encrypted version of those types
-        if f_lower.endswith(file_types) or any(f_lower.endswith(t + ".enc") for t in file_types) or f_lower.endswith("_enc"):
-            # Clean name for display: remove .enc or _enc
-            display_name = f.replace(".enc", "").replace("_enc", "")
-            choices.append((display_name, f))
-    
-    choices.sort(key=lambda x: x[0]) # Sort by name
-    return gr.update(choices=choices, value=None), f"✅ {len(choices)} Dateien gefunden"
-
-def prepare_storage_file_for_use(selected_file, user_state):
-    """Downloads/Decrypts file from storage to local temp for AI processing"""
-    if not selected_file:
-        return None, "❌ Keine Datei ausgewählt"
-    try:
-        temp_path = copy_storage_file_to_temp(selected_file, user_state)
-        return temp_path, f"✅ Datei geladen: {os.path.basename(temp_path)}"
-    except Exception as e:
-        return None, f"🔥 Fehler: {str(e)}"
-    
 def refresh_storage_browser_for_user(user_state):
     """
     Returns updated root_dir for a single FileExplorer based on user permissions.
@@ -6744,41 +6708,74 @@ with gr.Blocks(
                 )
 
             # --- TAB 3: VISION ---
-            with gr.TabItem("👁️ Vision") as vision_tab:
+            with gr.TabItem("👁️ Vision"):
                 with gr.Row():
                     with gr.Column():
-                        with gr.Tabs() as vision_input_tabs:
+                        
+                        # --- INPUT SELECTION: Upload vs Storage Box ---
+                        with gr.Tabs() as vision_input_tabs:  # ADD 'as vision_input_tabs'
                             with gr.TabItem("📤 Upload"):
                                 v_img = gr.Image(type="filepath", label="Bild hochladen", height=300)
                             
                             with gr.TabItem("📦 Storage Box"):
-                                gr.Markdown("### 🖼️ Cloud-Bilder")
-                                v_storage_file_list = gr.Dropdown(
-                                    label="Verfügbare Bilder",
-                                    choices=[],
-                                    interactive=True
+                                gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
+                                # REPLACE Dropdown with FileExplorer
+                                v_storage_browser = gr.FileExplorer(
+                                    root_dir=STORAGE_MOUNT_POINT,
+                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png.enc,jpg.enc,jpeg.enc,webp.enc,bmp.enc,gif.enc}",
+                                    label="Bilddateien durchsuchen",
+                                    height=200
                                 )
                                 with gr.Row():
-                                    v_refresh_sb_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
-                                    v_load_sb_btn = gr.Button("✅ Dieses Bild verwenden", variant="secondary")
-                                v_sb_status = gr.Markdown("Melde dich an, um Bilder zu sehen.")
+                                    v_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
+                                    v_load_sb_btn = gr.Button("✅ Dieses Bild verwenden", variant="secondary", scale=1)
+                                v_sb_status = gr.Markdown("")
+                        
+                        # Logic: Storage Box Selection (Vision)
+                        def refresh_vision_storage_browser(user_state):
+                            """Reset FileExplorer to update root based on user permissions"""
+                            root = get_file_explorer_root(user_state)
+                            return gr.update(root_dir=root, value=None)
 
-                        # Execution logic for SB Dropdown (Vision)
+                        def use_storage_image_vision(selected_file, user_state):
+                            if not selected_file:
+                                return None, "❌ Kein Bild ausgewählt"
+                            
+                            try:
+                                # Handle list (FileExplorer can return list if file_count="multiple")
+                                if isinstance(selected_file, list):
+                                    selected_file = selected_file[0] if selected_file else None
+                                
+                                if not selected_file:
+                                    return None, "❌ Kein Bild ausgewählt"
+                                
+                                local_temp = copy_storage_file_to_temp(selected_file, user_state)
+                                display_name = os.path.basename(selected_file)
+                                if display_name.endswith('.enc'):
+                                    display_name = display_name[:-4]
+                                return local_temp, f"✅ Geladen: {display_name}"
+                            except Exception as e:
+                                logger.exception(f"Vision storage load error: {e}")
+                                return None, f"🔥 Fehler: {str(e)}"
+
+                        # Wire up events
                         v_refresh_sb_btn.click(
-                            fn=lambda s: refresh_storage_list_helper(s, ('.jpg', '.jpeg', '.png', '.webp', '.bmp')),
+                            refresh_vision_storage_browser,
                             inputs=[session_state],
-                            outputs=[v_storage_file_list, v_sb_status]
+                            outputs=[v_storage_browser]
                         )
+                        
+                        # Update FileExplorer root when tab is selected
+                        vision_input_tabs.select(
+                            refresh_vision_storage_browser,
+                            inputs=[session_state],
+                            outputs=[v_storage_browser]
+                        )
+                        
                         v_load_sb_btn.click(
-                            fn=prepare_storage_file_for_use,
-                            inputs=[v_storage_file_list, session_state],
+                            use_storage_image_vision,
+                            inputs=[v_storage_browser, session_state],
                             outputs=[v_img, v_sb_status]
-                        )
-                        # Auto-refresh when tab is clicked
-                        vision_tab.select(
-                            fn=lambda s: refresh_storage_list_helper(s, ('.jpg', '.jpeg', '.png', '.webp', '.bmp')),
-                            inputs=[session_state],
-                            outputs=[v_storage_file_list, v_sb_status]
                         )
 
                         # --- SELECTION ROW ---
@@ -8523,53 +8520,34 @@ with gr.Blocks(
             )
 
     def handle_login(username, password):
-        """Enhanced login with immediate dropdown population"""
+        """Enhanced login with storage path initialization"""
         success, message, show_app, show_login, state_data = login_user(username, password)
         
         status_text = f"👤 {state_data['username']}" if success else "👤"
-        show_admin_tab = gr.update(visible=state_data.get("is_admin", False))
+        show_admin_tab = state_data.get("is_admin", False)
         
-        # Default empty values
-        t_files_update = gr.update(choices=[], value=None)
-        v_files_update = gr.update(choices=[], value=None)
-        sb_status_msg = ""
-
+        # Get file explorer root for this user
+        storage_root = None
         if success:
             try:
-                # 1. Ensure directories exist
-                ensure_user_storage_dirs(username)
-                
-                # 2. Get Audio Files for Transcription Dropdown
-                audio_data, audio_msg = refresh_storage_list_helper(
-                    state_data, ('.mp3', '.wav', '.m4a', '.ogg', '.flac')
-                )
-                t_files_update = audio_data
-                
-                # 3. Get Image Files for Vision Dropdown
-                vision_data, vision_msg = refresh_storage_list_helper(
-                    state_data, ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
-                )
-                v_files_update = vision_data
-                
-                sb_status_msg = f"✅ Login erfolgreich. {audio_msg}"
-                
+                if ensure_user_storage_dirs(username):
+                    storage_root = get_file_explorer_root(state_data)
+                    logger.info(f"✅ Storage initialized for '{username}': {storage_root}")
             except Exception as e:
-                logger.exception(f"❌ Error during login storage sync: {e}")
-                sb_status_msg = "⚠️ Login OK, aber Speicherzugriff fehlgeschlagen."
-
-        # Return values to match the 'outputs' in login_btn.click
+                logger.exception(f"❌ Storage setup error: {e}")
+        
         return (
-            message,            # login_message
-            show_app,           # main_app
-            show_login,         # login_screen
-            status_text,        # login_status
-            gr.update(visible=True) if success else gr.update(visible=False), # logout_btn
-            show_admin_tab,     # admin_tab
-            state_data,         # session_state
-            t_files_update,     # t_storage_file_list
-            v_files_update,     # v_storage_file_list
-            attach_sb_browser,
-            sb_status_msg       # t_sb_status
+            message,                        # login_message
+            show_app,                       # main_app
+            show_login,                     # login_screen
+            status_text,                    # login_status
+            gr.update(visible=True),        # logout_btn
+            gr.update(visible=show_admin_tab), # admin_tab
+            state_data,                     # session_state
+            # FileExplorer updates (3 values)
+            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # t_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # v_storage_browser
+            gr.update(root_dir=storage_root) if storage_root else gr.update()   # attach_sb_browser
         )
     
     def handle_logout():
@@ -8581,18 +8559,9 @@ with gr.Blocks(
         fn=handle_login,
         inputs=[login_username, login_password],
         outputs=[
-            login_message, 
-            main_app, 
-            login_screen, 
-            login_status, 
-            logout_btn, 
-            admin_tab, 
-            session_state,
-            # REPLACE BROWSERS WITH DROPDOWNS:
-            t_storage_file_list, 
-            v_storage_file_list,
-            attach_sb_browser,
-            t_sb_status # To show "X files found" immediately
+            login_message, main_app, login_screen, login_status, 
+            logout_btn, admin_tab, session_state,
+            t_storage_browser, v_storage_browser, attach_sb_browser  
         ],
         js="(u, p) => { localStorage.setItem('ak_user', u); localStorage.setItem('ak_pass', p); return [u, p]; }"
     )
@@ -8631,7 +8600,7 @@ with gr.Blocks(
         outputs=[
             login_message, main_app, login_screen, login_status, 
             logout_btn, admin_tab, session_state,
-            t_storage_file_list, v_storage_file_list, attach_sb_browser  # ADD THESE
+            t_storage_browser, v_storage_browser, attach_sb_browser  # ADD THESE
         ]
     )
 
