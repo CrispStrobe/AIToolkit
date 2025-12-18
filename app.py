@@ -68,13 +68,11 @@ except ImportError:
     logger.warning("fastapi_poe not installed. Poe API will be unavailable.")
     HAS_POE = False
 
-
 # ==========================================
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
-from gradio.components.base import server
 
 logger.info("🔧 Starting FileExplorer monkeypatch...")
 
@@ -173,16 +171,32 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
     result = folders + files
     logger.info(f"   📊 Final: {len(folders)} folders, {len(files)} files")
     logger.info(f"   📊 Stats: {matched_count} matched, {skipped_count} skipped")
-    logger.info(f"   📦 Returning result")
     logger.info("=" * 60)
     
     return result
 
-# Apply the @server decorator and replace the method
-FileExplorer.ls = server(patched_ls)
-logger.info("✅ FileExplorer.ls monkeypatch applied with @server decorator!")
+# Check if ls is wrapped by @server decorator
+original_ls = FileExplorer.ls
+logger.info(f"   Original ls type: {type(original_ls)}")
+logger.info(f"   Has __wrapped__: {hasattr(original_ls, '__wrapped__')}")
 
-# Also patch __init__ to see what's happening at creation
+if hasattr(original_ls, 'fn'):
+    # It's a ServerFunction object, replace the inner function
+    logger.info("   Found ServerFunction, patching .fn")
+    original_ls.fn = patched_ls
+elif hasattr(original_ls, '__wrapped__'):
+    # It's wrapped, replace __wrapped__
+    logger.info("   Found __wrapped__, patching it")
+    original_ls.__wrapped__ = patched_ls
+else:
+    # Replace directly
+    logger.info("   Replacing directly")
+    from gradio.components.base import server
+    FileExplorer.ls = server(patched_ls)
+
+logger.info("✅ FileExplorer.ls monkeypatch applied!")
+
+# Patch __init__ 
 _original_init = FileExplorer.__init__
 
 def patched_init(self, *args, **kwargs):
