@@ -68,90 +68,6 @@ except ImportError:
     logger.warning("fastapi_poe not installed. Poe API will be unavailable.")
     HAS_POE = False
 
-
-TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
-
-# ==========================================
-# 🔧 FILEEXPLORER UI SYNC PATCH
-# ==========================================
-
-import os
-import glob as glob_module
-import fnmatch
-import re
-from gradio.components.file_explorer import FileExplorer
-from gradio.components.base import server
-
-logger.info("☢️ Applying Nuclear FileExplorer UI Patch...")
-
-def apply_nuclear_patch():
-    # --- 1. The patched ls method (Backend Logic) ---
-    def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-        if subdirectory is None: subdirectory = []
-        try:
-            # Use Gradio's internal helper to get the absolute path
-            full_subdir_path = os.path.abspath(self._safe_join(subdirectory))
-            if not os.path.exists(full_subdir_path): return []
-            subdir_items = sorted(os.listdir(full_subdir_path))
-        except Exception as e:
-            logger.error(f"❌ LS Error: {e}")
-            return []
-
-        # Expand braces manually (e.g. {mp3,wav})
-        patterns = []
-        raw_glob = self.glob or "**/*"
-        brace_match = re.search(r'\{([^}]+)\}', raw_glob)
-        if brace_match:
-            prefix, choices, suffix = re.search(r'(.*)\{([^}]+)\}(.*)', raw_glob).groups()
-            for opt in choices.split(','):
-                patterns.append(f"{prefix}{opt}{suffix}")
-        else:
-            patterns = [raw_glob]
-
-        # Calculate matched paths
-        matched_absolute_paths = set()
-        for p in patterns:
-            search_pattern = os.path.join(full_subdir_path, p)
-            matches = glob_module.glob(search_pattern, recursive=True)
-            matched_absolute_paths.update([os.path.abspath(m) for m in matches])
-
-        files, folders = [], []
-        for item in subdir_items:
-            full_item_path = os.path.abspath(os.path.join(full_subdir_path, item))
-            try:
-                is_dir = os.path.isdir(full_item_path)
-            except: continue
-
-            if self.ignore_glob and fnmatch.fnmatch(item, self.ignore_glob): continue
-
-            if is_dir:
-                # FOLDERS MUST BE VALID=TRUE TO APPEAR IN UI TREE
-                folders.append({"name": item, "type": "folder", "valid": True})
-            else:
-                if full_item_path in matched_absolute_paths:
-                    files.append({"name": item, "type": "file", "valid": True})
-
-        logger.info(f"📡 UI PUSH [{full_subdir_path}]: {len(folders)} Folders, {len(files)} Files")
-        return folders + files
-
-    # --- 2. Force the @server registration ---
-    FileExplorer.ls = server(patched_ls)
-
-    # --- 3. Fix the "Post-Login" Visibility Bug ---
-    # We force every instance to be 'interactive' and 'visible' by default
-    _orig_init = FileExplorer.__init__
-    def patched_init(self, *args, **kwargs):
-        # Force interactivity so the component actually attempts to fetch 'ls'
-        kwargs["interactive"] = True 
-        _orig_init(self, *args, **kwargs)
-        logger.debug(f"🏗️ Nuclear Instance: {self.root_dir}")
-    
-    FileExplorer.__init__ = patched_init
-    logger.info("✅ Nuclear Patch Applied.")
-
-apply_nuclear_patch()
-# ==========================================
-
 # Increase max file size
 gr.set_static_paths(paths=["/var/www/transkript_app/static"])
 
@@ -165,7 +81,6 @@ except ImportError:
 from crypto_utils import crypto, HAS_PQ, KeyWrapper
 # Initialize the wrapper
 key_wrapper = KeyWrapper()
-
 
 # ==========================================
 # 🗄️ DATABASE SETUP
@@ -1555,26 +1470,29 @@ def get_allowed_paths(username: str, is_admin: bool = False) -> list:
 def get_file_explorer_root(user_state):
     """
     Returns the appropriate root directory for FileExplorer based on user permissions.
-    For non-admins: Returns their personal folder /mnt/storage/{username}
-    For admins: Returns /mnt/storage (to see all user folders)
+    For non-admins: Returns their personal folder (which exists)
+    For admins: Returns the base users directory
+    Always ensures the path exists before returning.
     """
     if not user_state or not user_state.get("username"):
+        # Fallback - return storage mount point if it exists
         if os.path.exists(STORAGE_MOUNT_POINT):
             return STORAGE_MOUNT_POINT
-        return "/tmp"
+        return "/tmp"  # Last resort fallback
     
     username = user_state.get("username")
     is_admin = user_state.get("is_admin", False)
     
     if is_admin:
-        # Admins see all user folders at /mnt/storage/
-        if os.path.exists(STORAGE_MOUNT_POINT):
-            return STORAGE_MOUNT_POINT
+        # Admins see all user folders
+        admin_path = "/mnt/storage"
+        if os.path.exists(admin_path):
+            return admin_path
     
-    # Non-admin: /mnt/storage/{username}
-    personal_path = os.path.join(STORAGE_MOUNT_POINT, username)
+    # Non-admin users: Return their personal folder
+    personal_path = os.path.join("/mnt/storage", username)
     
-    # Ensure exists
+    # Ensure personal directory exists
     try:
         if not os.path.exists(personal_path):
             os.makedirs(personal_path, exist_ok=True)
@@ -1583,11 +1501,12 @@ def get_file_explorer_root(user_state):
     except Exception as e:
         logger.error(f"❌ Failed to create personal storage: {e}")
     
+    # Verify it exists and is accessible
     if os.path.exists(personal_path) and os.access(personal_path, os.R_OK | os.W_OK):
         logger.info(f"✅ Using personal storage for '{username}': {personal_path}")
         return personal_path
     
-    # Fallback
+    # Fallback if personal path failed
     logger.warning(f"⚠️ Personal storage not accessible for '{username}', using fallback")
     if os.path.exists(STORAGE_MOUNT_POINT):
         return STORAGE_MOUNT_POINT
@@ -1707,31 +1626,35 @@ def ensure_user_storage_dirs(username):
 def save_to_user_storage(username, filename, file_data, encrypt=True, user_state=None):
     """
     Save file to user's storage box with optional encryption.
+    
+    Args:
+        username: User's username
+        filename: Desired filename
+        file_data: bytes or file path
+        encrypt: Whether to encrypt the file
+        user_state: User session state (for UMK)
+    
+    Returns:
+        (success: bool, storage_path: str, message: str)
     """
     logger.info(f"💾 save_to_user_storage: user={username}, file={filename}, encrypt={encrypt}")
     
     try:
+        # 1. Get user storage path
         user_path = get_user_storage_path(username)
         if not user_path:
             return False, None, "❌ Storage path nicht verfügbar"
         
-        # Generate safe filename
+        # 2. Generate safe filename
         safe_filename = re.sub(r'[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]', '_', filename)
-        
-        # CHANGE: Use underscore instead of dot for encrypted extension
         if encrypt:
-            # Split extension: "image.jpg" -> "image_jpg_enc"
-            name, ext = os.path.splitext(safe_filename)
-            if ext:
-                safe_filename = f"{name}{ext.replace('.', '_')}_enc"
-            else:
-                safe_filename = f"{safe_filename}_enc"
+            safe_filename += ".enc"
         
         storage_path = os.path.join(user_path, safe_filename)
         
         logger.info(f"📂 Target storage path: {storage_path}")
         
-        # Read file data if it's a path
+        # 3. Read file data if it's a path
         if isinstance(file_data, str) and os.path.exists(file_data):
             logger.debug(f"📥 Reading file from path: {file_data}")
             with open(file_data, 'rb') as f:
@@ -1742,7 +1665,7 @@ def save_to_user_storage(username, filename, file_data, encrypt=True, user_state
         
         logger.info(f"📊 File size: {len(file_data)} bytes")
         
-        # Encrypt if requested
+        # 4. Encrypt if requested
         if encrypt:
             logger.info("🔐 Encrypting file...")
             umk = user_state.get('umk') if user_state else crypto.global_key
@@ -1751,6 +1674,7 @@ def save_to_user_storage(username, filename, file_data, encrypt=True, user_state
                 logger.error("❌ No encryption key available")
                 return False, None, "❌ Kein Verschlüsselungsschlüssel"
             
+            # Ensure key is properly formatted for Fernet
             import base64
             key_for_fernet = umk
             if isinstance(key_for_fernet, bytes) and len(key_for_fernet) == 32:
@@ -1761,11 +1685,12 @@ def save_to_user_storage(username, filename, file_data, encrypt=True, user_state
             file_data = f.encrypt(file_data)
             logger.info(f"✅ File encrypted. New size: {len(file_data)} bytes")
         
-        # Write to storage
+        # 5. Write to storage
         logger.info(f"💾 Writing to storage: {storage_path}")
         with open(storage_path, 'wb') as f:
             f.write(file_data)
         
+        # 6. Set proper permissions (user-only)
         os.chmod(storage_path, 0o600)
         
         logger.info(f"✅ File saved successfully: {storage_path}")
@@ -1824,11 +1749,8 @@ def load_from_user_storage(username, filepath, decrypt=True, user_state=None):
         
         logger.info(f"📊 File size: {len(file_data)} bytes")
         
-        # Decrypt if needed (check both formats)
-        needs_decryption = filepath.endswith('_enc') or filepath.endswith('.enc')
-        
         # 5. Decrypt if needed
-        if decrypt and needs_decryption:
+        if decrypt and filepath.endswith('.enc'):
             logger.info("🔓 Decrypting file...")
             umk = user_state.get('umk') if user_state else crypto.global_key
             
@@ -1856,41 +1778,34 @@ def load_from_user_storage(username, filepath, decrypt=True, user_state=None):
 
 def list_user_storage_files(username, pattern="*"):
     """
-    List files in user's storage directory + shared directory.
+    List files in user's storage directory.
+    
+    Returns:
+        (success: bool, files: list, message: str)
     """
     logger.info(f"📋 list_user_storage_files: user={username}, pattern={pattern}")
     
     try:
-        all_files = []
-        
-        # 1. User's personal storage
         user_path = get_user_storage_path(username)
-        if user_path and os.path.exists(user_path):
-            import glob
-            search_pattern = os.path.join(user_path, pattern)
-            user_files = glob.glob(search_pattern)
-            for f in user_files:
-                rel_path = os.path.relpath(f, user_path)
-                all_files.append(rel_path)
+        if not user_path:
+            return False, [], "❌ Storage nicht verfügbar"
         
-        # 2. Shared storage (if exists)
-        shared_path = os.path.join(STORAGE_MOUNT_POINT, "share")
-        if os.path.exists(shared_path):
-            import glob
-            search_pattern = os.path.join(shared_path, pattern)
-            shared_files = glob.glob(search_pattern)
-            for f in shared_files:
-                rel_path = os.path.relpath(f, shared_path)
-                all_files.append(f"share/{rel_path}")  # Prefix to show it's from share
+        import glob
+        search_pattern = os.path.join(user_path, pattern)
+        files = glob.glob(search_pattern)
         
-        logger.info(f"📁 Found {len(all_files)} files for user '{username}'")
+        # Make paths relative for display
+        relative_files = [os.path.relpath(f, user_path) for f in files]
         
-        return True, all_files, f"✅ {len(all_files)} Dateien"
+        logger.info(f"📁 Found {len(relative_files)} files for user '{username}'")
+        logger.debug(f"   Files: {relative_files[:10]}{'...' if len(relative_files) > 10 else ''}")
+        
+        return True, relative_files, f"✅ {len(relative_files)} Dateien"
         
     except Exception as e:
         logger.exception(f"❌ Error listing storage: {e}")
         return False, [], f"❌ Fehler: {str(e)}"
-    
+
 # --- pCLOUD BULK DOWNLOADER INTEGRATION ---
 def run_pcloud_bulk_import(url, user_state):
     if not user_state or not user_state.get("id"):
@@ -6225,12 +6140,7 @@ with gr.Blocks(
                             attach_file = gr.File(label="Datei", visible=False, file_count="multiple", type="filepath")
                             
                             with gr.Group(visible=False) as sb_group:
-                                attach_sb_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",
-                                    height=200,
-                                    file_count="multiple"
-                                )
+                                attach_sb_browser = gr.FileExplorer(root_dir=STORAGE_MOUNT_POINT, glob="**/*", height=200)
                                 sb_refresh_btn = gr.Button("🔄", size="sm")
 
                             with gr.Row():
@@ -6481,12 +6391,14 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc}",  # Add '_enc' to catch .mp3.enc files!
-                                    label="Audiodateien durchsuchen",
-                                    height=200,
-                                    file_count="single"
+                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3.enc,wav.enc,m4a.enc,ogg.enc,flac.enc}", 
+                                    label="Audiodateien durchsuchen"
                                 )
-
+                                t_storage_file_list = gr.Dropdown(
+                                    label="Verfügbare Dateien (entschlüsselte Namen)",
+                                    choices=[],
+                                    interactive=True
+                                )
                                 with gr.Row():
                                     t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
                                     t_load_sb_btn = gr.Button("✅ Diese verwenden", variant="secondary", scale=1)
@@ -6549,12 +6461,6 @@ with gr.Blocks(
                                 )
 
                         # Logic: Storage Box Selection
-                        def refresh_transcription_storage_browser(user_state):
-                            """Reset FileExplorer to update root based on user permissions"""
-                            root = get_file_explorer_root(user_state)
-                            logger.info(f"🔄 Refreshing transcription browser with root: {root}")
-                            return gr.update(root_dir=root)
-
                         def refresh_transcription_storage_list(user_state):
                             """Load and display decrypted filenames"""
                             if not user_state or not user_state.get("username"):
@@ -6582,39 +6488,21 @@ with gr.Blocks(
                                 return None, "❌ Keine Datei ausgewählt"
                             
                             try:
-                                # Handle list (FileExplorer can return list)
-                                if isinstance(selected_file, list):
-                                    selected_file = selected_file[0] if selected_file else None
-                                
-                                if not selected_file:
-                                    return None, "❌ Keine Datei ausgewählt"
-                                
                                 local_temp = copy_storage_file_to_temp(selected_file, user_state)
-                                display_name = os.path.basename(selected_file)
-                                if display_name.endswith('.enc'):
-                                    display_name = display_name[:-4]
+                                display_name = selected_file[:-4] if selected_file.endswith('.enc') else selected_file
                                 return local_temp, f"✅ Geladen: {display_name}"
                             except Exception as e:
                                 logger.exception(f"Storage file load error: {e}")
                                 return None, f"🔥 Fehler: {str(e)}"
 
-                        # Wire up events:
                         t_refresh_sb_btn.click(
-                            refresh_transcription_storage_browser,
-                            inputs=[session_state],
-                            outputs=[t_storage_browser]
+                            refresh_transcription_storage_list, 
+                            inputs=[session_state], 
+                            outputs=[t_storage_file_list, t_sb_status]
                         )
-
-                        # Update on tab select
-                        input_source_tabs.select(
-                            refresh_transcription_storage_browser,
-                            inputs=[session_state],
-                            outputs=[t_storage_browser]
-                        )
-
                         t_load_sb_btn.click(
-                            use_storage_file_transcription,
-                            inputs=[t_storage_browser, session_state],
+                            use_storage_file_transcription, 
+                            inputs=[t_storage_file_list, session_state], 
                             outputs=[t_audio, t_sb_status]
                         )
 
@@ -6834,10 +6722,9 @@ with gr.Blocks(
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png_enc}",  # Add 'enc' to catch .jpg.enc files!
+                                    glob="**/*", # .{png,jpg,jpeg,webp,bmp,gif,png.enc,jpg.enc,jpeg.enc,webp.enc,bmp.enc,gif.enc}
                                     label="Bilddateien durchsuchen",
-                                    height=200,
-                                    file_count="single"
+                                    height=200
                                 )
                                 with gr.Row():
                                     v_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
@@ -6848,8 +6735,7 @@ with gr.Blocks(
                         def refresh_vision_storage_browser(user_state):
                             """Reset FileExplorer to update root based on user permissions"""
                             root = get_file_explorer_root(user_state)
-                            logger.info(f"🔄 Refreshing vision browser with root: {root}")
-                            return gr.update(root_dir=root)
+                            return gr.update(root_dir=root, value=None)
 
                         def use_storage_image_vision(selected_file, user_state):
                             if not selected_file:
@@ -8658,7 +8544,7 @@ with gr.Blocks(
             gr.update(visible=True),        # logout_btn
             gr.update(visible=show_admin_tab), # admin_tab
             state_data,                     # session_state
-            # FileExplorer updates with forced refresh
+            # FileExplorer updates (3 values)
             gr.update(root_dir=storage_root) if storage_root else gr.update(),  # t_storage_browser
             gr.update(root_dir=storage_root) if storage_root else gr.update(),  # v_storage_browser
             gr.update(root_dir=storage_root) if storage_root else gr.update()   # attach_sb_browser
@@ -8807,7 +8693,7 @@ if __name__ == "__main__":
         theme=gr.themes.Soft(),
         css=CUSTOM_CSS,
         head=PWA_HEAD,
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio", "/mnt/storage"],
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
         show_error=True,
         footer_links=[], 
         app_kwargs={ # 🔒 Disable OpenAPI/API documentation endpoints
