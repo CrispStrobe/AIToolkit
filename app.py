@@ -69,101 +69,84 @@ except ImportError:
     HAS_POE = False
 
 # ==========================================
-# 🔧 MONKEYPATCH: Fix FileExplorer glob support
+# 🔧 CUSTOM FileExplorer with glob support
 # ==========================================
-
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
-from gradio.components.base import server as server_decorator
-import inspect
+from gradio.components.base import server
+import re
 
-logger.info("🔧 Starting FileExplorer monkeypatch...")
+logger.info("🔧 Creating custom FileExplorer class...")
 
-# Get the original method
-original_ls_method = FileExplorer.ls
-
-# Find if it's wrapped
-if hasattr(original_ls_method, '__self__'):
-    logger.info("   Method is bound")
-if callable(original_ls_method):
-    logger.info("   Method is callable")
+class CustomFileExplorer(FileExplorer):
+    """FileExplorer with proper glob brace expansion support"""
     
-# Get the source to understand the decorator
-try:
-    import types
-    # Try to get the actual function
-    if hasattr(original_ls_method, '__func__'):
-        actual_func = original_ls_method.__func__
-        logger.info(f"   Found __func__: {actual_func}")
-    elif hasattr(original_ls_method, 'func'):
-        actual_func = original_ls_method.func
-        logger.info(f"   Found .func: {actual_func}")
-    else:
-        actual_func = original_ls_method
-        logger.info(f"   Using method directly: {actual_func}")
-except Exception as e:
-    logger.error(f"   Error inspecting method: {e}")
+    @server
+    def ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+        """
+        Override with brace expansion support for glob patterns like *.{mp3,wav,m4a}
+        """
+        logger.info(f"🔍 CustomFileExplorer.ls called for subdirectory: {subdirectory}")
+        
+        if subdirectory is None:
+            subdirectory = []
 
-def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-    """
-    Patched version that uses real glob with brace expansion support
-    """
-    if subdirectory is None:
-        subdirectory = []
+        full_subdir_path = self._safe_join(subdirectory)
+        logger.info(f"   Path: {full_subdir_path}, Glob: {self.glob}")
 
-    full_subdir_path = self._safe_join(subdirectory)
-
-    try:
-        subdir_items = sorted(os.listdir(full_subdir_path))
-    except (FileNotFoundError, PermissionError):
-        return []
-
-    files, folders = [], []
-    
-    # Expand brace syntax manually
-    import re
-    matching_paths = set()
-    
-    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
-    if brace_match:
-        prefix, extensions, suffix = brace_match.groups()
-        for ext in extensions.split(','):
-            pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
-            matching_paths.update(glob_module.glob(pattern, recursive=True))
-    else:
-        pattern = os.path.join(full_subdir_path, self.glob)
-        matching_paths = set(glob_module.glob(pattern, recursive=True))
-    
-    for item in subdir_items:
-        full_path = os.path.join(full_subdir_path, item)
         try:
-            is_file = not os.path.isdir(full_path)
-        except (PermissionError, OSError):
-            continue
+            subdir_items = sorted(os.listdir(full_subdir_path))
+            logger.info(f"   Found {len(subdir_items)} items")
+        except (FileNotFoundError, PermissionError):
+            return []
 
-        valid_by_glob = not is_file or full_path in matching_paths
+        files, folders = [], []
         
-        if is_file and not valid_by_glob:
-            continue
-
-        if self.ignore_glob:
-            import fnmatch
-            if fnmatch.fnmatch(full_path, self.ignore_glob):
+        # Expand brace syntax manually
+        matching_paths = set()
+        brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
+        
+        if brace_match:
+            prefix, extensions, suffix = brace_match.groups()
+            for ext in extensions.split(','):
+                pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
+                matching_paths.update(glob_module.glob(pattern, recursive=True))
+        else:
+            pattern = os.path.join(full_subdir_path, self.glob)
+            matching_paths = set(glob_module.glob(pattern, recursive=True))
+        
+        logger.info(f"   Matched {len(matching_paths)} files with glob")
+        
+        for item in subdir_items:
+            full_path = os.path.join(full_subdir_path, item)
+            
+            try:
+                is_file = not os.path.isdir(full_path)
+            except (PermissionError, OSError):
                 continue
-        
-        target = files if is_file else folders
-        target.append({
-            "name": item,
-            "type": "file" if is_file else "folder",
-            "valid": valid_by_glob,
-        })
 
-    return folders + files
+            valid_by_glob = not is_file or full_path in matching_paths
+            
+            if is_file and not valid_by_glob:
+                continue
 
-# Replace using unbound method assignment
-FileExplorer.ls = server_decorator(patched_ls)
+            if self.ignore_glob:
+                import fnmatch
+                if fnmatch.fnmatch(full_path, self.ignore_glob):
+                    continue
+            
+            target = files if is_file else folders
+            target.append({
+                "name": item,
+                "type": "file" if is_file else "folder",
+                "valid": valid_by_glob,
+            })
 
-logger.info("✅ FileExplorer.ls monkeypatch applied!")
+        logger.info(f"   Returning {len(folders)} folders, {len(files)} files")
+        return folders + files
+
+logger.info("✅ CustomFileExplorer class created!")
+# ==========================================
 
 # ==========================================
 
@@ -6240,11 +6223,11 @@ with gr.Blocks(
                             attach_file = gr.File(label="Datei", visible=False, file_count="multiple", type="filepath")
                             
                             with gr.Group(visible=False) as sb_group:
-                                attach_sb_browser = gr.FileExplorer(
+                                attach_sb_browser = CustomFileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*",  # <-- CHANGE: Show ALL files (already working, but for consistency)
+                                    glob="**/*",
                                     height=200,
-                                    # file_count="multiple"
+                                    file_count="multiple"
                                 )
                                 sb_refresh_btn = gr.Button("🔄", size="sm")
 
@@ -6494,7 +6477,7 @@ with gr.Blocks(
                             
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
-                                t_storage_browser = gr.FileExplorer(
+                                t_storage_browser = CustomFileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc,wav_enc,m4a_enc,ogg_enc,flac_enc}",
                                     label="Audiodateien durchsuchen",
@@ -6848,7 +6831,7 @@ with gr.Blocks(
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
                                 # REPLACE Dropdown with FileExplorer
-                                v_storage_browser = gr.FileExplorer(
+                                v_storage_browser = CustomFileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
                                     glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png_enc,jpg_enc,jpeg_enc,webp_enc,bmp_enc,gif_enc}",
                                     label="Bilddateien durchsuchen",
