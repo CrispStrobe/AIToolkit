@@ -8523,34 +8523,53 @@ with gr.Blocks(
             )
 
     def handle_login(username, password):
-        """Enhanced login with storage path initialization"""
+        """Enhanced login with immediate dropdown population"""
         success, message, show_app, show_login, state_data = login_user(username, password)
         
         status_text = f"👤 {state_data['username']}" if success else "👤"
-        show_admin_tab = state_data.get("is_admin", False)
+        show_admin_tab = gr.update(visible=state_data.get("is_admin", False))
         
-        # Get file explorer root for this user
-        storage_root = None
+        # Default empty values
+        t_files_update = gr.update(choices=[], value=None)
+        v_files_update = gr.update(choices=[], value=None)
+        sb_status_msg = ""
+
         if success:
             try:
-                if ensure_user_storage_dirs(username):
-                    storage_root = get_file_explorer_root(state_data)
-                    logger.info(f"✅ Storage initialized for '{username}': {storage_root}")
+                # 1. Ensure directories exist
+                ensure_user_storage_dirs(username)
+                
+                # 2. Get Audio Files for Transcription Dropdown
+                audio_data, audio_msg = refresh_storage_list_helper(
+                    state_data, ('.mp3', '.wav', '.m4a', '.ogg', '.flac')
+                )
+                t_files_update = audio_data
+                
+                # 3. Get Image Files for Vision Dropdown
+                vision_data, vision_msg = refresh_storage_list_helper(
+                    state_data, ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
+                )
+                v_files_update = vision_data
+                
+                sb_status_msg = f"✅ Login erfolgreich. {audio_msg}"
+                
             except Exception as e:
-                logger.exception(f"❌ Storage setup error: {e}")
-        
+                logger.exception(f"❌ Error during login storage sync: {e}")
+                sb_status_msg = "⚠️ Login OK, aber Speicherzugriff fehlgeschlagen."
+
+        # Return values to match the 'outputs' in login_btn.click
         return (
-            message,                        # login_message
-            show_app,                       # main_app
-            show_login,                     # login_screen
-            status_text,                    # login_status
-            gr.update(visible=True),        # logout_btn
-            gr.update(visible=show_admin_tab), # admin_tab
-            state_data,                     # session_state
-            # FileExplorer updates (3 values)
-            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # t_storage_browser
-            gr.update(root_dir=storage_root) if storage_root else gr.update(),  # v_storage_browser
-            gr.update(root_dir=storage_root) if storage_root else gr.update()   # attach_sb_browser
+            message,            # login_message
+            show_app,           # main_app
+            show_login,         # login_screen
+            status_text,        # login_status
+            gr.update(visible=True) if success else gr.update(visible=False), # logout_btn
+            show_admin_tab,     # admin_tab
+            state_data,         # session_state
+            t_files_update,     # t_storage_file_list
+            v_files_update,     # v_storage_file_list
+            attach_sb_browser,
+            sb_status_msg       # t_sb_status
         )
     
     def handle_logout():
@@ -8562,9 +8581,18 @@ with gr.Blocks(
         fn=handle_login,
         inputs=[login_username, login_password],
         outputs=[
-            login_message, main_app, login_screen, login_status, 
-            logout_btn, admin_tab, session_state,
-            t_storage_browser, v_storage_browser, attach_sb_browser  
+            login_message, 
+            main_app, 
+            login_screen, 
+            login_status, 
+            logout_btn, 
+            admin_tab, 
+            session_state,
+            # REPLACE BROWSERS WITH DROPDOWNS:
+            t_storage_file_list, 
+            v_storage_file_list,
+            attach_sb_browser,
+            t_sb_status # To show "X files found" immediately
         ],
         js="(u, p) => { localStorage.setItem('ak_user', u); localStorage.setItem('ak_pass', p); return [u, p]; }"
     )
@@ -8603,7 +8631,7 @@ with gr.Blocks(
         outputs=[
             login_message, main_app, login_screen, login_status, 
             logout_btn, admin_tab, session_state,
-            t_storage_browser, v_storage_browser, attach_sb_browser  # ADD THESE
+            t_storage_file_list, v_storage_file_list, attach_sb_browser  # ADD THESE
         ]
     )
 
