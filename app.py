@@ -1451,7 +1451,7 @@ def get_allowed_paths(username: str, is_admin: bool = False) -> list:
     Returns a list of authorized root directories for the file picker.
     """
     shared_path = "/mnt/storage/share"
-    user_base_path = "/mnt/storage/users"
+    user_base_path = "/mnt/storage"
     
     # Always include the share directory
     allowed_dirs = [shared_path]
@@ -1485,12 +1485,12 @@ def get_file_explorer_root(user_state):
     
     if is_admin:
         # Admins see all user folders
-        admin_path = "/mnt/storage/users"
+        admin_path = "/mnt/storage"
         if os.path.exists(admin_path):
             return admin_path
     
     # Non-admin users: Return their personal folder
-    personal_path = os.path.join("/mnt/storage/users", username)
+    personal_path = os.path.join("/mnt/storage", username)
     
     # Ensure personal directory exists
     try:
