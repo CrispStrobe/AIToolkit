@@ -83,6 +83,71 @@ from crypto_utils import crypto, HAS_PQ, KeyWrapper
 key_wrapper = KeyWrapper()
 
 # ==========================================
+# 🔧 MONKEYPATCH: Fix FileExplorer glob support
+# ==========================================
+import glob as glob_module
+from gradio.components.file_explorer import FileExplorer
+
+def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+    """
+    Patched version that uses real glob instead of fnmatch
+    """
+    if subdirectory is None:
+        subdirectory = []
+
+    full_subdir_path = self._safe_join(subdirectory)
+
+    try:
+        subdir_items = sorted(os.listdir(full_subdir_path))
+    except (FileNotFoundError, PermissionError):
+        return []
+
+    files, folders = [], []
+    
+    # Build glob pattern relative to current subdirectory
+    glob_pattern = os.path.join(full_subdir_path, self.glob)
+    
+    # Get all matching files using real glob
+    matching_paths = set(glob_module.glob(glob_pattern, recursive=True))
+    
+    for item in subdir_items:
+        full_path = os.path.join(full_subdir_path, item)
+
+        try:
+            is_file = not os.path.isdir(full_path)
+        except (PermissionError, OSError):
+            continue
+
+        # Check if file matches using real glob
+        valid_by_glob = full_path in matching_paths or not is_file
+        
+        if is_file and not valid_by_glob:
+            continue
+
+        # Handle ignore_glob with fnmatch (keep original behavior)
+        if self.ignore_glob:
+            import fnmatch
+            if fnmatch.fnmatch(full_path, self.ignore_glob):
+                continue
+                
+        target = files if is_file else folders
+        target.append(
+            {
+                "name": item,
+                "type": "file" if is_file else "folder",
+                "valid": valid_by_glob,
+            }
+        )
+
+    return folders + files
+
+# Apply the monkeypatch
+FileExplorer.ls = patched_ls
+logger.info("✅ FileExplorer monkeypatched to use real glob")
+
+# ==========================================
+
+# ==========================================
 # 🗄️ DATABASE SETUP
 # ==========================================
 
@@ -6396,7 +6461,6 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    # Use standard brace expansion instead of @(...)
                                     glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc,wav_enc,m4a_enc,ogg_enc,flac_enc}",
                                     label="Audiodateien durchsuchen",
                                     height=200,
@@ -6470,7 +6534,7 @@ with gr.Blocks(
                             return gr.update(
                                 root_dir=root, 
                                 value=None, 
-                                glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc,wav_enc,m4a_enc,ogg_enc,flac_enc}"
+                                glob="*.{mp3,wav,m4a,ogg,flac,mp3_enc,wav_enc,m4a_enc,ogg_enc,flac_enc}"
                             )
 
                         def refresh_transcription_storage_list(user_state):
@@ -6752,7 +6816,6 @@ with gr.Blocks(
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    # Standard brace expansion for images
                                     glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png_enc,jpg_enc,jpeg_enc,webp_enc,bmp_enc,gif_enc}",
                                     label="Bilddateien durchsuchen",
                                     height=200,
@@ -6770,7 +6833,7 @@ with gr.Blocks(
                             return gr.update(
                                 root_dir=root, 
                                 value=None, 
-                                glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png_enc,jpg_enc,jpeg_enc,webp_enc,bmp_enc,gif_enc}"
+                                glob="*.{png,jpg,jpeg,webp,bmp,gif,png_enc,jpg_enc,jpeg_enc,webp_enc,bmp_enc,gif_enc}"
                             )
 
                         def use_storage_image_vision(selected_file, user_state):
