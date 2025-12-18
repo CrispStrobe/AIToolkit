@@ -1438,7 +1438,43 @@ def download_from_url(url, download_video=False, save_to_storage=True, user_stat
 # ==========================================
 # 📦 STORAGE BOX HELPER
 # ==========================================
+def refresh_storage_list_helper(user_state, file_types):
+    """
+    Generic helper to scan user storage and return dropdown choices.
+    file_types: tuple of extensions like ('.mp3', '.wav')
+    """
+    if not user_state or not user_state.get("username"):
+        return gr.update(choices=[], value=None), "❌ Bitte anmelden"
+    
+    username = user_state.get("username")
+    success, files, msg = list_user_storage_files(username, pattern="*")
+    
+    if not success:
+        return gr.update(choices=[], value=None), msg
 
+    # Create a list of (Display Label, Actual Filename)
+    choices = []
+    for f in files:
+        f_lower = f.lower()
+        # Check if file matches types OR is an encrypted version of those types
+        if f_lower.endswith(file_types) or any(f_lower.endswith(t + ".enc") for t in file_types) or f_lower.endswith("_enc"):
+            # Clean name for display: remove .enc or _enc
+            display_name = f.replace(".enc", "").replace("_enc", "")
+            choices.append((display_name, f))
+    
+    choices.sort(key=lambda x: x[0]) # Sort by name
+    return gr.update(choices=choices, value=None), f"✅ {len(choices)} Dateien gefunden"
+
+def prepare_storage_file_for_use(selected_file, user_state):
+    """Downloads/Decrypts file from storage to local temp for AI processing"""
+    if not selected_file:
+        return None, "❌ Keine Datei ausgewählt"
+    try:
+        temp_path = copy_storage_file_to_temp(selected_file, user_state)
+        return temp_path, f"✅ Datei geladen: {os.path.basename(temp_path)}"
+    except Exception as e:
+        return None, f"🔥 Fehler: {str(e)}"
+    
 def refresh_storage_browser_for_user(user_state):
     """
     Returns updated root_dir for a single FileExplorer based on user permissions.
@@ -6708,74 +6744,41 @@ with gr.Blocks(
                 )
 
             # --- TAB 3: VISION ---
-            with gr.TabItem("👁️ Vision"):
+            with gr.TabItem("👁️ Vision") as vision_tab:
                 with gr.Row():
                     with gr.Column():
-                        
-                        # --- INPUT SELECTION: Upload vs Storage Box ---
-                        with gr.Tabs() as vision_input_tabs:  # ADD 'as vision_input_tabs'
+                        with gr.Tabs() as vision_input_tabs:
                             with gr.TabItem("📤 Upload"):
                                 v_img = gr.Image(type="filepath", label="Bild hochladen", height=300)
                             
                             with gr.TabItem("📦 Storage Box"):
-                                gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
-                                # REPLACE Dropdown with FileExplorer
-                                v_storage_browser = gr.FileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*", # .{png,jpg,jpeg,webp,bmp,gif,png.enc,jpg.enc,jpeg.enc,webp.enc,bmp.enc,gif.enc}
-                                    label="Bilddateien durchsuchen",
-                                    height=200
+                                gr.Markdown("### 🖼️ Cloud-Bilder")
+                                v_storage_file_list = gr.Dropdown(
+                                    label="Verfügbare Bilder",
+                                    choices=[],
+                                    interactive=True
                                 )
                                 with gr.Row():
-                                    v_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
-                                    v_load_sb_btn = gr.Button("✅ Dieses Bild verwenden", variant="secondary", scale=1)
-                                v_sb_status = gr.Markdown("")
-                        
-                        # Logic: Storage Box Selection (Vision)
-                        def refresh_vision_storage_browser(user_state):
-                            """Reset FileExplorer to update root based on user permissions"""
-                            root = get_file_explorer_root(user_state)
-                            return gr.update(root_dir=root, value=None)
+                                    v_refresh_sb_btn = gr.Button("🔄 Liste aktualisieren", size="sm")
+                                    v_load_sb_btn = gr.Button("✅ Dieses Bild verwenden", variant="secondary")
+                                v_sb_status = gr.Markdown("Melde dich an, um Bilder zu sehen.")
 
-                        def use_storage_image_vision(selected_file, user_state):
-                            if not selected_file:
-                                return None, "❌ Kein Bild ausgewählt"
-                            
-                            try:
-                                # Handle list (FileExplorer can return list if file_count="multiple")
-                                if isinstance(selected_file, list):
-                                    selected_file = selected_file[0] if selected_file else None
-                                
-                                if not selected_file:
-                                    return None, "❌ Kein Bild ausgewählt"
-                                
-                                local_temp = copy_storage_file_to_temp(selected_file, user_state)
-                                display_name = os.path.basename(selected_file)
-                                if display_name.endswith('.enc'):
-                                    display_name = display_name[:-4]
-                                return local_temp, f"✅ Geladen: {display_name}"
-                            except Exception as e:
-                                logger.exception(f"Vision storage load error: {e}")
-                                return None, f"🔥 Fehler: {str(e)}"
-
-                        # Wire up events
+                        # Execution logic for SB Dropdown (Vision)
                         v_refresh_sb_btn.click(
-                            refresh_vision_storage_browser,
+                            fn=lambda s: refresh_storage_list_helper(s, ('.jpg', '.jpeg', '.png', '.webp', '.bmp')),
                             inputs=[session_state],
-                            outputs=[v_storage_browser]
+                            outputs=[v_storage_file_list, v_sb_status]
                         )
-                        
-                        # Update FileExplorer root when tab is selected
-                        vision_input_tabs.select(
-                            refresh_vision_storage_browser,
-                            inputs=[session_state],
-                            outputs=[v_storage_browser]
-                        )
-                        
                         v_load_sb_btn.click(
-                            use_storage_image_vision,
-                            inputs=[v_storage_browser, session_state],
+                            fn=prepare_storage_file_for_use,
+                            inputs=[v_storage_file_list, session_state],
                             outputs=[v_img, v_sb_status]
+                        )
+                        # Auto-refresh when tab is clicked
+                        vision_tab.select(
+                            fn=lambda s: refresh_storage_list_helper(s, ('.jpg', '.jpeg', '.png', '.webp', '.bmp')),
+                            inputs=[session_state],
+                            outputs=[v_storage_file_list, v_sb_status]
                         )
 
                         # --- SELECTION ROW ---
