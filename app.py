@@ -72,106 +72,115 @@ except ImportError:
 TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 
 # ==========================================
-# 🔧 MONKEYPATCH: Fix FileExplorer glob support
+# 🔧 FILEEXPLORER UI SYNC PATCH
 # ==========================================
-import glob as glob_module
 import os
+import glob as glob_module
+import fnmatch
 import re
-
-logger.info("🔧 Starting AGGRESSIVE FileExplorer monkeypatch...")
-
-# ✅ STEP 1: Patch the module BEFORE importing the class
-import gradio.components.file_explorer as fe_module
-
-# Store original for reference
-_original_ls_source = """
-def ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-    if subdirectory is None:
-        subdirectory = []
-    full_subdir_path = self._safe_join(subdirectory)
-    
-    logger.info("=" * 60)
-    logger.info("🔧 PATCHED ls() CALLED VIA SERVER ENDPOINT!")
-    logger.info(f"   Root: {self.root_dir}")
-    logger.info(f"   Subdirectory: {subdirectory}")
-    logger.info(f"   Full path: {full_subdir_path}")
-    logger.info(f"   Glob: {self.glob}")
-    logger.info("=" * 60)
-    
-    try:
-        subdir_items = sorted(os.listdir(full_subdir_path))
-        logger.info(f"   📁 Items in directory: {len(subdir_items)}")
-    except (FileNotFoundError, PermissionError) as e:
-        logger.error(f"   ❌ Cannot list: {e}")
-        return []
-    
-    files, folders = [], []
-    matching_paths = set()
-    
-    # Expand brace patterns
-    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', self.glob)
-    if brace_match:
-        prefix, extensions, suffix = brace_match.groups()
-        for ext in extensions.split(','):
-            pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
-            matching_paths.update(glob_module.glob(pattern, recursive=True))
-            logger.info(f"   Pattern {prefix}{ext}{suffix}: {len(glob_module.glob(pattern, recursive=True))} matches")
-    else:
-        pattern = os.path.join(full_subdir_path, self.glob)
-        matching_paths = set(glob_module.glob(pattern, recursive=True))
-    
-    logger.info(f"   ✅ Total matched by glob: {len(matching_paths)}")
-    
-    for item in subdir_items:
-        full_path = os.path.join(full_subdir_path, item)
-        
-        try:
-            is_file = not os.path.isdir(full_path)
-        except (PermissionError, OSError):
-            continue
-        
-        valid_by_glob = not is_file or full_path in matching_paths
-        
-        if is_file and not valid_by_glob:
-            continue
-        
-        if self.ignore_glob:
-            import fnmatch
-            if fnmatch.fnmatch(full_path, self.ignore_glob):
-                continue
-        
-        target = files if is_file else folders
-        target.append({
-            "name": item,
-            "type": "file" if is_file else "folder",
-            "valid": valid_by_glob,
-        })
-    
-    result = folders + files
-    logger.info(f"   📊 Returning: {len(folders)} folders, {len(files)} files")
-    logger.info("=" * 60)
-    return result
-"""
-
-# Execute the patched function in the module's namespace
-exec(_original_ls_source, fe_module.__dict__)
-
-# Now get the patched function and apply @server decorator
-from gradio.components.base import server
-patched_ls_func = fe_module.__dict__['ls']
-
-# ✅ STEP 2: Re-apply @server decorator
-fe_module.FileExplorer.ls = server(patched_ls_func)
-
-logger.info("✅ FileExplorer.ls patched at module level!")
-logger.info(f"   Type: {type(fe_module.FileExplorer.ls)}")
-
-# ✅ STEP 3: Now import for use
 from gradio.components.file_explorer import FileExplorer
+from gradio.components.base import server
 
-# Verify patch is active
-logger.info(f"   Imported class ls type: {type(FileExplorer.ls)}")
+logger.info("🛠️ Applying Aggressive FileExplorer UI Patch...")
 
+def apply_final_explorer_patch():
+    def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+        """
+        Custom ls that handles recursive globs and ensures UI visibility.
+        """
+        if subdirectory is None:
+            subdirectory = []
+
+        # 1. Get Absolute Path (Essential for UI mapping)
+        # Using self._safe_join ensures we stay within root_dir
+        try:
+            full_subdir_path = os.path.abspath(self._safe_join(subdirectory))
+        except Exception as e:
+            logger.error(f"❌ Path Join Error: {e}")
+            return []
+
+        if not os.path.exists(full_subdir_path):
+            return []
+
+        try:
+            subdir_items = sorted(os.listdir(full_subdir_path))
+        except (FileNotFoundError, PermissionError) as e:
+            logger.warning(f"⚠️ Access Denied: {full_subdir_path}")
+            return []
+
+        # 2. Handle Glob Pattern with Braces (e.g., *.{mp3,wav})
+        # Gradio's default fnmatch often struggles with this syntax
+        patterns = []
+        raw_glob = self.glob or "**/*"
+        
+        brace_match = re.search(r'\{([^}]+)\}', raw_glob)
+        if brace_match:
+            base_pattern = raw_glob
+            options = brace_match.group(1).split(',')
+            for opt in options:
+                patterns.append(re.sub(r'\{[^}]+\}', opt, base_pattern))
+        else:
+            patterns = [raw_glob]
+
+        # 3. Pre-calculate matching paths using real glob
+        matched_absolute_paths = set()
+        for p in patterns:
+            # We join the search pattern to the current directory
+            search_pattern = os.path.join(full_subdir_path, p)
+            # recursive=True allows the ** logic to work
+            matches = glob_module.glob(search_pattern, recursive=True)
+            for m in matches:
+                matched_absolute_paths.add(os.path.abspath(m))
+
+        files, folders = [], []
+        
+        for item in subdir_items:
+            full_item_path = os.path.abspath(os.path.join(full_subdir_path, item))
+            
+            try:
+                is_dir = os.path.isdir(full_item_path)
+            except (PermissionError, OSError):
+                continue
+
+            # Skip ignored items
+            if self.ignore_glob and fnmatch.fnmatch(item, self.ignore_glob):
+                continue
+
+            if is_dir:
+                # MANDATORY: Always include folders as 'valid' 
+                # so the UI TreeView can expand them.
+                folders.append({
+                    "name": item,
+                    "type": "folder",
+                    "valid": True,
+                })
+            else:
+                # Only include files that match our expanded glob
+                if full_item_path in matched_absolute_paths:
+                    files.append({
+                        "name": item,
+                        "type": "file",
+                        "valid": True, # This flag enables selection in UI
+                    })
+
+        logger.info(f"📁 LS SYNC [{full_subdir_path}]: {len(folders)} Folders, {len(files)} Files")
+        return folders + files
+
+    # --- THE CRITICAL PART ---
+    # We must re-wrap the function with the @server decorator 
+    # to register it with Gradio's internal router.
+    FileExplorer.ls = server(patched_ls)
+    
+    # Patch __init__ to log what root_dir we are actually starting with
+    _orig_init = FileExplorer.__init__
+    def patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        logger.debug(f"🏗️ FileExplorer created at: {self.root_dir} (Glob: {self.glob})")
+    
+    FileExplorer.__init__ = patched_init
+    logger.info("✅ Aggressive FileExplorer.ls Patch Applied.")
+
+apply_final_explorer_patch()
 # ==========================================
 
 # Increase max file size
