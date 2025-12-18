@@ -197,6 +197,7 @@ else:
 logger.info("✅ FileExplorer.ls monkeypatch applied!")
 
 # Patch __init__ 
+# Patch __init__ 
 _original_init = FileExplorer.__init__
 
 def patched_init(self, *args, **kwargs):
@@ -208,6 +209,17 @@ def patched_init(self, *args, **kwargs):
     result = _original_init(self, *args, **kwargs)
     
     logger.info(f"   ✅ FileExplorer created with root_dir={self.root_dir}")
+    logger.info(f"   Calling ls() directly to test...")
+    
+    try:
+        # Call ls directly
+        test_result = self.ls()
+        logger.info(f"   Direct ls() call returned: {type(test_result)}")
+        logger.info(f"   Result: {test_result}")
+    except Exception as e:
+        logger.error(f"   Direct ls() call failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
     return result
 
