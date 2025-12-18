@@ -74,6 +74,7 @@ except ImportError:
 # ==========================================
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
+from gradio.components.base import server
 
 logger.info("🔧 Starting FileExplorer monkeypatch...")
 
@@ -169,26 +170,18 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
         })
         logger.debug(f"   ✅ Added: {item} ({'file' if is_file else 'folder'})")
 
+    result = folders + files
     logger.info(f"   📊 Final: {len(folders)} folders, {len(files)} files")
     logger.info(f"   📊 Stats: {matched_count} matched, {skipped_count} skipped")
+    logger.info(f"   📦 Returning result")
     logger.info("=" * 60)
     
-    return folders + files
+    return result
 
-# Apply monkeypatch - need to handle the @server decorator
-try:
-    # Get the underlying function if wrapped
-    if hasattr(FileExplorer.ls, '__wrapped__'):
-        logger.info("   Found @server wrapped method")
-        FileExplorer.ls.__wrapped__ = patched_ls
-    else:
-        logger.info("   Patching directly")
-        FileExplorer.ls = patched_ls
-    
-    logger.info("✅ FileExplorer.ls monkeypatch applied!")
-except Exception as e:
-    logger.error(f"❌ Monkeypatch failed: {e}")
-    
+# Apply the @server decorator and replace the method
+FileExplorer.ls = server(patched_ls)
+logger.info("✅ FileExplorer.ls monkeypatch applied with @server decorator!")
+
 # Also patch __init__ to see what's happening at creation
 _original_init = FileExplorer.__init__
 
@@ -201,14 +194,6 @@ def patched_init(self, *args, **kwargs):
     result = _original_init(self, *args, **kwargs)
     
     logger.info(f"   ✅ FileExplorer created with root_dir={self.root_dir}")
-    logger.info(f"   Testing immediate ls() call...")
-    try:
-        test_result = self.ls()
-        logger.info(f"   Test ls() returned: {len(test_result) if test_result else 0} items")
-        if test_result:
-            logger.info(f"   Sample: {test_result[:3]}")
-    except Exception as e:
-        logger.error(f"   Test ls() failed: {e}")
     
     return result
 
