@@ -6143,7 +6143,11 @@ with gr.Blocks(
                             attach_file = gr.File(label="Datei", visible=False, file_count="multiple", type="filepath")
                             
                             with gr.Group(visible=False) as sb_group:
-                                attach_sb_browser = gr.FileExplorer(root_dir=STORAGE_MOUNT_POINT, glob="**/*", height=200)
+                                attach_sb_browser = gr.FileExplorer(
+                                    root_dir=STORAGE_MOUNT_POINT,
+                                    glob="**/*",  # <-- CHANGE: Show ALL files (already working, but for consistency)
+                                    height=200
+                                )
                                 sb_refresh_btn = gr.Button("🔄", size="sm")
 
                             with gr.Row():
@@ -6394,7 +6398,7 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3.enc,wav.enc,m4a.enc,ogg.enc,flac.enc}",
+                                    glob="**/*",
                                     label="Audiodateien durchsuchen",
                                     height=200
                                 )
@@ -6744,7 +6748,7 @@ with gr.Blocks(
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png.enc,jpg.enc,jpeg.enc,webp.enc,bmp.enc,gif.enc}",
+                                    glob="**/*",
                                     label="Bilddateien durchsuchen",
                                     height=200
                                 )
