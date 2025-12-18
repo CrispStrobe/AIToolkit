@@ -68,6 +68,9 @@ except ImportError:
     logger.warning("fastapi_poe not installed. Poe API will be unavailable.")
     HAS_POE = False
 
+
+TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
+
 # ==========================================
 # 🔧 CUSTOM FileExplorer with glob support
 # ==========================================
@@ -6478,12 +6481,13 @@ with gr.Blocks(
                             with gr.TabItem("📦 Storage Box"):
                                 gr.Markdown("Wähle Audiodatei aus Cloud-Speicher:")
                                 t_storage_browser = CustomFileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{mp3,wav,m4a,ogg,flac,mp3_enc,wav_enc,m4a_enc,ogg_enc,flac_enc}",
+                                    root_dir=TEMP_EXPLORER_ROOT,  # Start with temp, update on login
+                                    glob="**/*.{mp3,wav,m4a,ogg,flac}",
                                     label="Audiodateien durchsuchen",
                                     height=200,
                                     file_count="single"
                                 )
+
                                 with gr.Row():
                                     t_refresh_sb_btn = gr.Button("🔄 Aktualisieren", size="sm", scale=0)
                                     t_load_sb_btn = gr.Button("✅ Diese verwenden", variant="secondary", scale=1)
@@ -6549,9 +6553,13 @@ with gr.Blocks(
                         def refresh_transcription_storage_browser(user_state):
                             """Reset FileExplorer to update root based on user permissions"""
                             root = get_file_explorer_root(user_state)
-                            return gr.update(
-                                root_dir=root, 
-                                value=[]  # Force empty value to trigger reload
+                            logger.info(f"🔄 Refreshing transcription browser with root: {root}")
+                            return CustomFileExplorer(
+                                root_dir=root,
+                                glob="**/*.{mp3,wav,m4a,ogg,flac}",
+                                label="Audiodateien durchsuchen",
+                                height=200,
+                                file_count="single"
                             )
 
                         def refresh_transcription_storage_list(user_state):
@@ -6832,8 +6840,8 @@ with gr.Blocks(
                                 gr.Markdown("Wähle ein Bild aus dem Cloud-Speicher:")
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = CustomFileExplorer(
-                                    root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png_enc,jpg_enc,jpeg_enc,webp_enc,bmp_enc,gif_enc}",
+                                    root_dir=TEMP_EXPLORER_ROOT,  # Start with temp, update on login
+                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif}",
                                     label="Bilddateien durchsuchen",
                                     height=200,
                                     file_count="single"
@@ -6847,9 +6855,13 @@ with gr.Blocks(
                         def refresh_vision_storage_browser(user_state):
                             """Reset FileExplorer to update root based on user permissions"""
                             root = get_file_explorer_root(user_state)
-                            return gr.update(
+                            logger.info(f"🔄 Refreshing vision browser with root: {root}")
+                            return CustomFileExplorer(
                                 root_dir=root,
-                                value=[]  # Force empty value to trigger reload
+                                glob="**/*.{png,jpg,jpeg,webp,bmp,gif}",
+                                label="Bilddateien durchsuchen",
+                                height=200,
+                                file_count="single"
                             )
 
                         def use_storage_image_vision(selected_file, user_state):
