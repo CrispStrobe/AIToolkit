@@ -86,89 +86,59 @@ key_wrapper = KeyWrapper()
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
 import glob as glob_module
+import fnmatch
 from gradio.components.file_explorer import FileExplorer
 
 def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-    """
-    Patched version that uses real glob instead of fnmatch
-    """
     if subdirectory is None:
         subdirectory = []
 
     full_subdir_path = self._safe_join(subdirectory)
-    
-    logger.info(f"🔍 FileExplorer.ls called:")
-    logger.info(f"   Root dir: {self.root_dir}")
-    logger.info(f"   Subdirectory: {subdirectory}")
-    logger.info(f"   Full path: {full_subdir_path}")
-    logger.info(f"   Glob pattern: {self.glob}")
 
     try:
         subdir_items = sorted(os.listdir(full_subdir_path))
-        logger.info(f"   Found {len(subdir_items)} items in directory")
-        logger.debug(f"   Items: {subdir_items[:10]}")
-    except (FileNotFoundError, PermissionError) as e:
-        logger.error(f"   ❌ Cannot list directory: {e}")
+    except (FileNotFoundError, PermissionError):
         return []
 
     files, folders = [], []
     
-    # Build glob pattern relative to current subdirectory
-    glob_pattern = os.path.join(full_subdir_path, self.glob)
-    logger.info(f"   Constructed glob pattern: {glob_pattern}")
+    # Build a search pattern that works for this specific directory level
+    # Note: Using * ensures we only check files in the CURRENT folder for the UI list
+    glob_pattern = os.path.join(full_subdir_path, self.glob.replace("**/", ""))
     
-    # Get all matching files using real glob
+    # Get all matching files using real glob module
     matching_paths = set(glob_module.glob(glob_pattern, recursive=True))
-    logger.info(f"   Glob matched {len(matching_paths)} paths")
-    if matching_paths:
-        logger.debug(f"   Sample matches: {list(matching_paths)[:5]}")
-    
-    matched_count = 0
-    skipped_count = 0
     
     for item in subdir_items:
         full_path = os.path.join(full_subdir_path, item)
-
         try:
             is_file = not os.path.isdir(full_path)
-        except (PermissionError, OSError) as e:
-            logger.warning(f"   ⚠️ Cannot access {item}: {e}")
+        except (PermissionError, OSError):
             continue
 
-        # Check if file matches using real glob
-        valid_by_glob = full_path in matching_paths or not is_file
+        # Check if the file is in our set of valid matches
+        valid_by_glob = full_path in matching_paths
         
+        # In FileExplorer, we hide files that don't match the glob, 
+        # but we ALWAYS show folders so the user can navigate.
         if is_file and not valid_by_glob:
-            skipped_count += 1
-            logger.debug(f"   ⏭️ Skipped (no glob match): {item}")
             continue
 
-        # Handle ignore_glob with fnmatch (keep original behavior)
-        if self.ignore_glob:
-            import fnmatch
-            if fnmatch.fnmatch(full_path, self.ignore_glob):
-                skipped_count += 1
-                logger.debug(f"   ⏭️ Skipped (ignore_glob): {item}")
-                continue
-        
-        matched_count += 1
+        if self.ignore_glob and fnmatch.fnmatch(full_path, self.ignore_glob):
+            continue
+                
         target = files if is_file else folders
-        target.append(
-            {
-                "name": item,
-                "type": "file" if is_file else "folder",
-                "valid": valid_by_glob,
-            }
-        )
+        target.append({
+            "name": item,
+            "type": "file" if is_file else "folder",
+            "valid": True, # If it passed the 'continue' above, it is valid
+        })
 
-    logger.info(f"   ✅ Returning {len(folders)} folders, {len(files)} files")
-    logger.info(f"   📊 Matched: {matched_count}, Skipped: {skipped_count}")
-    
     return folders + files
 
-# Apply the monkeypatch
+# Apply the patch globally
 FileExplorer.ls = patched_ls
-logger.info("✅ FileExplorer monkeypatched to use real glob with verbose logging")
+logger.info("✅ FileExplorer monkeypatched for advanced glob support")
 
 # ==========================================
 
