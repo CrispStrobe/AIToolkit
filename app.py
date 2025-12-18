@@ -74,8 +74,12 @@ TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 # ==========================================
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
+# ==========================================
+# 🔧 MONKEYPATCH: Fix FileExplorer glob support
+# ==========================================
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
+from gradio.components.base import server
 
 logger.info("🔧 Starting FileExplorer monkeypatch...")
 
@@ -178,64 +182,21 @@ def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, st
     
     return result
 
-# Apply monkeypatch - try different approaches
+# ✅ CORRECT MONKEYPATCH: Apply @server decorator THEN replace class method
 try:
-    # Check what we're dealing with
-    original_ls = FileExplorer.ls
-    logger.info(f"   Original ls type: {type(original_ls)}")
-    logger.info(f"   Original ls: {original_ls}")
+    # Wrap the patched function with @server decorator
+    patched_ls_with_server = server(patched_ls)
     
-    # Try to access the wrapped function
-    if hasattr(original_ls, '__func__'):
-        logger.info(f"   Has __func__")
-        # Replace the underlying function
-        original_ls.__func__ = patched_ls
-    elif hasattr(original_ls, 'fn'):
-        logger.info(f"   Has .fn attribute")
-        original_ls.fn = patched_ls
-    else:
-        logger.info(f"   Replacing method directly")
-        from gradio.components.base import server
-        FileExplorer.ls = server(patched_ls)
+    # Replace the class method (NOT instance method)
+    FileExplorer.ls = patched_ls_with_server
     
-    logger.info("✅ FileExplorer.ls monkeypatch applied!")
+    logger.info("✅ FileExplorer.ls monkeypatch applied successfully!")
+    logger.info(f"   New method type: {type(FileExplorer.ls)}")
+    
 except Exception as e:
     logger.error(f"❌ Monkeypatch failed: {e}")
     import traceback
     logger.error(traceback.format_exc())
-
-# Patch __init__ to test
-_original_init = FileExplorer.__init__
-
-def patched_init(self, *args, **kwargs):
-    logger.info(f"🏗️ FileExplorer.__init__ called")
-    logger.info(f"   root_dir: {kwargs.get('root_dir', 'NOT SET')}")
-    logger.info(f"   glob: {kwargs.get('glob', 'NOT SET')}")
-    
-    # Call original
-    result = _original_init(self, *args, **kwargs)
-    
-    logger.info(f"   ✅ FileExplorer created with root_dir={self.root_dir}")
-    logger.info(f"   Calling ls() directly to test...")
-    
-    try:
-        test_result = self.ls()
-        logger.info(f"   Direct ls() call returned: {type(test_result)}")
-        logger.info(f"   Result length: {len(test_result) if test_result else 0}")
-        if test_result:
-            logger.info(f"   Sample: {test_result[:3]}")
-    except Exception as e:
-        logger.error(f"   Direct ls() call failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-    
-    return result
-
-FileExplorer.__init__ = patched_init
-logger.info("✅ FileExplorer.__init__ also patched!")
-
-# ==========================================
-
 
 # ==========================================
 
@@ -8894,7 +8855,7 @@ if __name__ == "__main__":
         theme=gr.themes.Soft(),
         css=CUSTOM_CSS,
         head=PWA_HEAD,
-        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio"],
+        allowed_paths=[APP_DIR, STATIC_DIR, IMAGES_DIR, "/tmp/gradio", "/mnt/storage"],
         show_error=True,
         footer_links=[], 
         app_kwargs={ # 🔒 Disable OpenAPI/API documentation endpoints
