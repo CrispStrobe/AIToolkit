@@ -74,130 +74,80 @@ TEMP_EXPLORER_ROOT = "/tmp/gradio_explorer_temp"
 # ==========================================
 # 🔧 MONKEYPATCH: Fix FileExplorer glob support
 # ==========================================
-# ==========================================
-# 🔧 MONKEYPATCH: Fix FileExplorer glob support
-# ==========================================
+import fnmatch
 import glob as glob_module
 from gradio.components.file_explorer import FileExplorer
 from gradio.components.base import server
 
-logger.info("🔧 Starting FileExplorer monkeypatch...")
+def apply_file_explorer_patch():
+    def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
+        if subdirectory is None:
+            subdirectory = []
 
-def patched_ls(self, subdirectory: list[str] | None = None) -> list[dict[str, str]] | None:
-    """
-    Patched version that uses real glob instead of fnmatch
-    """
-    logger.info("=" * 60)
-    logger.info("🔧 PATCHED FileExplorer.ls CALLED!")
-    logger.info("=" * 60)
-    
-    if subdirectory is None:
-        subdirectory = []
-
-    full_subdir_path = self._safe_join(subdirectory)
-    
-    logger.info(f"🔍 FileExplorer.ls called:")
-    logger.info(f"   Root dir: {self.root_dir}")
-    logger.info(f"   Subdirectory: {subdirectory}")
-    logger.info(f"   Full path: {full_subdir_path}")
-    logger.info(f"   Glob pattern: {self.glob}")
-
-    try:
-        subdir_items = sorted(os.listdir(full_subdir_path))
-        logger.info(f"   Found {len(subdir_items)} items in directory")
-        if subdir_items:
-            logger.info(f"   First 10 items: {subdir_items[:10]}")
-    except (FileNotFoundError, PermissionError) as e:
-        logger.error(f"   ❌ Cannot list directory: {e}")
-        return []
-
-    files, folders = [], []
-    
-    # Expand brace syntax manually
-    import re
-    glob_pattern_base = self.glob
-    matching_paths = set()
-    
-    # Check if pattern has brace expansion like *.{a,b,c}
-    brace_match = re.match(r'(.*)\{([^}]+)\}(.*)', glob_pattern_base)
-    if brace_match:
-        prefix, extensions, suffix = brace_match.groups()
-        extension_list = extensions.split(',')
-        logger.info(f"   Detected brace expansion: {len(extension_list)} patterns")
+        full_subdir_path = self._safe_join(subdirectory)
         
-        for ext in extension_list:
-            pattern = os.path.join(full_subdir_path, f"{prefix}{ext}{suffix}")
-            matches = glob_module.glob(pattern, recursive=True)
-            matching_paths.update(matches)
-            logger.debug(f"      Pattern {prefix}{ext}{suffix}: {len(matches)} matches")
-    else:
-        # No brace expansion, use pattern as-is
-        pattern = os.path.join(full_subdir_path, glob_pattern_base)
-        matching_paths = set(glob_module.glob(pattern, recursive=True))
-    
-    logger.info(f"   Total glob matched: {len(matching_paths)} paths")
-    if matching_paths:
-        logger.info(f"   Sample matches: {list(matching_paths)[:5]}")
-    
-    matched_count = 0
-    skipped_count = 0
-    
-    for item in subdir_items:
-        full_path = os.path.join(full_subdir_path, item)
-
         try:
-            is_file = not os.path.isdir(full_path)
-        except (PermissionError, OSError) as e:
-            logger.warning(f"   ⚠️ Cannot access {item}: {e}")
-            continue
+            # Get all items in the current directory
+            subdir_items = sorted(os.listdir(full_subdir_path))
+        except (FileNotFoundError, PermissionError):
+            return []
 
-        # Folders are always valid
-        valid_by_glob = not is_file or full_path in matching_paths
-        
-        if is_file and not valid_by_glob:
-            skipped_count += 1
-            logger.debug(f"   ⏭️ Skipped (no glob match): {item}")
-            continue
+        # 1. Handle our custom glob (including brace expansion support)
+        # Convert {mp3,wav} to a list of patterns if necessary
+        patterns = []
+        if "{" in self.glob and "}" in self.glob:
+            prefix, rest = self.glob.split("{", 1)
+            options, suffix = rest.split("}", 1)
+            for opt in options.split(","):
+                patterns.append(f"{prefix}{opt}{suffix}")
+        else:
+            patterns = [self.glob]
 
-        if self.ignore_glob:
-            import fnmatch
-            if fnmatch.fnmatch(full_path, self.ignore_glob):
-                skipped_count += 1
-                logger.debug(f"   ⏭️ Skipped (ignore_glob): {item}")
+        # 2. Pre-calculate matched paths for the whole directory
+        matched_files = set()
+        for p in patterns:
+            # We use glob.glob to handle the recursion and patterns
+            search_path = os.path.join(full_subdir_path, p)
+            # recursive=True is handled by the ** in the pattern itself
+            matches = glob_module.glob(search_path, recursive=True)
+            matched_files.update([os.path.abspath(m) for m in matches])
+
+        files, folders = [], []
+        for item in subdir_items:
+            full_path = os.path.abspath(os.path.join(full_subdir_path, item))
+            
+            try:
+                is_dir = os.path.isdir(full_path)
+            except (PermissionError, OSError):
                 continue
-        
-        matched_count += 1
-        target = files if is_file else folders
-        target.append({
-            "name": item,
-            "type": "file" if is_file else "folder",
-            "valid": valid_by_glob,
-        })
-        logger.debug(f"   ✅ Added: {item} ({'file' if is_file else 'folder'})")
 
-    result = folders + files
-    logger.info(f"   📊 Final: {len(folders)} folders, {len(files)} files")
-    logger.info(f"   📊 Stats: {matched_count} matched, {skipped_count} skipped")
-    logger.info("=" * 60)
-    
-    return result
+            # Check if this item is ignored
+            if self.ignore_glob and fnmatch.fnmatch(item, self.ignore_glob):
+                continue
 
-# ✅ CORRECT MONKEYPATCH: Apply @server decorator THEN replace class method
-try:
-    # Wrap the patched function with @server decorator
-    patched_ls_with_server = server(patched_ls)
-    
-    # Replace the class method (NOT instance method)
-    FileExplorer.ls = patched_ls_with_server
-    
-    logger.info("✅ FileExplorer.ls monkeypatch applied successfully!")
-    logger.info(f"   New method type: {type(FileExplorer.ls)}")
-    
-except Exception as e:
-    logger.error(f"❌ Monkeypatch failed: {e}")
-    import traceback
-    logger.error(traceback.format_exc())
+            if is_dir:
+                # Folders must ALWAYS be included, otherwise the UI tree stops
+                folders.append({
+                    "name": item,
+                    "type": "folder",
+                    "valid": True,
+                })
+            else:
+                # Files are only added if they match the glob
+                if full_path in matched_files:
+                    files.append({
+                        "name": item,
+                        "type": "file",
+                        "valid": True,
+                    })
 
+        return folders + files
+
+    # The magic: Re-wrap with @server so Gradio's API engine sees it
+    FileExplorer.ls = server(patched_ls)
+    logger.info("✅ Aggressive FileExplorer.ls patch applied with @server wrapper")
+
+apply_file_explorer_patch()
 # ==========================================
 
 # Increase max file size
