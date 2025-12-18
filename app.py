@@ -176,6 +176,32 @@ try:
     logger.info("✅ FileExplorer.ls monkeypatch applied!")
 except Exception as e:
     logger.error(f"❌ Monkeypatch failed: {e}")
+    
+# Also patch __init__ to see what's happening at creation
+_original_init = FileExplorer.__init__
+
+def patched_init(self, *args, **kwargs):
+    logger.info(f"🏗️ FileExplorer.__init__ called")
+    logger.info(f"   root_dir: {kwargs.get('root_dir', 'NOT SET')}")
+    logger.info(f"   glob: {kwargs.get('glob', 'NOT SET')}")
+    
+    # Call original
+    result = _original_init(self, *args, **kwargs)
+    
+    logger.info(f"   ✅ FileExplorer created with root_dir={self.root_dir}")
+    logger.info(f"   Testing immediate ls() call...")
+    try:
+        test_result = self.ls()
+        logger.info(f"   Test ls() returned: {len(test_result) if test_result else 0} items")
+        if test_result:
+            logger.info(f"   Sample: {test_result[:3]}")
+    except Exception as e:
+        logger.error(f"   Test ls() failed: {e}")
+    
+    return result
+
+FileExplorer.__init__ = patched_init
+logger.info("✅ FileExplorer.__init__ also patched!")
 
 # ==========================================
 
