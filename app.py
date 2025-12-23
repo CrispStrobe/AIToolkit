@@ -3115,13 +3115,23 @@ def run_deepgram_transcription(audio_path, model, lang, diar, key):
     if not api_key or api_key == "your_key":
         yield "❌ Kein Deepgram Key gefunden oder konfiguriert.", ""
         return
+    
+    # --- Verify file integrity ---
+    if not os.path.exists(audio_path):
+        yield f"❌ Datei nicht gefunden: {audio_path}", ""
+        return
+    
+    file_size = os.path.getsize(audio_path)
+    if file_size == 0:
+        yield "❌ Datei ist leer (0 Bytes). Decryption eventuell fehlgeschlagen.", ""
+        return
 
     logs = "🚀 Starte Deepgram Upload (EU Endpoint)..."
     yield logs, ""
     
     headers = {
         "Authorization": f"Token {api_key}",
-        "Content-Type": "application/octet-stream"
+        "Content-Type": "application/octet-stream" # Force binary stream
     }
 
     # Deepgram parameters: use Nova-2/3 by default
@@ -3137,11 +3147,14 @@ def run_deepgram_transcription(audio_path, model, lang, diar, key):
     
     try:
         with open(audio_path, "rb") as audio_file:
+            # We read the content into memory to ensure it's not a dead file handle
+            audio_data = audio_file.read()
+
             response = requests.post(
                 API_URL, 
                 headers=headers, 
                 params=query_params, 
-                data=audio_file,
+                data=audio_data, # Send the raw bytes
                 timeout=300 # 5 minutes for upload and transcription
             )
         
@@ -6722,7 +6735,7 @@ with gr.Blocks(
                                 # REPLACE Dropdown with FileExplorer
                                 v_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{png,jpg,jpeg,webp,bmp,gif,png.enc,jpg.enc,jpeg.enc,webp.enc,bmp.enc,gif.enc}",
+                                    glob="**/*", # .{png,jpg,jpeg,webp,bmp,gif,png.enc,jpg.enc,jpeg.enc,webp.enc,bmp.enc,gif.enc}
                                     label="Bilddateien durchsuchen",
                                     height=200
                                 )
