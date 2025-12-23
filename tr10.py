@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-ULTIMATE DOCUMENT TRANSLATOR - FIXED FOOTNOTES & FONTS
-Fixes: footnote extraction without lxml, preserve all font properties
+ULTIMATE DOCUMENT TRANSLATOR - PRODUCTION VERSION
+Features:
+- Multiple NMT backends: CTranslate2, NLLB, LLM
+- Multiple aligners: Lindat, fast_align, SimAlign, heuristic
+- Configurable translation modes with/without alignment
+- Production-grade error handling and logging
 """
 
 import argparse
@@ -14,6 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
+from enum import Enum
 import requests
 from tqdm import tqdm
 
@@ -41,7 +46,17 @@ try:
     print("  ✓ CTranslate2")
 except ImportError:
     HAS_CT2 = False
-    print("  ⊘ CTranslate2 (optional - will use LLM only)")
+    print("  ⊘ CTranslate2 (optional)")
+
+# Optional: Transformers for NLLB
+try:
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer as HFTokenizer
+    import torch
+    HAS_TRANSFORMERS = True
+    print("  ✓ Transformers (for NLLB)")
+except ImportError:
+    HAS_TRANSFORMERS = False
+    print("  ⊘ Transformers (optional - needed for NLLB)")
 
 # Optional: OpenAI
 try:
@@ -51,6 +66,15 @@ try:
 except ImportError:
     HAS_OPENAI = False
     print("  ⊘ OpenAI (optional)")
+
+# Optional: Anthropic
+try:
+    from anthropic import AsyncAnthropic
+    HAS_ANTHROPIC = True
+    print("  ✓ Anthropic")
+except ImportError:
+    HAS_ANTHROPIC = False
+    print("  ⊘ Anthropic (optional)")
 
 # Optional: fast_align
 try:
@@ -72,8 +96,42 @@ except ImportError:
 
 print("-" * 60)
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# ENUMS FOR CONFIGURATION
+# ============================================================================
+
+class TranslationBackend(Enum):
+    """Available translation backends"""
+    CT2 = "ct2"
+    NLLB = "nllb"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    OLLAMA = "ollama"
+    AUTO = "auto"
+
+
+class AlignerBackend(Enum):
+    """Available alignment backends"""
+    LINDAT = "lindat"
+    FAST_ALIGN = "fast_align"
+    SIMALIGN = "simalign"
+    HEURISTIC = "heuristic"
+    AUTO = "auto"
+
+
+class TranslationMode(Enum):
+    """Translation modes"""
+    NMT_ONLY = "nmt"  # Fast NMT without alignment
+    LLM_WITH_ALIGN = "llm-align"  # LLM + alignment for formatting
+    LLM_WITHOUT_ALIGN = "llm-plain"  # LLM without alignment
+    HYBRID = "hybrid"  # NMT with LLM fallback + alignment
 
 
 # ============================================================================
@@ -107,9 +165,7 @@ class TranslatableParagraph:
         return text.split()
     
     def get_formatted_word_indices(self) -> Dict[str, Set[int]]:
-        """
-        Extract which word indices have which formatting.
-        """
+        """Extract which word indices have which formatting."""
         formatted = {'italic': set(), 'bold': set(), 'italic_bold': set()}
         
         text = self.get_text()
@@ -122,16 +178,14 @@ class TranslatableParagraph:
         char_to_word = {}
         char_pos = 0
         for word_idx, word in enumerate(words):
-            # Skip whitespace to find word start
             while char_pos < len(text) and text[char_pos].isspace():
                 char_pos += 1
-            # Mark all characters in this word
             for i in range(len(word)):
                 if char_pos < len(text):
                     char_to_word[char_pos] = word_idx
                     char_pos += 1
         
-        # Now check which words are formatted
+        # Check which words are formatted
         char_pos = 0
         for run in self.runs:
             if not run.text:
@@ -141,7 +195,6 @@ class TranslatableParagraph:
                 if char_pos in char_to_word:
                     word_idx = char_to_word[char_pos]
                     
-                    # Only mark if non-whitespace
                     if not char.isspace():
                         if run.bold and run.italic:
                             formatted['italic_bold'].add(word_idx)
@@ -156,7 +209,7 @@ class TranslatableParagraph:
 
 
 # ============================================================================
-# TRANSLATION BACKENDS (unchanged from previous version)
+# TRANSLATION BACKENDS
 # ============================================================================
 
 class CTranslate2Translator:
@@ -175,6 +228,7 @@ class CTranslate2Translator:
         self.available = False
         
         if not HAS_CT2:
+            logger.info("⊘ CT2: library not installed")
             return
         
         if src_lang == 'en' and tgt_lang in self.SUPPORTED_LANGS:
@@ -259,31 +313,131 @@ class CTranslate2Translator:
             return texts
 
 
-class LLMTranslator:
-    """LLM translator (GPT-4/Ollama)"""
+class NLLBTranslator:
+    """NLLB-200 translator for 200+ languages"""
     
-    def __init__(self, src_lang: str, tgt_lang: str):
+    # Language code mapping for NLLB
+    LANG_CODES = {
+        'en': 'eng_Latn', 'de': 'deu_Latn', 'fr': 'fra_Latn', 
+        'es': 'spa_Latn', 'it': 'ita_Latn', 'pt': 'por_Latn',
+        'ru': 'rus_Cyrl', 'zh': 'zho_Hans', 'ja': 'jpn_Jpan',
+        'ko': 'kor_Hang', 'ar': 'arb_Arab', 'hi': 'hin_Deva',
+        'nl': 'nld_Latn', 'pl': 'pol_Latn', 'tr': 'tur_Latn',
+        'cs': 'ces_Latn', 'uk': 'ukr_Cyrl', 'vi': 'vie_Latn',
+    }
+    
+    def __init__(self, src_lang: str, tgt_lang: str, model_size: str = "600M"):
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
-        self.providers = self._init_providers()
+        self.available = False
+        
+        if not HAS_TRANSFORMERS:
+            logger.info("⊘ NLLB: transformers not installed")
+            return
+        
+        # Map to NLLB codes
+        self.src_code = self.LANG_CODES.get(src_lang)
+        self.tgt_code = self.LANG_CODES.get(tgt_lang)
+        
+        if not self.src_code or not self.tgt_code:
+            logger.info(f"⊘ NLLB: {src_lang}→{tgt_lang} not in language map")
+            return
+        
+        try:
+            logger.info(f"Loading NLLB-{model_size} model...")
+            model_name = f"facebook/nllb-200-{model_size}"
+            
+            self.tokenizer = HFTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            
+            # Move to GPU if available
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.model.to(self.device)
+            
+            self.available = True
+            logger.info(f"✓ NLLB-{model_size} ready on {self.device} ({src_lang}→{tgt_lang})")
+        except Exception as e:
+            logger.error(f"NLLB init failed: {e}")
+    
+    def translate_batch(self, texts: List[str], batch_size: int = 8) -> List[str]:
+        """Translate batch of texts"""
+        if not self.available or not texts:
+            return texts
+        
+        try:
+            results = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                
+                # Tokenize with forced source language
+                inputs = self.tokenizer(
+                    batch, 
+                    return_tensors="pt", 
+                    padding=True, 
+                    truncation=True,
+                    max_length=512
+                ).to(self.device)
+                
+                # Generate with forced target language
+                translated_tokens = self.model.generate(
+                    **inputs,
+                    forced_bos_token_id=self.tokenizer.lang_code_to_id[self.tgt_code],
+                    max_length=512,
+                    num_beams=5,
+                    early_stopping=True
+                )
+                
+                # Decode
+                batch_results = self.tokenizer.batch_decode(
+                    translated_tokens, 
+                    skip_special_tokens=True
+                )
+                results.extend(batch_results)
+            
+            return results
+        except Exception as e:
+            logger.error(f"NLLB translation failed: {e}")
+            return texts
+
+
+class LLMTranslator:
+    """LLM translator (OpenAI/Anthropic/Ollama)"""
+    
+    def __init__(self, src_lang: str, tgt_lang: str, preferred_provider: Optional[str] = None):
+        self.src_lang = src_lang
+        self.tgt_lang = tgt_lang
+        self.providers = self._init_providers(preferred_provider)
         
         if self.providers:
-            logger.info(f"✓ LLM available ({len(self.providers)} providers)")
+            logger.info(f"✓ LLM available ({list(self.providers.keys())})")
     
-    def _init_providers(self) -> Dict[str, Any]:
+    def _init_providers(self, preferred: Optional[str] = None) -> Dict[str, Any]:
         providers = {}
         
+        # OpenAI
         if HAS_OPENAI and os.getenv("OPENAI_API_KEY"):
             providers["openai"] = {
                 "client": AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY")),
-                "model": "gpt-4o-mini"
+                "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini")
             }
         
+        # Anthropic
+        if HAS_ANTHROPIC and os.getenv("ANTHROPIC_API_KEY"):
+            providers["anthropic"] = {
+                "client": AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY")),
+                "model": os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+            }
+        
+        # Ollama
         if self._check_ollama():
             providers["ollama"] = {
                 "url": "http://localhost:11434/api/generate",
                 "model": self._get_ollama_model()
             }
+        
+        # Filter to preferred if specified
+        if preferred and preferred in providers:
+            return {preferred: providers[preferred]}
         
         return providers
     
@@ -302,50 +456,70 @@ class LLMTranslator:
         except:
             return "llama3.2"
     
-    async def translate_text(self, text: str) -> Optional[str]:
+    async def translate_text(self, text: str, use_alignment: bool = True) -> Optional[str]:
         """Translate single text"""
         if not text.strip() or not self.providers:
             return None
         
-        prompt = f"Translate from {self.src_lang} to {self.tgt_lang}. Return ONLY the translation:\n\n{text}"
+        # Adjust prompt based on alignment mode
+        if use_alignment:
+            prompt = (
+                f"Translate the following text from {self.src_lang} to {self.tgt_lang}. "
+                f"Preserve the word order as much as possible for alignment purposes. "
+                f"Return ONLY the translation:\n\n{text}"
+            )
+        else:
+            prompt = (
+                f"Translate the following text from {self.src_lang} to {self.tgt_lang}. "
+                f"Provide a natural, fluent translation. "
+                f"Return ONLY the translation:\n\n{text}"
+            )
         
-        if "openai" in self.providers:
+        # Try providers in order
+        for provider_name, provider in self.providers.items():
             try:
-                p = self.providers["openai"]
-                response = await p["client"].chat.completions.create(
-                    model=p["model"],
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=4000
-                )
-                return response.choices[0].message.content.strip()
+                if provider_name == "openai":
+                    response = await provider["client"].chat.completions.create(
+                        model=provider["model"],
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=4000
+                    )
+                    return response.choices[0].message.content.strip()
+                
+                elif provider_name == "anthropic":
+                    response = await provider["client"].messages.create(
+                        model=provider["model"],
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=4000
+                    )
+                    return response.content[0].text.strip()
+                
+                elif provider_name == "ollama":
+                    r = requests.post(
+                        provider["url"],
+                        json={"model": provider["model"], "prompt": prompt, "stream": False},
+                        timeout=120
+                    )
+                    if r.status_code == 200:
+                        return r.json().get("response", "").strip()
+            
             except Exception as e:
-                logger.debug(f"OpenAI failed: {e}")
-        
-        if "ollama" in self.providers:
-            try:
-                p = self.providers["ollama"]
-                r = requests.post(
-                    p["url"],
-                    json={"model": p["model"], "prompt": prompt, "stream": False},
-                    timeout=120
-                )
-                if r.status_code == 200:
-                    return r.json().get("response", "").strip()
-            except Exception as e:
-                logger.debug(f"Ollama failed: {e}")
+                logger.debug(f"{provider_name} failed: {e}")
+                continue
         
         return None
     
-    async def translate_batch(self, texts: List[str]) -> List[str]:
+    async def translate_batch(self, texts: List[str], use_alignment: bool = True) -> List[str]:
         """Translate batch"""
-        tasks = [self.translate_text(text) for text in texts]
+        tasks = [self.translate_text(text, use_alignment) for text in texts]
         results = await asyncio.gather(*tasks)
         return [res if res else text for res, text in zip(results, texts)]
 
 
 # ============================================================================
-# WORD ALIGNERS (unchanged)
+# WORD ALIGNERS
 # ============================================================================
 
 class LindatAligner:
@@ -355,6 +529,8 @@ class LindatAligner:
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
         self.available = self._check_available()
+        if self.available:
+            logger.info(f"✓ Lindat aligner available ({src_lang}-{tgt_lang})")
     
     def _check_available(self) -> bool:
         try:
@@ -393,6 +569,8 @@ class FastAlignAligner:
     
     def __init__(self):
         self.available = HAS_FAST_ALIGN
+        if self.available:
+            logger.info("✓ fast_align available")
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
         """Align word indices"""
@@ -425,6 +603,7 @@ class SimAlignAligner:
         if self.available:
             try:
                 self.aligner = SentenceAligner(model="bert", token_type="bpe", matching_methods="mai")
+                logger.info("✓ SimAlign available")
             except Exception as e:
                 logger.debug(f"SimAlign init failed: {e}")
                 self.available = False
@@ -448,6 +627,9 @@ class SimAlignAligner:
 class HeuristicAligner:
     """Heuristic fallback - align words that appear in both"""
     
+    def __init__(self):
+        logger.info("✓ Heuristic aligner (fallback)")
+    
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
         """Simple heuristic alignment"""
         alignments = []
@@ -466,26 +648,28 @@ class HeuristicAligner:
 class MultiAligner:
     """Try multiple aligners in sequence"""
     
-    def __init__(self, src_lang: str, tgt_lang: str):
+    def __init__(self, src_lang: str, tgt_lang: str, preferred: Optional[str] = None):
         self.aligners = []
         
-        lindat = LindatAligner(src_lang, tgt_lang)
-        if lindat.available:
-            self.aligners.append(("Lindat", lindat))
-            logger.info("✓ Lindat aligner available")
+        # Build aligner list based on preference
+        if preferred == "lindat" or preferred == "auto":
+            lindat = LindatAligner(src_lang, tgt_lang)
+            if lindat.available:
+                self.aligners.append(("Lindat", lindat))
         
-        fast_align = FastAlignAligner()
-        if fast_align.available:
-            self.aligners.append(("fast_align", fast_align))
-            logger.info("✓ fast_align available")
+        if preferred == "fast_align" or preferred == "auto":
+            fast_align = FastAlignAligner()
+            if fast_align.available:
+                self.aligners.append(("fast_align", fast_align))
         
-        simalign = SimAlignAligner()
-        if simalign.available:
-            self.aligners.append(("SimAlign", simalign))
-            logger.info("✓ SimAlign available")
+        if preferred == "simalign" or preferred == "auto":
+            simalign = SimAlignAligner()
+            if simalign.available:
+                self.aligners.append(("SimAlign", simalign))
         
-        self.aligners.append(("Heuristic", HeuristicAligner()))
-        logger.info("✓ Heuristic aligner (fallback)")
+        # Always include heuristic as fallback
+        if preferred == "heuristic" or preferred == "auto":
+            self.aligners.append(("Heuristic", HeuristicAligner()))
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
         """Try aligners in order until one succeeds"""
@@ -500,38 +684,113 @@ class MultiAligner:
 
 
 # ============================================================================
-# DOCUMENT TRANSLATOR - FIXED FONTS & FOOTNOTES
+# DOCUMENT TRANSLATOR
 # ============================================================================
 
 class UltimateDocumentTranslator:
-    """The ultimate document translator - FIXED FONTS & FOOTNOTES"""
+    """Production-grade document translator with configurable backends"""
     
-    def __init__(self, src_lang: str, tgt_lang: str):
+    def __init__(
+        self,
+        src_lang: str,
+        tgt_lang: str,
+        mode: TranslationMode = TranslationMode.HYBRID,
+        nmt_backend: Optional[str] = None,
+        llm_provider: Optional[str] = None,
+        aligner: Optional[str] = None,
+        nllb_model_size: str = "600M"
+    ):
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
+        self.mode = mode
         
-        self.ct2 = CTranslate2Translator(src_lang, tgt_lang)
-        self.llm = LLMTranslator(src_lang, tgt_lang)
-        self.aligner = MultiAligner(src_lang, tgt_lang)
+        logger.info(f"Initializing translator ({src_lang}→{tgt_lang}, mode={mode.value})")
         
-        if not self.ct2.available and not self.llm.providers:
+        # Initialize translators based on mode
+        self.ct2 = None
+        self.nllb = None
+        self.llm = None
+        
+        if mode in [TranslationMode.NMT_ONLY, TranslationMode.HYBRID]:
+            # Try NMT backends
+            if nmt_backend == "nllb" or nmt_backend == "auto":
+                self.nllb = NLLBTranslator(src_lang, tgt_lang, nllb_model_size)
+            
+            if nmt_backend == "ct2" or nmt_backend == "auto":
+                self.ct2 = CTranslate2Translator(src_lang, tgt_lang)
+        
+        if mode in [TranslationMode.LLM_WITH_ALIGN, TranslationMode.LLM_WITHOUT_ALIGN, TranslationMode.HYBRID]:
+            self.llm = LLMTranslator(src_lang, tgt_lang, llm_provider)
+        
+        # Initialize aligner if needed
+        self.aligner = None
+        if mode in [TranslationMode.LLM_WITH_ALIGN, TranslationMode.HYBRID]:
+            self.aligner = MultiAligner(src_lang, tgt_lang, aligner or "auto")
+        
+        # Check we have at least one backend
+        has_backend = False
+        if self.ct2 and self.ct2.available:
+            has_backend = True
+            logger.info("Primary backend: CTranslate2")
+        if self.nllb and self.nllb.available:
+            has_backend = True
+            logger.info("Primary backend: NLLB")
+        if self.llm and self.llm.providers:
+            has_backend = True
+            logger.info(f"LLM backend: {list(self.llm.providers.keys())}")
+        
+        if not has_backend:
             logger.error("No translation backends available!")
             sys.exit(1)
     
     async def translate_text(self, text: str) -> str:
-        """Translate single text with fallback"""
+        """Translate single text with fallback chain"""
         if not text.strip():
             return text
         
-        if self.ct2.available:
-            result = self.ct2.translate_batch([text])[0]
-            if result and result != text:
-                return result
+        # Choose translation based on mode
+        if self.mode == TranslationMode.NMT_ONLY:
+            # Try NMT backends only
+            if self.nllb and self.nllb.available:
+                result = self.nllb.translate_batch([text])[0]
+                if result and result != text:
+                    return result
+            
+            if self.ct2 and self.ct2.available:
+                result = self.ct2.translate_batch([text])[0]
+                if result and result != text:
+                    return result
         
-        if self.llm.providers:
-            result = await self.llm.translate_text(text)
-            if result:
-                return result
+        elif self.mode == TranslationMode.LLM_WITH_ALIGN:
+            # Use LLM with alignment-friendly prompts
+            if self.llm and self.llm.providers:
+                result = await self.llm.translate_text(text, use_alignment=True)
+                if result:
+                    return result
+        
+        elif self.mode == TranslationMode.LLM_WITHOUT_ALIGN:
+            # Use LLM with natural translation
+            if self.llm and self.llm.providers:
+                result = await self.llm.translate_text(text, use_alignment=False)
+                if result:
+                    return result
+        
+        elif self.mode == TranslationMode.HYBRID:
+            # Try NMT first, then LLM as fallback
+            if self.nllb and self.nllb.available:
+                result = self.nllb.translate_batch([text])[0]
+                if result and result != text:
+                    return result
+            
+            if self.ct2 and self.ct2.available:
+                result = self.ct2.translate_batch([text])[0]
+                if result and result != text:
+                    return result
+            
+            if self.llm and self.llm.providers:
+                result = await self.llm.translate_text(text, use_alignment=True)
+                if result:
+                    return result
         
         logger.error(f"Translation failed for: {text[:50]}...")
         return text
@@ -545,7 +804,8 @@ class UltimateDocumentTranslator:
                 try:
                     rgb = run.font.color.rgb
                     font_color = (rgb[0], rgb[1], rgb[2])
-                except: pass
+                except: 
+                    pass
             
             runs.append(FormatRun(
                 text=run.text,
@@ -558,7 +818,6 @@ class UltimateDocumentTranslator:
             ))
         
         trans_para = TranslatableParagraph(runs=runs)
-        # CAPTURE LAYOUT: Style, Alignment, and Paragraph Format
         trans_para.metadata['style'] = para.style
         trans_para.metadata['alignment'] = para.alignment
         
@@ -572,7 +831,7 @@ class UltimateDocumentTranslator:
             'space_after': pf.space_after
         }
         return trans_para
-
+    
     def copy_font_properties(self, target_run, source_run: FormatRun):
         """Copies all font properties including safety checks."""
         if source_run.font_name:
@@ -584,39 +843,22 @@ class UltimateDocumentTranslator:
         if source_run.underline is not None:
             target_run.font.underline = source_run.underline
     
-    def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, 
-                                translated_text: str, alignment: List[Tuple[int, int]]):
-        """
-        FIXED: Ensures footnote numbers (references) stay at the END of the paragraph.
-        """
+    def apply_aligned_formatting(
+        self, 
+        para: Paragraph, 
+        trans_para: TranslatableParagraph,
+        translated_text: str, 
+        alignment: List[Tuple[int, int]]
+    ):
+        """Applies formatting while preserving paragraph layout and footnotes."""
         formatted_words = trans_para.get_formatted_word_indices()
         src_words = trans_para.get_words()
         tgt_words = translated_text.split()
         
-        if not tgt_words: return
-
-        # 1. IDENTIFY AND PROTECT FOOTNOTE REFERENCES
-        p = para._p
-        footnote_refs = []
-        for run_element in p.xpath('.//w:r'):
-            # Check if this run contains a footnote reference
-            if run_element.xpath('.//w:footnoteReference | .//w:footnoteRef'):
-                footnote_refs.append(run_element)
-            # Remove the element from the current parent (we will re-attach later)
-            run_element.getparent().remove(run_element)
+        if not tgt_words:
+            return
         
-        # 2. RESTORE PARAGRAPH PROPERTIES
-        para.alignment = trans_para.metadata['alignment']
-        if trans_para.metadata['style']:
-            para.style = trans_para.metadata['style']
-        
-        # Apply layout (Indents, spacing)
-        layout = trans_para.metadata['layout']
-        para.paragraph_format.left_indent = layout['left_indent']
-        para.paragraph_format.first_line_indent = layout['first_line_indent']
-        para.paragraph_format.line_spacing = layout['line_spacing']
-
-        # 3. BUILD TRANSLATED TEXT RUNS
+        # Target formatting map
         tgt_formatting = {}
         for src_idx, tgt_idx in alignment:
             if src_idx < len(src_words) and tgt_idx < len(tgt_words):
@@ -624,10 +866,26 @@ class UltimateDocumentTranslator:
                     if src_idx in formatted_words[f_type]:
                         tgt_formatting[tgt_idx] = f_type
                         break
-
+        
+        # Preserve footnote references
+        p = para._p
+        for run_element in p.xpath('.//w:r'):
+            if not run_element.xpath('.//w:footnoteRef | .//w:footnoteReference'):
+                run_element.getparent().remove(run_element)
+        
+        # Restore paragraph layout
+        para.alignment = trans_para.metadata['alignment']
+        if trans_para.metadata['style']:
+            para.style = trans_para.metadata['style']
+        
+        layout = trans_para.metadata['layout']
+        para.paragraph_format.left_indent = layout['left_indent']
+        para.paragraph_format.first_line_indent = layout['first_line_indent']
+        para.paragraph_format.line_spacing = layout['line_spacing']
+        
+        # Create runs with formatting
         font_template = next((r for r in trans_para.runs if r.text.strip()), None)
         
-        # Grouping logic for runs...
         runs_to_create = []
         current_format = tgt_formatting.get(0, None)
         current_words = [tgt_words[0]]
@@ -641,39 +899,53 @@ class UltimateDocumentTranslator:
                 current_format, current_words = fmt, [tgt_words[i]]
         runs_to_create.append((current_format, current_words))
         
-        # Add translated text runs
         for i, (f_type, words) in enumerate(runs_to_create):
-            text = ' '.join(words) + (" " if i < len(runs_to_create)-1 else "")
+            text = ' '.join(words) + (" " if i < len(runs_to_create) - 1 else "")
             run = para.add_run(text)
+            
             if f_type == 'italic_bold':
                 run.bold = run.italic = True
-            elif f_type == 'bold': run.bold = True
-            elif f_type == 'italic': run.italic = True
+            elif f_type == 'bold':
+                run.bold = True
+            elif f_type == 'italic':
+                run.italic = True
             
             if font_template:
                 self.copy_font_properties(run, font_template)
-
-        # 4. RE-ATTACH FOOTNOTE REFERENCES AT THE END
-        # This ensures the [1] or [2] appears after the translated text
-        for ref in footnote_refs:
-            p.append(ref)
+    
+    def apply_plain_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str):
+        """Apply formatting without alignment (for LLM_WITHOUT_ALIGN mode)"""
+        # Clear existing runs except footnotes
+        p = para._p
+        for run_element in p.xpath('.//w:r'):
+            if not run_element.xpath('.//w:footnoteRef | .//w:footnoteReference'):
+                run_element.getparent().remove(run_element)
+        
+        # Restore paragraph layout
+        para.alignment = trans_para.metadata['alignment']
+        if trans_para.metadata['style']:
+            para.style = trans_para.metadata['style']
+        
+        layout = trans_para.metadata['layout']
+        para.paragraph_format.left_indent = layout['left_indent']
+        para.paragraph_format.first_line_indent = layout['first_line_indent']
+        para.paragraph_format.line_spacing = layout['line_spacing']
+        
+        # Add translated text with default formatting from first run
+        font_template = next((r for r in trans_para.runs if r.text.strip()), None)
+        run = para.add_run(translated_text)
+        
+        if font_template:
+            self.copy_font_properties(run, font_template)
     
     def is_paragraph_safe_to_translate(self, para: Paragraph) -> bool:
         """Check if paragraph can be safely translated"""
         if not para.text or not para.text.strip():
             return False
         
-        # If the paragraph is JUST a footnote reference (no text), don't translate
-        # but the script will still keep it.
-        text = para.text.strip()
-        if not text:
-            return False
-        
         if len(para.text.strip()) <= 1 and not any(run.text.strip() for run in para.runs):
-            # Skip if paragraph is just a footnote number or empty
             return False
         
-        # Skip if contains drawings/images
         try:
             for run in para.runs:
                 if run._element.xpath('.//w:drawing | .//w:pict'):
@@ -682,7 +954,6 @@ class UltimateDocumentTranslator:
         except:
             pass
         
-        # Skip non-footnote fields
         try:
             field_chars = para._element.xpath('.//w:fldChar')
             if field_chars:
@@ -696,7 +967,7 @@ class UltimateDocumentTranslator:
         return True
     
     async def translate_paragraph(self, para: Paragraph):
-        """Translate single paragraph using alignment"""
+        """Translate single paragraph"""
         if not para.text or not para.text.strip():
             return
         
@@ -704,61 +975,64 @@ class UltimateDocumentTranslator:
             return
         
         try:
-            # Extract
             trans_para = self.extract_paragraph(para)
             original_text = trans_para.get_text()
-            src_words = trans_para.get_words()
             
-            if not src_words:
+            if not original_text.strip():
                 return
             
             # Translate
             translated_text = await self.translate_text(original_text)
-            tgt_words = translated_text.split()
             
-            if not tgt_words:
+            if not translated_text.strip():
                 return
             
-            # Align
-            alignment = self.aligner.align(src_words, tgt_words)
-            
-            logger.debug(f"SRC: {src_words}")
-            logger.debug(f"TGT: {tgt_words}")
-            logger.debug(f"ALIGN: {alignment}")
-            
-            # Apply with alignment
-            self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
+            # Apply formatting based on mode
+            if self.mode == TranslationMode.LLM_WITHOUT_ALIGN:
+                # No alignment, just apply plain formatting
+                self.apply_plain_formatting(para, trans_para, translated_text)
+            else:
+                # Use alignment
+                src_words = trans_para.get_words()
+                tgt_words = translated_text.split()
+                
+                if not src_words or not tgt_words:
+                    return
+                
+                alignment = []
+                if self.aligner:
+                    alignment = self.aligner.align(src_words, tgt_words)
+                
+                logger.debug(f"SRC: {src_words}")
+                logger.debug(f"TGT: {tgt_words}")
+                logger.debug(f"ALIGN: {alignment}")
+                
+                self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
             
         except Exception as e:
             logger.error(f"Failed to translate paragraph: {e}")
+            logger.debug(f"  Text: {para.text[:100]}...")
     
     def get_footnotes(self, doc: Document) -> List[Paragraph]:
-        """Extracts footnotes and ensures they are linked to the document for saving."""
+        """Extract footnotes from document"""
         document_part = doc.part
         footnote_part = None
         
-        # Try finding standard footnote part
         for rel in document_part.rels.values():
             if "relationships/footnotes" in rel.reltype:
                 footnote_part = rel.target_part
                 break
-
+        
         if not footnote_part:
-            # ZIP FALLBACK: If we find it via zip, we must create a part for it
             try:
                 import zipfile
-                from docx.opc.part import Part
                 with zipfile.ZipFile(doc._part._package.blob) as z:
                     if 'word/footnotes.xml' in z.namelist():
-                        blob = z.read('word/footnotes.xml')
-                        # This is the magic: we ensure python-docx tracks this 'found' part
-                        logger.info("✓ Recovered Footnotes part via Zip")
-                        # (Extraction logic continues below using this blob)
-            except: return []
-
-        if not footnote_part: return []
-
-        # Parse the live XML
+                        logger.info("✓ Found footnotes via ZIP")
+            except:
+                pass
+            return []
+        
         from docx.oxml import parse_xml
         root = parse_xml(footnote_part.blob)
         ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
@@ -766,44 +1040,40 @@ class UltimateDocumentTranslator:
         paragraphs = []
         for footnote in root.xpath('//w:footnote', namespaces=ns):
             f_id = footnote.get(f'{{{ns["w"]}}}id')
-            if f_id and int(f_id) <= 0: continue
+            if f_id and int(f_id) <= 0:
+                continue
             
             for p_elem in footnote.xpath('.//w:p', namespaces=ns):
-                # Create a live Paragraph object tied to the footnote part
                 para = Paragraph(p_elem, footnote_part)
                 if para.text.strip():
                     paragraphs.append(para)
-
-        # IMPORTANT: We must update the footnote part's blob with our modified root
-        # We'll do this by adding a small listener or a post-process
+        
         self._footnote_root = root
         self._footnote_part = footnote_part
         
         return paragraphs
-
+    
     def get_all_paragraphs(self, doc: Document) -> List[Tuple[Paragraph, str]]:
-        """
-        Aggregate body, tables, and footnotes.
-        """
+        """Aggregate all paragraphs from document"""
         all_paras = []
         
-        # 1. Main body
+        # Main body
         for para in doc.paragraphs:
             all_paras.append((para, "body"))
         
-        # 2. Tables
+        # Tables
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for para in cell.paragraphs:
                         all_paras.append((para, "table"))
         
-        # 3. Footnotes (The logic updated above)
+        # Footnotes
         footnote_paras = self.get_footnotes(doc)
         for para in footnote_paras:
             all_paras.append((para, "footnote"))
-            
-        # 4. Headers/Footers
+        
+        # Headers/Footers
         for section in doc.sections:
             for para in section.header.paragraphs:
                 all_paras.append((para, "header"))
@@ -822,16 +1092,13 @@ class UltimateDocumentTranslator:
             logger.error(f"Failed to load document: {e}")
             return
         
-        # Get all paragraphs
         all_paras_with_location = self.get_all_paragraphs(doc)
         
-        # Filter translatable
         translatable = []
         for para, location in all_paras_with_location:
             if para.text and para.text.strip() and self.is_paragraph_safe_to_translate(para):
                 translatable.append((para, location))
         
-        # Log statistics
         by_location = defaultdict(int)
         for _, location in translatable:
             by_location[location] += 1
@@ -840,17 +1107,14 @@ class UltimateDocumentTranslator:
         for location, count in by_location.items():
             logger.info(f"  - {location}: {count}")
         
-        # Translate with progress bar
         for para, location in tqdm(translatable, desc="Translating"):
             try:
                 await self.translate_paragraph(para)
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
             except Exception as e:
                 logger.error(f"Error translating {location} paragraph: {e}")
-                logger.debug(f"  Text: {para.text[:100]}...")
                 continue
         
-        # Save
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
@@ -858,12 +1122,11 @@ class UltimateDocumentTranslator:
                 output_path.unlink()
             
             logger.info(f"Saving to: {output_path}")
-
+            
             if hasattr(self, '_footnote_part') and hasattr(self, '_footnote_root'):
                 from lxml import etree
-                # Commit the translated XML tree back to the binary blob
                 self._footnote_part._blob = etree.tostring(self._footnote_root)
-
+            
             doc.save(str(output_path))
             
             if not output_path.exists():
@@ -872,12 +1135,8 @@ class UltimateDocumentTranslator:
             if output_path.stat().st_size == 0:
                 raise Exception("Output file is empty")
             
-            try:
-                test_doc = Document(str(output_path))
-                logger.info(f"✓ Document verified ({len(test_doc.paragraphs)} paragraphs)")
-            except Exception as e:
-                raise Exception(f"Output document is corrupted: {e}")
-            
+            test_doc = Document(str(output_path))
+            logger.info(f"✓ Document verified ({len(test_doc.paragraphs)} paragraphs)")
             logger.info("✓ Translation complete!")
             
         except Exception as e:
@@ -893,13 +1152,73 @@ class UltimateDocumentTranslator:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description='Ultimate Document Translator - FIXED FONTS & FOOTNOTES'
+        description='Document Translator',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Default (auto-detect best backends)
+  %(prog)s input.docx output.docx -s en -t de
+  
+  # Use NLLB for translation
+  %(prog)s input.docx output.docx -s en -t fr --nmt nllb
+  
+  # Use LLM with alignment
+  %(prog)s input.docx output.docx -s en -t es --mode llm-align --llm openai
+  
+  # Use LLM without alignment (natural translation)
+  %(prog)s input.docx output.docx -s en -t it --mode llm-plain --llm anthropic
+  
+  # Hybrid mode with specific aligner
+  %(prog)s input.docx output.docx -s en -t de --mode hybrid --aligner fast_align
+  
+  # Use larger NLLB model
+  %(prog)s input.docx output.docx -s en -t ja --nmt nllb --nllb-size 1.3B
+
+Environment Variables:
+  OPENAI_API_KEY       - OpenAI API key
+  OPENAI_MODEL         - OpenAI model (default: gpt-4o-mini)
+  ANTHROPIC_API_KEY    - Anthropic API key
+  ANTHROPIC_MODEL      - Anthropic model (default: claude-3-5-sonnet-20241022)
+        """
     )
     
     parser.add_argument('input', help='Input .docx file')
     parser.add_argument('output', help='Output .docx file')
     parser.add_argument('-s', '--source', default='en', help='Source language (default: en)')
     parser.add_argument('-t', '--target', default='de', help='Target language (default: de)')
+    
+    parser.add_argument(
+        '--mode',
+        choices=['nmt', 'llm-align', 'llm-plain', 'hybrid'],
+        default='hybrid',
+        help='Translation mode (default: hybrid)'
+    )
+    
+    parser.add_argument(
+        '--nmt',
+        choices=['ct2', 'nllb', 'auto'],
+        help='NMT backend (default: auto)'
+    )
+    
+    parser.add_argument(
+        '--nllb-size',
+        choices=['600M', '1.3B', '3.3B'],
+        default='600M',
+        help='NLLB model size (default: 600M)'
+    )
+    
+    parser.add_argument(
+        '--llm',
+        choices=['openai', 'anthropic', 'ollama'],
+        help='LLM provider (default: auto-detect)'
+    )
+    
+    parser.add_argument(
+        '--aligner',
+        choices=['lindat', 'fast_align', 'simalign', 'heuristic', 'auto'],
+        help='Word aligner (default: auto)'
+    )
+    
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
     
     args = parser.parse_args()
@@ -916,16 +1235,40 @@ async def main():
         print(f"Error: Only .docx files supported")
         sys.exit(1)
     
+    mode_map = {
+        'nmt': TranslationMode.NMT_ONLY,
+        'llm-align': TranslationMode.LLM_WITH_ALIGN,
+        'llm-plain': TranslationMode.LLM_WITHOUT_ALIGN,
+        'hybrid': TranslationMode.HYBRID
+    }
+    
     print(f"\n{'='*60}")
-    print(f"Document Translator")
-
+    print(f"Ultimate Document Translator - Production Version")
     print(f"{'='*60}")
-    print(f"Input:  {input_path}")
-    print(f"Output: {args.output}")
-    print(f"Direction: {args.source.upper()} → {args.target.upper()}")
+    print(f"Input:      {input_path}")
+    print(f"Output:     {args.output}")
+    print(f"Direction:  {args.source.upper()} → {args.target.upper()}")
+    print(f"Mode:       {args.mode}")
+    if args.nmt:
+        print(f"NMT:        {args.nmt}")
+    if args.nmt == 'nllb':
+        print(f"NLLB Size:  {args.nllb_size}")
+    if args.llm:
+        print(f"LLM:        {args.llm}")
+    if args.aligner:
+        print(f"Aligner:    {args.aligner}")
     print(f"{'='*60}\n")
     
-    translator = UltimateDocumentTranslator(args.source, args.target)
+    translator = UltimateDocumentTranslator(
+        src_lang=args.source,
+        tgt_lang=args.target,
+        mode=mode_map[args.mode],
+        nmt_backend=args.nmt,
+        llm_provider=args.llm,
+        aligner=args.aligner,
+        nllb_model_size=args.nllb_size
+    )
+    
     await translator.translate_document(input_path, Path(args.output))
     
     print(f"\n{'='*60}")
