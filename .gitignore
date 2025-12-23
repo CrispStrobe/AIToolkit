@@ -33,8 +33,10 @@ client_secrets.json
 *.pickle
 tokens/
 
-# Local Video Files (avoiding large binary commits)
+# Local Video and Document Files (avoiding large binary commits)
 *.mp4
+*.docx
+
 
 # App-specific hidden keys
 .master_key
