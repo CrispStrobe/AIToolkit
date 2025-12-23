@@ -159,21 +159,20 @@ class TranslatableParagraph:
         return ''.join(run.text for run in self.runs)
     
     def get_words(self) -> List[str]:
-        """Get words for alignment"""
+        """Clean tokenization for high-quality alignment"""
         text = self.get_text()
-        return text.split()
+        # This separates words from punctuation so the aligner can map them individually
+        return re.findall(r"[\w']+|[.,!?;:()\"-]", text)
     
     def get_formatted_word_indices(self) -> Dict[str, Set[int]]:
-        """Extract which word indices have which formatting."""
+        """Extract formatting using the same regex as get_words to prevent shifts."""
         formatted = {'italic': set(), 'bold': set(), 'italic_bold': set()}
-        
         text = self.get_text()
-        words = text.split()
+        # FIX: Must use the same tokenization as the aligner
+        words = self.get_words()
         
-        if not words:
-            return formatted
+        if not words: return formatted
         
-        # Build character-to-word map
         char_to_word = {}
         char_pos = 0
         for word_idx, word in enumerate(words):
@@ -184,26 +183,17 @@ class TranslatableParagraph:
                     char_to_word[char_pos] = word_idx
                     char_pos += 1
         
-        # Check which words are formatted
         char_pos = 0
         for run in self.runs:
-            if not run.text:
-                continue
-            
+            if not run.text: continue
             for char in run.text:
                 if char_pos in char_to_word:
                     word_idx = char_to_word[char_pos]
-                    
                     if not char.isspace():
-                        if run.bold and run.italic:
-                            formatted['italic_bold'].add(word_idx)
-                        elif run.italic:
-                            formatted['italic'].add(word_idx)
-                        elif run.bold:
-                            formatted['bold'].add(word_idx)
-                
+                        if run.bold and run.italic: formatted['italic_bold'].add(word_idx)
+                        elif run.italic: formatted['italic'].add(word_idx)
+                        elif run.bold: formatted['bold'].add(word_idx)
                 char_pos += 1
-        
         return formatted
 
 
@@ -269,46 +259,41 @@ class CTranslate2Translator:
         return snapshot_download(repo_id=model_repo)
     
     def translate_batch(self, texts: List[str]) -> List[str]:
-        """Translate batch of texts"""
         if not self.available or not texts:
             return texts
         
         try:
-            source_batches = []
-            for text in texts:
-                if not text.strip():
-                    source_batches.append([self.tokenizer.src_lang])
-                    continue
-                
-                tokens = self.tokenizer.tokenize(text)
-                if self.tokenizer.src_lang not in tokens:
-                    tokens = [self.tokenizer.src_lang] + tokens + [self.tokenizer.eos_token]
-                source_batches.append(tokens)
+            # 1. Ensure language tokens are correctly formatted
+            # WMT21 models expect the target lang as a prefix
+            target_prefix = [[self.tokenizer.lang_code_to_token[self.tgt_lang]]] * len(texts)
             
-            target_prefix = [self.tokenizer.lang_code_to_token[self.tgt_lang]]
+            # 2. Tokenize with specific padding/truncation
+            source_tokens = [self.tokenizer.convert_ids_to_tokens(self.tokenizer.encode(t)) for t in texts]
+            
+            # 3. Translate with proper beam search and repetition penalty
             results = self.translator.translate_batch(
-                source_batches,
-                target_prefix=[target_prefix] * len(texts),
+                source_tokens,
+                target_prefix=target_prefix,
                 beam_size=5,
-                repetition_penalty=1.5
+                max_batch_size=16,
+                repetition_penalty=1.2,
+                # Prevent the model from just 'copying' the source if it gets confused
+                disable_unk=True 
             )
             
             translated = []
             for i, res in enumerate(results):
-                if not texts[i].strip():
-                    translated.append(texts[i])
-                    continue
+                # Strip the language token from the start of the result
+                tokens = res.hypotheses[0]
+                if self.tokenizer.lang_code_to_token[self.tgt_lang] in tokens:
+                    tokens = tokens[tokens.index(self.tokenizer.lang_code_to_token[self.tgt_lang]) + 1:]
                 
-                target_tokens = res.hypotheses[0][len(target_prefix):]
-                decoded = self.tokenizer.decode(
-                    self.tokenizer.convert_tokens_to_ids(target_tokens),
-                    skip_special_tokens=True
-                )
+                decoded = self.tokenizer.decode(self.tokenizer.convert_tokens_to_ids(tokens), skip_special_tokens=True)
                 translated.append(decoded.strip())
-            
+                
             return translated
         except Exception as e:
-            logger.error(f"CT2 translation failed: {e}")
+            logger.error(f"CT2 Critical Error: {e}")
             return texts
 
 
@@ -877,6 +862,10 @@ class UltimateDocumentTranslator:
         self.mode = mode
         
         logger.info(f"Initializing translator ({src_lang}→{tgt_lang}, mode={mode.value})")
+
+        # Ensure nmt_backend defaults to auto if in NMT or HYBRID mode
+        if nmt_backend is None:
+            nmt_backend = "auto"
         
         # Initialize translators based on mode
         self.ct2 = None
@@ -1017,17 +1006,12 @@ class UltimateDocumentTranslator:
         if source_run.underline is not None:
             target_run.font.underline = source_run.underline
     
-    def apply_aligned_formatting(
-        self, 
-        para: Paragraph, 
-        trans_para: TranslatableParagraph,
-        translated_text: str, 
-        alignment: List[Tuple[int, int]]
-    ):
-        """Applies formatting while preserving paragraph layout and footnotes."""
+    def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str, alignment: List[Tuple[int, int]]):
+        """Applies formatting while preserving paragraph layout and footnotes with correct punctuation spacing."""
         formatted_words = trans_para.get_formatted_word_indices()
         src_words = trans_para.get_words()
-        tgt_words = translated_text.split()
+        # Use cleaner regex tokenization for target words
+        tgt_words = re.findall(r"[\w']+|[.,!?;:()\"-]", translated_text)
         
         if not tgt_words: return
 
@@ -1035,10 +1019,8 @@ class UltimateDocumentTranslator:
         p = para._p
         footnote_refs = []
         for run_element in p.xpath('.//w:r'):
-            # Check if this run contains a footnote reference
             if run_element.xpath('.//w:footnoteReference | .//w:footnoteRef'):
                 footnote_refs.append(run_element)
-            # Remove the element from the current parent (we will re-attach later)
             run_element.getparent().remove(run_element)
         
         # 2. RESTORE PARAGRAPH PROPERTIES
@@ -1046,7 +1028,6 @@ class UltimateDocumentTranslator:
         if trans_para.metadata['style']:
             para.style = trans_para.metadata['style']
         
-        # Apply layout (Indents, spacing)
         layout = trans_para.metadata['layout']
         para.paragraph_format.left_indent = layout['left_indent']
         para.paragraph_format.first_line_indent = layout['first_line_indent']
@@ -1063,34 +1044,56 @@ class UltimateDocumentTranslator:
 
         font_template = next((r for r in trans_para.runs if r.text.strip()), None)
         
-        # Grouping logic for runs...
+        # Group tokens into formatted runs
         runs_to_create = []
-        current_format = tgt_formatting.get(0, None)
-        current_words = [tgt_words[0]]
+        if tgt_words:
+            current_format = tgt_formatting.get(0, None)
+            current_words = [tgt_words[0]]
+            
+            for i in range(1, len(tgt_words)):
+                fmt = tgt_formatting.get(i, None)
+                if fmt == current_format:
+                    current_words.append(tgt_words[i])
+                else:
+                    runs_to_create.append((current_format, current_words))
+                    current_format, current_words = fmt, [tgt_words[i]]
+            runs_to_create.append((current_format, current_words))
         
-        for i in range(1, len(tgt_words)):
-            fmt = tgt_formatting.get(i, None)
-            if fmt == current_format:
-                current_words.append(tgt_words[i])
-            else:
-                runs_to_create.append((current_format, current_words))
-                current_format, current_words = fmt, [tgt_words[i]]
-        runs_to_create.append((current_format, current_words))
-        
-        # Add translated text runs
+        # 4. PUNCTUATION-AWARE JOINING
+        def smart_join(word_list, is_first_run, next_word_starts_with_punct=False):
+            joined = ""
+            for j, word in enumerate(word_list):
+                # Add space if: not at start of run AND not punctuation AND previous word wasn't an opening bracket
+                if j > 0:
+                    if word not in ".,!?;:)]" and word_list[j-1] not in "([":
+                        joined += " "
+                joined += word
+            return joined
+
         for i, (f_type, words) in enumerate(runs_to_create):
-            text = ' '.join(words) + (" " if i < len(runs_to_create)-1 else "")
-            run = para.add_run(text)
+            # Generate cleaned text for this run
+            run_text = smart_join(words, i == 0)
+            
+            # Check if we need a space AFTER this run before the next one starts
+            if i < len(runs_to_create) - 1:
+                next_first_word = runs_to_create[i+1][1][0]
+                if next_first_word not in ".,!?;:)]" and words[-1] not in "([":
+                    run_text += " "
+            
+            run = para.add_run(run_text)
+            
+            # Apply formatting
             if f_type == 'italic_bold':
                 run.bold = run.italic = True
-            elif f_type == 'bold': run.bold = True
-            elif f_type == 'italic': run.italic = True
+            elif f_type == 'bold': 
+                run.bold = True
+            elif f_type == 'italic': 
+                run.italic = True
             
             if font_template:
                 self.copy_font_properties(run, font_template)
 
-        # 4. RE-ATTACH FOOTNOTE REFERENCES AT THE END
-        # This ensures the [1] or [2] appears after the translated text
+        # 5. RE-ATTACH FOOTNOTE REFERENCES
         for ref in footnote_refs:
             p.append(ref)
     
@@ -1152,49 +1155,47 @@ class UltimateDocumentTranslator:
         return True
     
     async def translate_paragraph(self, para: Paragraph):
-        """Translate single paragraph"""
-        if not para.text or not para.text.strip():
-            return
-        
-        if not self.is_paragraph_safe_to_translate(para):
+        """Translate paragraph with sentence-splitting."""
+        if not para.text or not para.text.strip() or not self.is_paragraph_safe_to_translate(para):
             return
         
         try:
             trans_para = self.extract_paragraph(para)
             original_text = trans_para.get_text()
             
-            if not original_text.strip():
-                return
-            
-            # Translate
-            translated_text = await self.translate_text(original_text)
-            
-            if not translated_text.strip():
-                return
-            
-            # Apply formatting based on mode
-            if self.mode == TranslationMode.LLM_WITHOUT_ALIGN:
-                self.apply_plain_formatting(para, trans_para, translated_text)
+            # Split into sentences: WMT21 fails on long paragraphs
+            sentences = re.split(r'(?<=[.!?]) +', original_text)
+            translated_sentences = []
+
+            # Proper Backend Fallback
+            if self.ct2 and self.ct2.available:
+                translated_sentences = self.ct2.translate_batch(sentences)
+            elif self.nllb and self.nllb.available:
+                translated_sentences = self.nllb.translate_batch(sentences)
+            elif self.llm and self.llm.providers:
+                tasks = [self.llm.translate_text(s, use_alignment=True) for s in sentences]
+                results = await asyncio.gather(*tasks)
+                translated_sentences = [res if res else s for res, s in zip(results, sentences)]
             else:
-                src_words = trans_para.get_words()
-                tgt_words = translated_text.split()
-                
-                if not src_words or not tgt_words:
-                    return
-                
-                alignment = []
-                if self.aligner:
-                    alignment = self.aligner.align(src_words, tgt_words)
-                
-                logger.debug(f"SRC: {src_words}")
-                logger.debug(f"TGT: {tgt_words}")
-                logger.debug(f"ALIGN: {alignment}")
-                
-                self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
+                return
+
+            translated_text = " ".join(translated_sentences)
             
+            src_words = trans_para.get_words() # FIXED: was self.get_words()
+            tgt_words = re.findall(r"[\w']+|[.,!?;:()\"-]", translated_text)
+            
+            if not src_words or not tgt_words: return
+                
+            alignment = self.aligner.align(src_words, tgt_words)
+
+            logger.debug(f"SRC: {src_words}")
+            logger.debug(f"TGT: {tgt_words}")
+            logger.debug(f"ALIGN: {alignment}")
+            
+            self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
+                
         except Exception as e:
-            logger.error(f"Failed to translate paragraph: {e}")
-            logger.debug(f"  Text: {para.text[:100]}...")
+            logger.error(f"Error in translate_paragraph: {e}")
     
     def get_footnotes(self, doc: Document) -> List[Paragraph]:
         """Extract footnotes - FIXED: Pass doc as parent to avoid Part attribute error"""
@@ -1341,7 +1342,7 @@ class UltimateDocumentTranslator:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description='Ultimate Document Translator - Production Version',
+        description='Document Translator',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1440,7 +1441,7 @@ Installation Notes:
     }
     
     print(f"\n{'='*60}")
-    print(f"Ultimate Document Translator - Production Version")
+    print(f"Document Translator - Production Version")
     print(f"{'='*60}")
     print(f"Input:      {input_path}")
     print(f"Output:     {args.output}")
