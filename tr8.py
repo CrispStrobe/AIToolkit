@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """
-ULTIMATE DOCUMENT TRANSLATOR
-Combines NMT + LLM translation with alignment-based formatting preservation
-Supports: Word documents (.docx)
-Translation: CTranslate2 (fast) → LLM (fallback)
-Alignment: Lindat API → fast_align → SimAlign → heuristic
+ULTIMATE DOCUMENT TRANSLATOR - FIXED VERSION
+Fixes: footnote translation, formatting alignment, spacing issues
 """
 
 import argparse
@@ -28,6 +25,8 @@ try:
     from docx import Document
     from docx.shared import Pt, RGBColor
     from docx.text.paragraph import Paragraph
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import qn
     HAS_DOCX = True
     print("  ✓ python-docx")
 except ImportError:
@@ -106,42 +105,6 @@ class TranslatableParagraph:
     def get_words(self) -> List[str]:
         """Get words for alignment"""
         return self.get_text().split()
-    
-    def get_formatted_word_indices(self) -> Dict[str, Set[int]]:
-        """
-        Extract which word indices have which formatting.
-        Returns: {'italic': {0, 3}, 'bold': {1}, 'italic_bold': {5}}
-        """
-        formatted = {'italic': set(), 'bold': set(), 'italic_bold': set()}
-        
-        text = self.get_text()
-        words = text.split()
-        
-        word_idx = 0
-        char_pos = 0
-        
-        for run in self.runs:
-            if not run.text or not run.text.strip():
-                continue
-            
-            # Find words in this run
-            run_words = run.text.split()
-            
-            for word in run_words:
-                if word_idx >= len(words):
-                    break
-                
-                # Classify formatting
-                if run.bold and run.italic:
-                    formatted['italic_bold'].add(word_idx)
-                elif run.italic:
-                    formatted['italic'].add(word_idx)
-                elif run.bold:
-                    formatted['bold'].add(word_idx)
-                
-                word_idx += 1
-        
-        return formatted
 
 
 # ============================================================================
@@ -359,7 +322,7 @@ class LindatAligner:
                 f"https://lindat.cz/services/text-aligner/align/{self.src_lang}-{self.tgt_lang}",
                 timeout=5
             )
-            return r.status_code in [200, 405]  # 405 = GET not allowed but endpoint exists
+            return r.status_code in [200, 405]
         except:
             return False
     
@@ -397,15 +360,12 @@ class FastAlignAligner:
             return []
         
         try:
-            # fast_align expects "src ||| tgt" format
             src_text = ' '.join(src_words)
             tgt_text = ' '.join(tgt_words)
             alignment_text = f"{src_text} ||| {tgt_text}"
             
-            # Run alignment
             result = align([alignment_text], forward=True)
             
-            # Parse result
             alignments = []
             for align_str in result[0].split():
                 src_idx, tgt_idx = map(int, align_str.split('-'))
@@ -436,7 +396,6 @@ class SimAlignAligner:
         
         try:
             result = self.aligner.get_word_aligns(src_words, tgt_words)
-            # result['mwmf'] contains alignment dict
             alignments = []
             for src_idx, tgt_idx in result['mwmf'].items():
                 alignments.append((src_idx, tgt_idx))
@@ -453,11 +412,9 @@ class HeuristicAligner:
         """Simple heuristic alignment"""
         alignments = []
         
-        # Normalize words
         src_lower = [w.lower().strip('.,!?;:') for w in src_words]
         tgt_lower = [w.lower().strip('.,!?;:') for w in tgt_words]
         
-        # Find exact matches
         for i, src_word in enumerate(src_lower):
             for j, tgt_word in enumerate(tgt_lower):
                 if src_word == tgt_word and len(src_word) > 2:
@@ -472,7 +429,6 @@ class MultiAligner:
     def __init__(self, src_lang: str, tgt_lang: str):
         self.aligners = []
         
-        # Initialize all available aligners
         lindat = LindatAligner(src_lang, tgt_lang)
         if lindat.available:
             self.aligners.append(("Lindat", lindat))
@@ -488,7 +444,6 @@ class MultiAligner:
             self.aligners.append(("SimAlign", simalign))
             logger.info("✓ SimAlign available")
         
-        # Always have heuristic fallback
         self.aligners.append(("Heuristic", HeuristicAligner()))
         logger.info("✓ Heuristic aligner (fallback)")
     
@@ -505,11 +460,11 @@ class MultiAligner:
 
 
 # ============================================================================
-# DOCUMENT TRANSLATOR
+# DOCUMENT TRANSLATOR - FIXED VERSION
 # ============================================================================
 
 class UltimateDocumentTranslator:
-    """The ultimate document translator"""
+    """The ultimate document translator - FIXED"""
     
     def __init__(self, src_lang: str, tgt_lang: str):
         self.src_lang = src_lang
@@ -522,7 +477,6 @@ class UltimateDocumentTranslator:
         # Initialize aligner
         self.aligner = MultiAligner(src_lang, tgt_lang)
         
-        # Check we have at least one translator
         if not self.ct2.available and not self.llm.providers:
             logger.error("No translation backends available!")
             sys.exit(1)
@@ -566,90 +520,136 @@ class UltimateDocumentTranslator:
         
         return trans_para
     
-    def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, 
-                                translated_text: str, alignment: List[Tuple[int, int]]):
-        """Apply translated text with alignment-based formatting - FIXED SPACING"""
-        
-        # Get original formatted word indices
-        formatted_words = trans_para.get_formatted_word_indices()
-        
-        # Build target formatting map
-        src_words = trans_para.get_words()
-        tgt_words = translated_text.split()
-        
-        if not tgt_words:
-            para.clear()
-            return
-        
-        tgt_formatting = {}
-        
-        for src_idx, tgt_idx in alignment:
-            if src_idx < len(src_words) and tgt_idx < len(tgt_words):
-                for format_type in ['italic_bold', 'bold', 'italic']:
-                    if src_idx in formatted_words[format_type]:
-                        tgt_formatting[tgt_idx] = format_type
-        
+    def apply_formatting_runbased(self, para: Paragraph, trans_para: TranslatableParagraph, 
+                                   translated_text: str):
+        """
+        SIMPLIFIED: Apply formatting by preserving run structure.
+        Instead of word alignment, translate each formatted segment separately.
+        """
         # Save paragraph-level properties
         para_style = para.style
         para_alignment = para.alignment
         
-        # Clear all runs SAFELY
+        # Clear all runs
         while len(para.runs) > 0:
             run_element = para.runs[0]._element
             run_element.getparent().remove(run_element)
         
-        # Rebuild with formatting
-        if not alignment or not any(formatted_words.values()):
-            # No formatting - single run
-            run = para.add_run(translated_text)
+        # Simple case: just add translated text
+        run = para.add_run(translated_text)
+        
+        # Try to preserve font from first non-empty run
+        for orig_run in trans_para.runs:
+            if orig_run.text and orig_run.text.strip():
+                if orig_run.font_name:
+                    run.font.name = orig_run.font_name
+                if orig_run.font_size:
+                    run.font.size = Pt(orig_run.font_size)
+                break
+        
+        # Restore paragraph properties
+        try:
+            para.style = para_style
+        except:
+            pass
+        para.alignment = para_alignment
+    
+    def get_formatted_segments(self, trans_para: TranslatableParagraph) -> List[Tuple[str, bool, bool]]:
+        """
+        Extract text segments with their formatting.
+        Returns: [(text, is_bold, is_italic), ...]
+        """
+        segments = []
+        for run in trans_para.runs:
+            if run.text:
+                segments.append((
+                    run.text,
+                    run.bold if run.bold is not None else False,
+                    run.italic if run.italic is not None else False
+                ))
+        return segments
+    
+    async def translate_with_formatting(self, para: Paragraph, trans_para: TranslatableParagraph):
+        """
+        IMPROVED: Translate segments individually to preserve formatting better.
+        """
+        segments = self.get_formatted_segments(trans_para)
+        
+        if not segments:
             return
         
-        # Group consecutive words with same formatting
-        runs_to_create = []
-        current_format = tgt_formatting.get(0, None)
-        current_words = [tgt_words[0]]
+        # If no formatting differences, translate as one piece
+        if all(bold == segments[0][1] and italic == segments[0][2] 
+               for _, bold, italic in segments):
+            translated = await self.translate_text(trans_para.get_text())
+            self.apply_simple_formatting(para, trans_para, translated,
+                                         segments[0][1], segments[0][2])
+            return
         
-        for i in range(1, len(tgt_words)):
-            word_format = tgt_formatting.get(i, None)
-            
-            if word_format == current_format:
-                current_words.append(tgt_words[i])
-            else:
-                # Save current run
-                runs_to_create.append((current_format, ' '.join(current_words)))
-                # Start new run
-                current_format = word_format
-                current_words = [tgt_words[i]]
+        # Save paragraph properties
+        para_style = para.style
+        para_alignment = para.alignment
         
-        # Add final run
-        runs_to_create.append((current_format, ' '.join(current_words)))
+        # Clear runs
+        while len(para.runs) > 0:
+            run_element = para.runs[0]._element
+            run_element.getparent().remove(run_element)
         
-        # Create runs - FIXED: Don't add extra spaces, they're already in the text!
-        for i, (format_type, text) in enumerate(runs_to_create):
-            # DON'T add space between runs - the text already has proper spacing!
-            run = para.add_run(text)
+        # Translate and apply each segment
+        for i, (text, is_bold, is_italic) in enumerate(segments):
+            if not text.strip():
+                # Preserve whitespace runs as-is
+                run = para.add_run(text)
+                continue
             
-            # Add space ONLY if this is not the last run
-            if i < len(runs_to_create) - 1:
-                run.text += ' '  # Add space to end of run instead of separate run
+            # Translate this segment
+            translated_segment = await self.translate_text(text)
             
-            # Apply formatting
-            if format_type == 'italic_bold':
-                run.font.italic = True
-                run.font.bold = True
-            elif format_type == 'bold':
-                run.font.bold = True
-            elif format_type == 'italic':
-                run.font.italic = True
+            # Create run with formatting
+            run = para.add_run(translated_segment)
+            run.font.bold = is_bold
+            run.font.italic = is_italic
             
-            # Preserve font properties from original
-            if trans_para.runs:
-                first_orig_run = next((r for r in trans_para.runs if r.text), None)
-                if first_orig_run:
-                    if first_orig_run.font_name:
-                        run.font.name = first_orig_run.font_name
-                    if first_orig_run.font_size:
-                        run.font.size = Pt(first_orig_run.font_size)
+            # Preserve font properties
+            for orig_run in trans_para.runs:
+                if orig_run.text and orig_run.text.strip():
+                    if orig_run.font_name:
+                        run.font.name = orig_run.font_name
+                    if orig_run.font_size:
+                        run.font.size = Pt(orig_run.font_size)
+                    break
+        
+        # Restore paragraph properties
+        try:
+            para.style = para_style
+        except:
+            pass
+        para.alignment = para_alignment
+    
+    def apply_simple_formatting(self, para: Paragraph, trans_para: TranslatableParagraph,
+                               translated_text: str, is_bold: bool, is_italic: bool):
+        """Apply simple formatting to entire paragraph"""
+        para_style = para.style
+        para_alignment = para.alignment
+        
+        # Clear runs
+        while len(para.runs) > 0:
+            run_element = para.runs[0]._element
+            run_element.getparent().remove(run_element)
+        
+        # Add translated text
+        run = para.add_run(translated_text)
+        run.font.bold = is_bold
+        run.font.italic = is_italic
+        
+        # Preserve font
+        for orig_run in trans_para.runs:
+            if orig_run.text and orig_run.text.strip():
+                if orig_run.font_name:
+                    run.font.name = orig_run.font_name
+                if orig_run.font_size:
+                    run.font.size = Pt(orig_run.font_size)
+                break
         
         # Restore paragraph properties
         try:
@@ -660,8 +660,7 @@ class UltimateDocumentTranslator:
     
     def is_paragraph_safe_to_translate(self, para: Paragraph) -> bool:
         """Check if paragraph can be safely translated"""
-        # Don't skip empty paragraphs - they might have formatting
-        if not para.text:
+        if not para.text or not para.text.strip():
             return False
         
         # Skip if contains drawings/images
@@ -673,12 +672,10 @@ class UltimateDocumentTranslator:
         except:
             pass
         
-        # Skip if contains fields (like TOC, but NOT footnote references!)
+        # Skip if contains non-footnote fields
         try:
-            # Check for field chars but exclude footnote references (w:footnoteReference)
             field_chars = para._element.xpath('.//w:fldChar')
             if field_chars:
-                # Check if this is a footnote field
                 is_footnote_field = para._element.xpath('.//w:footnoteReference')
                 if not is_footnote_field:
                     logger.debug(f"Skipping paragraph with field")
@@ -689,39 +686,73 @@ class UltimateDocumentTranslator:
         return True
     
     async def translate_paragraph(self, para: Paragraph):
-        """Translate single paragraph - SAFE VERSION"""
+        """Translate single paragraph - IMPROVED VERSION"""
         if not para.text or not para.text.strip():
             return
         
-        # Safety check
         if not self.is_paragraph_safe_to_translate(para):
             return
         
         try:
-            # Extract
             trans_para = self.extract_paragraph(para)
-            original_text = trans_para.get_text()
-            src_words = trans_para.get_words()
-            
-            if not src_words:
-                return
-            
-            # Translate
-            translated_text = await self.translate_text(original_text)
-            tgt_words = translated_text.split()
-            
-            if not tgt_words:
-                return
-            
-            # Align
-            alignment = self.aligner.align(src_words, tgt_words)
-            
-            # Apply
-            self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
-            
+            await self.translate_with_formatting(para, trans_para)
         except Exception as e:
             logger.error(f"Failed to translate paragraph: {e}")
-            # Leave paragraph unchanged on error
+            logger.debug(f"  Text: {para.text[:100]}...")
+    
+    def get_footnotes(self, doc: Document) -> List[Paragraph]:
+        """
+        FIXED: Better footnote extraction using XML parsing
+        """
+        footnotes = []
+        
+        try:
+            # Access document's XML parts
+            document_part = doc.part
+            
+            # Get footnotes part
+            try:
+                footnotes_part_rId = None
+                for rel in document_part.rels.values():
+                    if "footnotes" in rel.target_ref:
+                        footnotes_part = rel.target_part
+                        break
+                else:
+                    return footnotes
+                
+                # Parse footnotes XML
+                footnotes_xml = footnotes_part._blob
+                from lxml import etree
+                root = etree.fromstring(footnotes_xml)
+                
+                # Find all footnote elements
+                namespaces = {
+                    'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+                }
+                
+                for footnote_elem in root.findall('.//w:footnote', namespaces):
+                    footnote_id = footnote_elem.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id')
+                    
+                    # Skip special footnotes (separator, continuation)
+                    if footnote_id in ['-1', '0']:
+                        continue
+                    
+                    # Extract paragraphs from footnote
+                    for para_elem in footnote_elem.findall('.//w:p', namespaces):
+                        # Create a temporary paragraph object
+                        para = Paragraph(para_elem, document_part)
+                        if para.text and para.text.strip():
+                            footnotes.append(para)
+                
+                logger.info(f"Extracted {len(footnotes)} footnote paragraphs")
+                
+            except Exception as e:
+                logger.warning(f"Could not extract footnotes: {e}")
+        
+        except Exception as e:
+            logger.warning(f"Footnote extraction failed: {e}")
+        
+        return footnotes
     
     def get_all_paragraphs(self, doc: Document) -> List[Tuple[Paragraph, str]]:
         """
@@ -730,7 +761,7 @@ class UltimateDocumentTranslator:
         """
         all_paras = []
         
-        # Main document paragraphs
+        # Main document
         for para in doc.paragraphs:
             all_paras.append((para, "body"))
         
@@ -748,31 +779,10 @@ class UltimateDocumentTranslator:
             for para in section.footer.paragraphs:
                 all_paras.append((para, "footer"))
         
-        # Footnotes - IMPORTANT: Process these!
-        try:
-            if hasattr(doc, 'part') and hasattr(doc.part, 'footnotes_part'):
-                footnotes_part = doc.part.footnotes_part
-                if footnotes_part and hasattr(footnotes_part, 'footnotes'):
-                    footnotes = footnotes_part.footnotes
-                    for footnote in footnotes:
-                        for para in footnote.paragraphs:
-                            all_paras.append((para, "footnote"))
-                    logger.info(f"Found {len(footnotes)} footnotes")
-        except Exception as e:
-            logger.warning(f"Could not extract footnotes: {e}")
-        
-        # Endnotes
-        try:
-            if hasattr(doc, 'part') and hasattr(doc.part, 'endnotes_part'):
-                endnotes_part = doc.part.endnotes_part
-                if endnotes_part and hasattr(endnotes_part, 'endnotes'):
-                    endnotes = endnotes_part.endnotes
-                    for endnote in endnotes:
-                        for para in endnote.paragraphs:
-                            all_paras.append((para, "endnote"))
-                    logger.info(f"Found {len(endnotes)} endnotes")
-        except Exception as e:
-            logger.warning(f"Could not extract endnotes: {e}")
+        # Footnotes - using improved extraction
+        footnote_paras = self.get_footnotes(doc)
+        for para in footnote_paras:
+            all_paras.append((para, "footnote"))
         
         return all_paras
     
@@ -786,7 +796,7 @@ class UltimateDocumentTranslator:
             logger.error(f"Failed to load document: {e}")
             return
         
-        # Get all paragraphs WITH LOCATION TAGS
+        # Get all paragraphs
         all_paras_with_location = self.get_all_paragraphs(doc)
         
         # Filter translatable
@@ -808,34 +818,29 @@ class UltimateDocumentTranslator:
         for para, location in tqdm(translatable, desc="Translating"):
             try:
                 await self.translate_paragraph(para)
-                await asyncio.sleep(0.1)  # Rate limiting
+                await asyncio.sleep(0.1)
             except Exception as e:
                 logger.error(f"Error translating {location} paragraph: {e}")
-                # Log the problematic text
                 logger.debug(f"  Text: {para.text[:100]}...")
                 continue
         
-        # Save with error handling
+        # Save
         try:
-            # Ensure output directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Remove output file if it exists
             if output_path.exists():
                 output_path.unlink()
             
-            # Save
             logger.info(f"Saving to: {output_path}")
             doc.save(str(output_path))
             
-            # Verify file was created and is readable
             if not output_path.exists():
                 raise Exception("Output file was not created")
             
             if output_path.stat().st_size == 0:
                 raise Exception("Output file is empty")
             
-            # Try to re-open to verify integrity
+            # Verify
             try:
                 test_doc = Document(str(output_path))
                 logger.info(f"✓ Document verified ({len(test_doc.paragraphs)} paragraphs)")
@@ -857,7 +862,7 @@ class UltimateDocumentTranslator:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description='Ultimate Document Translator - NMT + LLM + Multi-Aligner'
+        description='Ultimate Document Translator - FIXED - NMT + LLM'
     )
     
     parser.add_argument('input', help='Input .docx file')
