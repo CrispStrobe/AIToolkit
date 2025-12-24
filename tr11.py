@@ -102,6 +102,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+
 # ============================================================================
 # ENUMS FOR CONFIGURATION
 # ============================================================================
@@ -937,6 +938,18 @@ class UltimateDocumentTranslator:
         if not has_backend:
             logger.error("No translation backends available!")
             sys.exit(1)
+
+    def log_memory(self, stage: str):
+        """Log current RAM usage (requires psutil)."""
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            mem_mb = process.memory_info().rss / (1024 * 1024)
+            logger.debug(f"MEM | Stage: {stage} | Usage: {mem_mb:.2f} MB")
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"Memory log failed: {e}")
     
     async def translate_text(self, text: str) -> str:
         """Translate single text with fallback chain"""
@@ -986,38 +999,29 @@ class UltimateDocumentTranslator:
         return text
     
     def extract_paragraph(self, para: Paragraph) -> TranslatableParagraph:
+        """Enhanced extraction capturing deep layout and style metadata."""
         runs = []
         for run in para.runs:
+            # Capture font metadata including theme/colors
             font_color = None
             try:
-                # Use getattr to safely check for attributes
-                if hasattr(run.font, 'color') and run.font.color and hasattr(run.font.color, 'rgb') and run.font.color.rgb:
-                    rgb = run.font.color.rgb
-                    font_color = (rgb[0], rgb[1], rgb[2])
-            except:
-                pass
-            
-            # Use getattr for size and other properties
-            font_size = None
-            try:
-                if run.font.size:
-                    font_size = run.font.size.pt
-            except:
-                pass
+                if run.font.color and run.font.color.rgb:
+                    font_color = (run.font.color.rgb[0], run.font.color.rgb[1], run.font.color.rgb[2])
+            except: pass
 
             runs.append(FormatRun(
                 text=run.text,
-                bold=getattr(run.font, 'bold', None),
-                italic=getattr(run.font, 'italic', None),
-                underline=getattr(run.font, 'underline', None),
-                font_name=getattr(run.font, 'name', None),
-                font_size=font_size,
+                bold=run.bold,
+                italic=run.italic,
+                underline=run.underline,
+                font_name=run.font.name,
+                font_size=run.font.size.pt if run.font.size else None,
                 font_color=font_color
             ))
         
         trans_para = TranslatableParagraph(runs=runs)
-        trans_para.metadata['style'] = getattr(para, 'style', None)
-        trans_para.metadata['alignment'] = getattr(para, 'alignment', None)
+        trans_para.metadata['style'] = para.style
+        trans_para.metadata['alignment'] = para.alignment
         
         pf = para.paragraph_format
         trans_para.metadata['layout'] = {
@@ -1026,91 +1030,123 @@ class UltimateDocumentTranslator:
             'first_line_indent': pf.first_line_indent,
             'line_spacing': pf.line_spacing,
             'space_before': pf.space_before,
-            'space_after': pf.space_after
+            'space_after': pf.space_after,
+            'keep_together': pf.keep_together,
+            'keep_with_next': pf.keep_with_next,
+            'page_break_before': pf.page_break_before,
+            'widow_control': pf.widow_control
         }
         return trans_para
     
+    def log_memory(self, stage: str):
+        """Log current RAM usage (requires psutil)."""
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            mem_mb = process.memory_info().rss / (1024 * 1024)
+            logger.debug(f"MEM | Stage: {stage} | Usage: {mem_mb:.2f} MB")
+        except ImportError:
+            pass
+
     def copy_font_properties(self, target_run, source_run: FormatRun):
-        """Copies all font properties including safety checks."""
-        if source_run.font_name:
-            target_run.font.name = source_run.font_name
-        if source_run.font_size:
-            target_run.font.size = Pt(source_run.font_size)
-        if source_run.font_color:
-            target_run.font.color.rgb = RGBColor(*source_run.font_color)
-        if source_run.underline is not None:
-            target_run.font.underline = source_run.underline
+        """Forces font properties directly into the XML to bypass Theme defaults."""
+        try:
+            r = target_run._element
+            rPr = r.get_or_add_rPr()
+
+            # Force Font Name in XML (Crucial for Times New Roman)
+            if source_run.font_name:
+                rFonts = rPr.get_or_add_rFonts()
+                rFonts.set(qn('w:ascii'), source_run.font_name)
+                rFonts.set(qn('w:hAnsi'), source_run.font_name)
+                rFonts.set(qn('w:cs'), source_run.font_name)
+                target_run.font.name = source_run.font_name
+
+            if source_run.font_size:
+                target_run.font.size = Pt(source_run.font_size)
+            
+            if source_run.font_color:
+                target_run.font.color.rgb = RGBColor(*source_run.font_color)
+            
+            if source_run.underline is not None:
+                target_run.font.underline = source_run.underline
+                
+        except Exception as e:
+            logger.debug(f"TRACE | Font Force Error: {e}")
     
     def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str, alignment: List[Tuple[int, int]]):
-        """Maps formatting from clean words to punctuated units by skipping non-alpha tokens."""
+        """Reconstructs paragraph while anchoring lost footnotes and forcing layout."""
         import re
+        p_element = para._p
         
-        # 1. Protect Footnotes
-        p = para._p
-        footnote_refs = []
-        for run_element in p.xpath('.//w:r'):
-            if run_element.xpath('.//w:footnoteReference | .//w:footnoteRef'):
-                footnote_refs.append(run_element)
-            run_element.getparent().remove(run_element)
+        # 1. Capture ALL footnote references (wherever they are)
+        footnote_refs = p_element.xpath('.//w:r[w:footnoteReference or w:footnoteRef]')
+        
+        # 2. Capture and Re-apply Paragraph Style & Layout
+        if trans_para.metadata.get('style'):
+            para.style = trans_para.metadata['style']
+        para.alignment = trans_para.metadata.get('alignment')
+        
+        layout = trans_para.metadata.get('layout', {})
+        pf = para.paragraph_format
+        for attr, val in layout.items():
+            try: setattr(pf, attr, val)
+            except: pass
 
-        # 2. Extract clean source and raw target units
+        # 3. Clear runs
+        for run in para.runs:
+            p_element.remove(run._element)
+
+        # 4. Logic for Footnote Numbers
+        is_footnote_text = "footnote" in str(para.style.name).lower()
+        
+        # If it's a footnote at the bottom, numbering goes at the start
+        if is_footnote_text and footnote_refs:
+            for ref in footnote_refs:
+                p_element.append(ref)
+            para.add_run("\u00A0") 
+
+        # 5. Build Translated Text
         src_clean_words = trans_para.get_words()
-        # WMT21 often separates punctuation with spaces, so split() catches them as units
         tgt_raw_units = translated_text.split() 
         formatted_indices = trans_para.get_formatted_word_indices()
-
-        # 3. Create a mapping: Clean Aligner Index -> Raw Target Unit Index
-        # We skip tokens that are strictly punctuation so the aligner index matches words
+        
+        # Index Mapping
         clean_to_raw_tgt = {}
         clean_idx = 0
         for raw_idx, unit in enumerate(tgt_raw_units):
-            # If the unit contains alphanumeric characters, it's a 'word' for the aligner
             if re.search(r'\w', unit):
                 clean_to_raw_tgt[clean_idx] = raw_idx
                 clean_idx += 1
 
-        # 4. Map Style to Raw Target Units
-        tgt_styles = {} 
-        for src_idx, align_tgt_idx in alignment:
-            # align_tgt_idx is what the ALIGNER thinks is the word index
-            # raw_tgt_idx is the actual index in the punctuated list
-            raw_tgt_idx = clean_to_raw_tgt.get(align_tgt_idx)
-            
-            if src_idx in src_clean_words or True: # safety check
-                if src_idx < len(src_clean_words) and raw_tgt_idx is not None:
-                    for style in ['italic_bold', 'bold', 'italic']:
-                        if src_idx in formatted_indices[style]:
-                            tgt_styles[raw_tgt_idx] = style
-                            break
-
-        # 5. Build runs using the raw units (preserving punctuation and spacing)
+        # Font Template
         font_template = next((r for r in trans_para.runs if r.text.strip()), None)
-        
-        for i, unit in enumerate(tgt_raw_units):
-            style = tgt_styles.get(i, None)
-            
-            # Logic to handle spacing: don't add space before punctuation usually, 
-            # but WMT21 output text.split() + " " join is the safest restoration.
-            run_text = unit + (" " if i < len(tgt_raw_units) - 1 else "")
-            
-            # CRITICAL: If the unit is JUST punctuation, check if the PREVIOUS word was formatted
-            # This ensures "Theology:" is all bold even if ":" is a separate token
-            if not re.search(r'\w', unit) and i > 0:
-                prev_style = tgt_styles.get(i-1)
-                if prev_style:
-                    style = prev_style
 
-            run = para.add_run(run_text)
+        for i, unit in enumerate(tgt_raw_units):
+            run = para.add_run(unit + (" " if i < len(tgt_raw_units)-1 else ""))
+            
+            # Apply Aligned Style
+            raw_tgt_idx = i
+            # (Logic for finding style from alignment)
+            style = None
+            for src_idx, align_tgt_idx in alignment:
+                if clean_to_raw_tgt.get(align_tgt_idx) == i:
+                    for s in ['italic_bold', 'bold', 'italic']:
+                        if src_idx in formatted_indices[s]:
+                            style = s; break
+            
             if style == 'italic_bold': run.bold = run.italic = True
             elif style == 'bold': run.bold = True
             elif style == 'italic': run.italic = True
-            
+
             if font_template:
                 self.copy_font_properties(run, font_template)
 
-        # 6. Restore Footnotes
-        for ref in footnote_refs:
-            p.append(ref)
+        # 6. Anchoring Body Footnotes: If this is body text and had a footnote, append it to the end
+        if not is_footnote_text and footnote_refs:
+            logger.debug(f"TRACE | Body Footnote | Appending {len(footnote_refs)} refs to end of paragraph.")
+            for ref in footnote_refs:
+                p_element.append(ref)
     
     def is_paragraph_safe_to_translate(self, para: Paragraph) -> bool:
         """Check if paragraph can be safely translated"""
@@ -1145,55 +1181,48 @@ class UltimateDocumentTranslator:
         return True
     
     async def translate_paragraph(self, para: Paragraph):
-        """Translate paragraph with sentence-splitting and clean word alignment."""
+        """Paragraph translation with heavy trace logging for format debugging."""
         if not para.text or not para.text.strip() or not self.is_paragraph_safe_to_translate(para):
             return
         
         try:
+            self.log_memory("Pre-Paragraph")
             trans_para = self.extract_paragraph(para)
             original_text = trans_para.get_text()
             
-            # 1. Split into sentences: WMT21 performs best on sentence units
-            sentences = re.split(r'(?<=[.!?]) +', original_text)
-            translated_sentences = []
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', original_text) if s.strip()]
+            if not sentences: return
 
-            # 2. Translation Fallback Logic
             if self.ct2 and self.ct2.available:
                 translated_sentences = self.ct2.translate_batch(sentences)
             elif self.nllb and self.nllb.available:
                 translated_sentences = self.nllb.translate_batch(sentences)
-            elif self.llm and self.llm.providers:
-                tasks = [self.llm.translate_text(s, use_alignment=True) for s in sentences]
-                results = await asyncio.gather(*tasks)
-                translated_sentences = [res if res else s for res, s in zip(results, sentences)]
-            else:
-                return
+            else: return
 
             translated_text = " ".join(translated_sentences)
             
-            # 3. PREPARE CLEAN DATA FOR ALIGNER (Alphanumeric only)
-            # We strip punctuation from BOTH sides so the indices (0, 1, 2...) match words.
-            src_words = trans_para.get_words() # Uses \w+ (clean)
-            tgt_words = re.findall(r"\w+", translated_text) # FIX: Use \w+ here too
+            # Prep for Aligner
+            src_words = trans_para.get_words() 
+            tgt_words_clean = re.findall(r"\w+", translated_text)
             
-            if not src_words or not tgt_words:
-                # If everything is punctuation, just apply the text as plain
-                self.apply_plain_formatting(para, trans_para, translated_text)
+            logger.debug("-" * 40)
+            logger.debug(f"TRACE | RAW SRC: {original_text[:100]}...")
+            logger.debug(f"TRACE | CLEAN SRC WORDS: {src_words}")
+            logger.debug(f"TRACE | CLEAN TGT WORDS: {tgt_words_clean}")
+            
+            if not src_words or not tgt_words_clean:
+                para.text = translated_text
                 return
-            
-            # 4. ALIGNER CALL (Clean Source vs Clean Target)
-            alignment = self.aligner.align(src_words, tgt_words)
-
-            # 5. DEBUG LOGS
-            logger.debug(f"SRC (Clean): {src_words}")
-            logger.debug(f"TGT (Clean): {tgt_words}")
-            logger.debug(f"ALIGN: {alignment}")
-            
-            # 6. ASSEMBLY (Passes punctuated text. Formatting logic handles the rest)
-            self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
                 
+            alignment = self.aligner.align(src_words, tgt_words_clean)
+            logger.debug(f"TRACE | ALIGNMENT MAP: {alignment}")
+            
+            self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
+            logger.debug("-" * 40)
+            self.log_memory("Post-Paragraph")
+                    
         except Exception as e:
-            logger.error(f"Error in translate_paragraph: {e}")
+            logger.error(f"Error in translate_paragraph: {e}", exc_info=True)
     
     def get_footnotes(self, doc: Document) -> List[Paragraph]:
         """Extract footnotes - FIXED: Pass doc as parent to avoid Part attribute error"""
@@ -1267,71 +1296,32 @@ class UltimateDocumentTranslator:
         return all_paras
     
     async def translate_document(self, input_path: Path, output_path: Path):
-        """Translate entire document"""
-        logger.info(f"Loading document: {input_path}")
+        """Processes document and commits XML changes with high-fidelity serialization."""
+        self.log_memory("Start")
+        doc = Document(str(input_path))
         
-        try:
-            doc = Document(str(input_path))
-        except Exception as e:
-            logger.error(f"Failed to load document: {e}")
-            return
+        # Force capture of footnotes part
+        footnote_paras = self.get_footnotes(doc)
         
-        all_paras_with_location = self.get_all_paragraphs(doc)
-        
-        translatable = []
-        for para, location in all_paras_with_location:
-            if para.text and para.text.strip() and self.is_paragraph_safe_to_translate(para):
-                translatable.append((para, location))
-        
-        by_location = defaultdict(int)
-        for _, location in translatable:
-            by_location[location] += 1
-        
-        logger.info(f"Found {len(translatable)} paragraphs to translate:")
-        for location, count in by_location.items():
-            logger.info(f"  - {location}: {count}")
-        
+        all_paras = self.get_all_paragraphs(doc)
+        translatable = [(p, l) for p, l in all_paras if p.text.strip()]
+
         for para, location in tqdm(translatable, desc="Translating"):
+            await self.translate_paragraph(para)
+
+        # FOOTNOTE COMMITMENT (The "Missing Footnote" Fix)
+        if hasattr(self, '_footnote_part') and hasattr(self, '_footnote_root'):
             try:
-                await self.translate_paragraph(para)
-                await asyncio.sleep(0.05)
+                from docx.oxml import cast_xml, indent
+                # Use docx's internal serializer to maintain exact Word compatibility
+                xml_str = self._footnote_root.xml
+                self._footnote_part._blob = xml_str.encode('utf-8')
+                logger.info("✓ TRACE | Footnote XML re-serialized and committed.")
             except Exception as e:
-                logger.error(f"Error translating {location} paragraph: {e}")
-                continue
-        
-        try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            if output_path.exists():
-                output_path.unlink()
-            
-            logger.info(f"Saving to: {output_path}")
-            
-            if hasattr(self, '_footnote_part') and hasattr(self, '_footnote_root'):
-                try:
-                    from lxml import etree
-                    self._footnote_part._blob = etree.tostring(self._footnote_root)
-                    logger.info("✓ Updated footnotes in output")
-                except Exception as e:
-                    logger.warning(f"Could not update footnotes: {e}")
-            
-            doc.save(str(output_path))
-            
-            if not output_path.exists():
-                raise Exception("Output file was not created")
-            
-            if output_path.stat().st_size == 0:
-                raise Exception("Output file is empty")
-            
-            test_doc = Document(str(output_path))
-            logger.info(f"✓ Document verified ({len(test_doc.paragraphs)} paragraphs)")
-            logger.info("✓ Translation complete!")
-            
-        except Exception as e:
-            logger.error(f"Failed to save document: {e}")
-            if output_path.exists():
-                output_path.unlink()
-            raise
+                logger.error(f"ERROR | Footnote commitment failed: {e}")
+
+        doc.save(str(output_path))
+        logger.info(f"✓ Success | Saved to {output_path}")
 
 
 # ============================================================================
