@@ -99,6 +99,27 @@ def get_torch_device():
         return torch.device("mps")
     return torch.device("cpu")
 
+# Optional: fast_align (FIXED: Added global check for package or binary)
+def check_fast_align_available():
+    try:
+        import fast_align
+        return True
+    except ImportError:
+        # Search for binary in common relative paths
+        script_dir = Path(__file__).parent
+        binary_locations = ["../fast_align/build/fast_align", "./fast_align/build/fast_align", "fast_align"]
+        for loc in binary_locations:
+            path = script_dir / loc if not loc.startswith('/') else Path(loc)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return True
+        return False
+
+HAS_FAST_ALIGN = check_fast_align_available()
+if HAS_FAST_ALIGN:
+    print("  ✓ fast_align (available)")
+else:
+    print("  ⊘ fast_align (optional)")
+
 # ============================================================================
 # ENUMS FOR CONFIGURATION
 # ============================================================================
@@ -652,28 +673,29 @@ class FastAlignAligner:
         self.available = False
         self.mode = None
         self.binary_path = None
+        self.atools_path = None
         
-        if HAS_FAST_ALIGN:
+        # Check for Python package first
+        try:
+            import fast_align
             self.available = True
             self.mode = "python"
-            logger.info("✓ fast_align available (Python package)")
             return
+        except ImportError:
+            pass
         
-        # Check relative and absolute paths
+        # Binary search logic
         script_dir = Path(__file__).parent
-        binary_locations = [
-            "../fast_align/build/fast_align",
-            "./fast_align/build/fast_align",
-            "fast_align" # If in PATH
-        ]
+        search_dirs = [script_dir / "../fast_align/build", script_dir / "./fast_align/build"]
         
-        for loc in binary_locations:
-            path = script_dir / loc if not loc.startswith('/') else Path(loc)
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                self.binary_path = str(path)
+        for d in search_dirs:
+            fa = d / "fast_align"
+            at = d / "atools"
+            if fa.exists() and os.access(fa, os.X_OK):
+                self.binary_path = str(fa)
+                self.atools_path = str(at) if at.exists() else None
                 self.available = True
                 self.mode = "binary"
-                logger.info(f"✓ fast_align binary found at {self.binary_path}")
                 return
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
@@ -798,11 +820,11 @@ class MultiAligner:
             
             elif preferred == "fast_align":
                 fast_align = FastAlignAligner()
-                if fast_align.available:
+                if HAS_FAST_ALIGN: # Fixed NameError
                     self.aligners.append(("fast_align", fast_align))
                 else:
-                    logger.warning(f"Requested aligner '{preferred}' not available, will try others")
-            
+                    logger.warning(f"fast_align requested but binary/package not found.")
+
             elif preferred == "simalign":
                 simalign = SimAlignAligner()
                 if simalign.available:
