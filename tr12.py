@@ -1049,45 +1049,44 @@ class UltimateDocumentTranslator:
             pass
 
     def copy_font_properties(self, target_run, source_run: FormatRun):
-        """Forcibly binds font name to XML slots to prevent Calibri/Theme reversion."""
+        """Forcibly binds font properties into XML to bypass Theme defaults."""
         try:
-            target_run.font.bold = source_run.bold
-            target_run.font.italic = source_run.italic
-            target_run.font.underline = source_run.underline
+            # Basic overrides
             if source_run.font_size:
                 target_run.font.size = Pt(source_run.font_size)
             if source_run.font_color:
                 target_run.font.color.rgb = RGBColor(*source_run.font_color)
-
+            if source_run.underline is not None:
+                target_run.font.underline = source_run.underline
+            
+            # Force Font Name into all 4 XML slots
             if source_run.font_name:
-                # Direct XML injection to bypass Word's 'Theme' fonts
                 r = target_run._element
                 rPr = r.get_or_add_rPr()
                 rFonts = rPr.get_or_add_rFonts()
+                # Use qn() to handle the 'w' namespace for Word
                 rFonts.set(qn('w:ascii'), source_run.font_name)
                 rFonts.set(qn('w:hAnsi'), source_run.font_name)
+                rFonts.set(qn('w:eastAsia'), source_run.font_name)
                 rFonts.set(qn('w:cs'), source_run.font_name)
                 target_run.font.name = source_run.font_name
         except Exception as e:
-            logger.debug(f"Font Copy Error: {e}")
+            logger.debug(f"TRACE | Font Force Error: {e}")
     
     def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str, alignment: List[Tuple[int, int]]):
-        """Reconstructs paragraph while anchoring lost footnotes and forcing layout."""
-        
-        import re
-        
-        self.log_para_trace(para, "BEFORE")
-
+        """Reconstructs paragraph with exact style mirroring and anchor preservation."""
+        self.log_para_trace(para, "BEFORE REBUILD")
         p_element = para._p
         
-        # 1. Capture ALL footnote references (wherever they are)
+        # 1. Capture and protect Footnote Super-scripts
         footnote_refs = p_element.xpath('.//w:r[w:footnoteReference or w:footnoteRef]')
         
-        # 2. Capture and Re-apply Paragraph Style & Layout
+        # 2. Re-apply Paragraph Style & Layout
         if trans_para.metadata.get('style'):
             para.style = trans_para.metadata['style']
         para.alignment = trans_para.metadata.get('alignment')
         
+        # Re-apply spacing/indents
         layout = trans_para.metadata.get('layout', {})
         pf = para.paragraph_format
         for attr, val in layout.items():
@@ -1095,25 +1094,22 @@ class UltimateDocumentTranslator:
                 if val is not None: setattr(pf, attr, val)
             except: pass
 
-        # 3. Clear runs & Restore Footnote number (if it's a footnote paragraph)
+        # 3. Clear existing content
         for run in para.runs:
             p_element.remove(run._element)
 
-        # 4. Logic for Footnote Numbers
+        # 4. START REBUILD: If it's a footnote paragraph, re-attach number at start
         is_footnote_text = "footnote" in str(para.style.name).lower()
-        
-        # If it's a footnote at the bottom, numbering goes at the start
         if is_footnote_text and footnote_refs:
             for ref in footnote_refs:
                 p_element.append(ref)
-            para.add_run("\u00A0") # Spacer
+            para.add_run("\u00A0") # Non-breaking space
 
-        # 5. Build Translated Text
-        tgt_raw_units = translated_text.split()
+        # 5. Map formatting to clean target indices
         src_clean_words = trans_para.get_words()
+        tgt_raw_units = translated_text.split() 
         formatted_indices = trans_para.get_formatted_word_indices()
         
-        # Index Mapping
         clean_to_raw_tgt = {}
         clean_idx = 0
         for raw_idx, unit in enumerate(tgt_raw_units):
@@ -1121,36 +1117,35 @@ class UltimateDocumentTranslator:
                 clean_to_raw_tgt[clean_idx] = raw_idx
                 clean_idx += 1
 
-        # Font Template
-        font_template = next((r for r in trans_para.runs if r.text.strip()), None)
+        # Use the first valid run from the source as the font template
+        font_template = next((r for r in trans_para.runs if r.text.strip()), trans_para.runs[0])
 
         for i, unit in enumerate(tgt_raw_units):
-            run = para.add_run(unit + (" " if i < len(tgt_raw_units)-1 else ""))
+            run_text = unit + (" " if i < len(tgt_raw_units)-1 else "")
+            run = para.add_run(run_text)
             
-            # Apply Aligned Style
-            raw_tgt_idx = i
-            # (Logic for finding style from alignment)
+            # Replicate Bold/Italic logic for this unit
             style = None
             for src_idx, align_tgt_idx in alignment:
                 if clean_to_raw_tgt.get(align_tgt_idx) == i:
-                    for s in ['italic_bold', 'bold', 'italic']:
-                        if src_idx in formatted_indices[s]:
-                            style = s; break
+                    for s_type in ['italic_bold', 'bold', 'italic']:
+                        if src_idx in formatted_indices[s_type]:
+                            style = s_type; break
             
             if style == 'italic_bold': run.bold = run.italic = True
             elif style == 'bold': run.bold = True
             elif style == 'italic': run.italic = True
+            
+            # Force the inherited or override font
+            self.copy_font_properties(run, font_template)
 
-            if font_template:
-                self.copy_font_properties(run, font_template)
-
-        # 6. Anchoring Body Footnotes: If this is body text and had a footnote, append it to the end
+        # 6. Re-attach body footnotes to the end of the text
         if not is_footnote_text and footnote_refs:
-            logger.debug(f"TRACE | Body Footnote | Appending {len(footnote_refs)} refs to end of paragraph.")
+            logger.debug(f"TRACE | Body Footnote | Re-anchoring {len(footnote_refs)} references.")
             for ref in footnote_refs:
                 p_element.append(ref)
 
-        self.log_para_trace(para, "AFTER")
+        self.log_para_trace(para, "AFTER REBUILD")
     
     def is_paragraph_safe_to_translate(self, para: Paragraph) -> bool:
         """Check if paragraph can be safely translated"""
@@ -1300,73 +1295,73 @@ class UltimateDocumentTranslator:
         return all_paras
     
     def log_document_info(self, doc: Document, label: str):
-        """Logs global document properties (Margins, Page Size, Styles)."""
-        logger.debug(f"=== DOCUMENT INFO [{label}] ===")
+        """Logs global document properties and style inventory."""
+        logger.debug(f"{'='*20} DOCUMENT INFO [{label}] {'='*20}")
         for i, section in enumerate(doc.sections):
-            logger.debug(f"Section {i} | Size: {section.page_width.pt}x{section.page_height.pt}pt")
-            logger.debug(f"Section {i} | Margins: L:{section.left_margin.pt} R:{section.right_margin.pt} T:{section.top_margin.pt} B:{section.bottom_margin.pt}")
+            logger.debug(f"Section {i} | Size: {section.page_width.pt:.1f}x{section.page_height.pt:.1f}pt")
+            logger.debug(f"Section {i} | Margins: L:{section.left_margin.pt:.1f} R:{section.right_margin.pt:.1f} T:{section.top_margin.pt:.1f} B:{section.bottom_margin.pt:.1f}")
+            logger.debug(f"Section {i} | Gutter: {section.gutter.pt:.1f}pt | Header-Dist: {section.header_distance.pt:.1f}pt")
         
-        # Log style inventory
-        styles = [s.name for s in doc.styles if s.type == 1] # Paragraph styles
-        logger.debug(f"Style Inventory ({len(styles)}): {', '.join(styles[:10])}...")
+        # Log all paragraph styles present in the document
+        style_names = [s.name for s in doc.styles if s.type == 1]
+        logger.debug(f"Style Inventory ({len(style_names)}): {', '.join(style_names)}")
 
     def log_para_trace(self, para: Paragraph, label: str):
-        """Logs comprehensive paragraph formatting data."""
+        """Logs exhaustive paragraph formatting data."""
         pf = para.paragraph_format
         style = para.style
         
-        # Determine effective font (Run override OR Style default)
-        font_name = "Inherited"
-        font_size = "Default"
+        # Get effective font (Run override OR Style default)
+        f_name = "None"
+        f_size = "None"
         if para.runs:
             r = para.runs[0]
-            font_name = r.font.name if r.font.name else (style.font.name if style.font.name else "System Default")
-            font_size = r.font.size.pt if r.font.size else (style.font.size.pt if style.font.size else "Unknown")
+            f_name = r.font.name if r.font.name else (style.font.name if style.font.name else "Inherited")
+            f_size = f"{r.font.size.pt if r.font.size else (style.font.size.pt if style.font.size else 'Default')}pt"
         
-        logger.debug(f"PARA [{label}] | Style: '{style.name}'")
-        logger.debug(f"  > Layout: Indent-L:{pf.left_indent.pt if pf.left_indent else 0}pt, FirstLine:{pf.first_line_indent.pt if pf.first_line_indent else 0}pt")
-        logger.debug(f"  > Layout: Spacing-B:{pf.space_before.pt if pf.space_before else 0}pt, Spacing-A:{pf.space_after.pt if pf.space_after else 0}pt")
-        logger.debug(f"  > Font: {font_name} @ {font_size}pt")
+        logger.debug(f"PARA [{label}] | Style: '{style.name}' | Align: {para.alignment}")
+        logger.debug(f"  > Font: {f_name} @ {f_size} | Bold: {para.style.font.bold} | Italic: {para.style.font.italic}")
+        logger.debug(f"  > Layout: Indent-L:{pf.left_indent.pt if pf.left_indent else 0:.1f}pt, FirstLine:{pf.first_line_indent.pt if pf.first_line_indent else 0:.1f}pt")
+        logger.debug(f"  > Spacing: B:{pf.space_before.pt if pf.space_before else 0:.1f}pt, A:{pf.space_after.pt if pf.space_after else 0:.1f}pt | LineSpc: {pf.line_spacing}")
     
     async def translate_document(self, input_path: Path, output_path: Path):
-        """Full document processing with robust XML part commitment and layout logging."""
-        self.log_memory("Start")
+        """Full document lifecycle with robust XML commitment and verification logs."""
+        self.log_memory("Initialization")
         doc = Document(str(input_path))
         
-        # 1. VERBOSE LOGGING: Document Layout
         if logger.isEnabledFor(logging.DEBUG):
             self.log_document_info(doc, "INPUT")
-            for i, section in enumerate(doc.sections):
-                logger.debug(f"DOC LAYOUT | Section {i} | Width: {section.page_width.pt}pt, Height: {section.page_height.pt}pt")
-                logger.debug(f"DOC LAYOUT | Margins: L:{section.left_margin.pt}pt, R:{section.right_margin.pt}pt")
 
-        # 2. Extract and Process
-        footnote_paras = self.get_footnotes(doc)
+        # Gather footnotes properly to initialize _footnote_root
+        _ = self.get_footnotes(doc)
         all_paras = self.get_all_paragraphs(doc)
-        translatable = [(p, l) for p, l in all_paras if p.text.strip()]
-
+        translatable = [(p, l) for p, l in all_paras if p.text.strip() and self.is_paragraph_safe_to_translate(p)]
+        
+        logger.info(f"Processing {len(translatable)} paragraphs across {len(all_paras)} total entities.")
+        
         for para, location in tqdm(translatable, desc="Translating"):
-            await self.translate_paragraph(para)
+            try:
+                await self.translate_paragraph(para)
+            except Exception as e:
+                logger.error(f"Error in {location} translation: {e}")
 
-        # 3. FOOTNOTE COMMITMENT FIX (Replacing cast_xml)
+        # FOOTNOTE XML COMMITMENT
         if hasattr(self, '_footnote_part') and hasattr(self, '_footnote_root'):
             try:
                 from lxml import etree
-                # Standard lxml serialization is the most compatible
-                xml_data = etree.tostring(self._footnote_root, encoding='utf-8', xml_declaration=True)
-                self._footnote_part._blob = xml_data
-                logger.info("✓ TRACE | Footnote binary successfully committed via etree.")
+                # Standard etree tostring ensures namespace 'w' is preserved correctly
+                updated_xml = etree.tostring(self._footnote_root, encoding='utf-8', xml_declaration=True)
+                self._footnote_part._blob = updated_xml
+                logger.info("✓ Success | Footnote XML blob successfully serialized.")
             except Exception as e:
-                logger.error(f"ERROR | Footnote commitment failed: {e}")
+                logger.error(f"Error | Footnote commitment failed: {e}")
 
-        # 4. Save and Verify
+        logger.info(f"Saving file to {output_path}")
         doc.save(str(output_path))
         
         if logger.isEnabledFor(logging.DEBUG):
-            new_doc = Document(str(output_path))
-            self.log_document_info(new_doc, "OUTPUT")
-            
-        logger.info(f"✓ Success | Saved to {output_path}")
+            self.log_document_info(Document(str(output_path)), "OUTPUT")
+        logger.info("✓ Document Translation Complete.")
 
 
 # ============================================================================
