@@ -75,15 +75,6 @@ except ImportError:
     HAS_ANTHROPIC = False
     print("  ⊘ Anthropic (optional)")
 
-# Optional: fast_align
-try:
-    from fast_align import align
-    HAS_FAST_ALIGN = True
-    print("  ✓ fast_align")
-except ImportError:
-    HAS_FAST_ALIGN = False
-    print("  ⊘ fast_align (optional - see installation notes)")
-
 # Optional: simalign
 try:
     from simalign import SentenceAligner
@@ -101,7 +92,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
+def get_torch_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 # ============================================================================
 # ENUMS FOR CONFIGURATION
@@ -586,17 +582,16 @@ class AwesomeAlignAligner:
             return
         
         try:
-            import torch
             from transformers import BertModel, BertTokenizer
             
             logger.info("Loading awesome-align (mBERT)...")
             self.model = BertModel.from_pretrained('bert-base-multilingual-cased')
             self.tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
-            self.model.eval()
             
-            # Move to GPU if available
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            # Use the new device detection
+            self.device = get_torch_device()
             self.model.to(self.device)
+            self.model.eval()
             
             self.available = True
             logger.info(f"✓ awesome-align ready on {self.device}")
@@ -604,7 +599,6 @@ class AwesomeAlignAligner:
             logger.info(f"⊘ awesome-align init failed: {e}")
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
-        """Align word indices using mBERT embeddings"""
         if not self.available or not src_words or not tgt_words:
             return []
         
@@ -612,59 +606,41 @@ class AwesomeAlignAligner:
             import torch
             import itertools
             
-            # Tokenize words
+            # Tokenization
             token_src = [self.tokenizer.tokenize(word) for word in src_words]
             token_tgt = [self.tokenizer.tokenize(word) for word in tgt_words]
             
+            # Convert to IDs and move to MPS/GPU
             wid_src = [self.tokenizer.convert_tokens_to_ids(x) for x in token_src]
             wid_tgt = [self.tokenizer.convert_tokens_to_ids(x) for x in token_tgt]
             
-            ids_src = self.tokenizer.prepare_for_model(
-                list(itertools.chain(*wid_src)), 
-                return_tensors='pt', 
-                truncation=True,
-                model_max_length=self.tokenizer.model_max_length
-            )['input_ids'].to(self.device)
-            
-            ids_tgt = self.tokenizer.prepare_for_model(
-                list(itertools.chain(*wid_tgt)), 
-                return_tensors='pt', 
-                truncation=True,
-                model_max_length=self.tokenizer.model_max_length
-            )['input_ids'].to(self.device)
-            
-            # Create subword to word mapping
-            sub2word_map_src = []
-            for i, word_list in enumerate(token_src):
-                sub2word_map_src += [i for _ in word_list]
-            
-            sub2word_map_tgt = []
-            for i, word_list in enumerate(token_tgt):
-                sub2word_map_tgt += [i for _ in word_list]
-            
-            # Extract alignments using layer 8
-            align_layer = 8
-            threshold = 1e-3
-            
+            ids_src = self.tokenizer.prepare_for_model(list(itertools.chain(*wid_src)), return_tensors='pt', truncation=True)['input_ids'].to(self.device)
+            ids_tgt = self.tokenizer.prepare_for_model(list(itertools.chain(*wid_tgt)), return_tensors='pt', truncation=True)['input_ids'].to(self.device)
+
+            # Subword maps
+            sub2word_map_src = [i for i, word_list in enumerate(token_src) for _ in word_list]
+            sub2word_map_tgt = [i for i, word_list in enumerate(token_tgt) for _ in word_list]
+
             with torch.no_grad():
-                out_src = self.model(ids_src.unsqueeze(0), output_hidden_states=True)[2][align_layer][0, 1:-1]
-                out_tgt = self.model(ids_tgt.unsqueeze(0), output_hidden_states=True)[2][align_layer][0, 1:-1]
+                # Extract hidden states from Layer 8
+                out_src = self.model(ids_src.unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
+                out_tgt = self.model(ids_tgt.unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
                 
+                # Dot product alignment
                 dot_prod = torch.matmul(out_src, out_tgt.transpose(-1, -2))
-                
                 softmax_srctgt = torch.nn.Softmax(dim=-1)(dot_prod)
                 softmax_tgtsrc = torch.nn.Softmax(dim=-2)(dot_prod)
                 
-                softmax_inter = (softmax_srctgt > threshold) * (softmax_tgtsrc > threshold)
+                # Intersection threshold
+                softmax_inter = (softmax_srctgt > 1e-3) * (softmax_tgtsrc > 1e-3)
             
-            # Convert subword alignments to word alignments
             align_subwords = torch.nonzero(softmax_inter, as_tuple=False)
             align_words = set()
             for i, j in align_subwords:
                 align_words.add((sub2word_map_src[i.item()], sub2word_map_tgt[j.item()]))
             
             return sorted(list(align_words))
-        
+            
         except Exception as e:
             logger.debug(f"awesome-align failed: {e}")
             return []
@@ -1328,7 +1304,7 @@ class UltimateDocumentTranslator:
         logger.debug(f"PARA [{label}] | Style: '{style.name}'")
         logger.debug(f"  > Font: {f_name} @ {f_size} | Bold-Any: {has_bold} | Ital-Any: {has_ital}")
         logger.debug(f"  > Indent-L: {pf.left_indent.pt if pf.left_indent else 0:.1f}pt | Spacing-A: {pf.space_after.pt if pf.space_after else 0:.1f}pt")
-        
+
     async def translate_document(self, input_path: Path, output_path: Path):
         """Full document lifecycle with robust XML commitment and verification logs."""
         self.log_memory("Initialization")
@@ -1446,7 +1422,7 @@ Installation Notes:
     
     parser.add_argument(
         '--aligner',
-        choices=['lindat', 'fast_align', 'simalign', 'heuristic', 'auto'],
+        choices=['lindat', 'fast_align', 'simalign', 'awesome', 'heuristic', 'auto'],
         help='Word aligner (default: auto)'
     )
     
