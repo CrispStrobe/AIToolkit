@@ -999,14 +999,27 @@ class UltimateDocumentTranslator:
         return text
     
     def extract_paragraph(self, para: Paragraph) -> TranslatableParagraph:
-        """Enhanced extraction capturing deep layout and style metadata."""
+        """Extracts paragraph with resolved font hierarchy to prevent Theme reversion."""
+        # 1. Resolve the "Base Font" for this paragraph
+        def get_resolved_font_name(p):
+            # Check runs first
+            for r in p.runs:
+                if r.font.name: return r.font.name
+            # Check style hierarchy
+            curr_style = p.style
+            while curr_style:
+                if curr_style.font.name: return curr_style.font.name
+                curr_style = curr_style.base_style
+            return "Times New Roman" # Fallback if everything is 'None'
+
+        resolved_base_font = get_resolved_font_name(para)
+        
         runs = []
         for run in para.runs:
-            # Capture font metadata including theme/colors
-            font_color = None
+            f_color = None
             try:
                 if run.font.color and run.font.color.rgb:
-                    font_color = (run.font.color.rgb[0], run.font.color.rgb[1], run.font.color.rgb[2])
+                    f_color = (run.font.color.rgb[0], run.font.color.rgb[1], run.font.color.rgb[2])
             except: pass
 
             runs.append(FormatRun(
@@ -1014,9 +1027,10 @@ class UltimateDocumentTranslator:
                 bold=run.bold,
                 italic=run.italic,
                 underline=run.underline,
-                font_name=run.font.name,
-                font_size=run.font.size.pt if run.font.size else None,
-                font_color=font_color
+                # If run has no font name, use the resolved base font we found
+                font_name=run.font.name if run.font.name else resolved_base_font,
+                font_size=run.font.size.pt if run.font.size else (para.style.font.size.pt if para.style.font.size else 12.0),
+                font_color=f_color
             ))
         
         trans_para = TranslatableParagraph(runs=runs)
@@ -1030,11 +1044,7 @@ class UltimateDocumentTranslator:
             'first_line_indent': pf.first_line_indent,
             'line_spacing': pf.line_spacing,
             'space_before': pf.space_before,
-            'space_after': pf.space_after,
-            'keep_together': pf.keep_together,
-            'keep_with_next': pf.keep_with_next,
-            'page_break_before': pf.page_break_before,
-            'widow_control': pf.widow_control
+            'space_after': pf.space_after
         }
         return trans_para
     
@@ -1049,22 +1059,20 @@ class UltimateDocumentTranslator:
             pass
 
     def copy_font_properties(self, target_run, source_run: FormatRun):
-        """Forcibly binds font properties into XML to bypass Theme defaults."""
+        """Forces Font Name, Size, and Color into XML. Does NOT touch bold/italic."""
         try:
-            # Basic overrides
             if source_run.font_size:
                 target_run.font.size = Pt(source_run.font_size)
             if source_run.font_color:
                 target_run.font.color.rgb = RGBColor(*source_run.font_color)
             if source_run.underline is not None:
                 target_run.font.underline = source_run.underline
-            
-            # Force Font Name into all 4 XML slots
+
             if source_run.font_name:
+                # The XML 'rFonts' injection to bypass Theme defaults
                 r = target_run._element
                 rPr = r.get_or_add_rPr()
                 rFonts = rPr.get_or_add_rFonts()
-                # Use qn() to handle the 'w' namespace for Word
                 rFonts.set(qn('w:ascii'), source_run.font_name)
                 rFonts.set(qn('w:hAnsi'), source_run.font_name)
                 rFonts.set(qn('w:eastAsia'), source_run.font_name)
@@ -1074,19 +1082,17 @@ class UltimateDocumentTranslator:
             logger.debug(f"TRACE | Font Force Error: {e}")
     
     def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str, alignment: List[Tuple[int, int]]):
-        """Reconstructs paragraph with exact style mirroring and anchor preservation."""
-        self.log_para_trace(para, "BEFORE REBUILD")
+        """Reconstructs paragraph using a precise map of inline styles and anchored footnotes."""
+        self.log_para_trace(para, "INPUT")
         p_element = para._p
-        
-        # 1. Capture and protect Footnote Super-scripts
         footnote_refs = p_element.xpath('.//w:r[w:footnoteReference or w:footnoteRef]')
         
-        # 2. Re-apply Paragraph Style & Layout
+        # 1. Restore Para-level metadata
         if trans_para.metadata.get('style'):
             para.style = trans_para.metadata['style']
         para.alignment = trans_para.metadata.get('alignment')
         
-        # Re-apply spacing/indents
+        # Re-apply layout spacing/indents
         layout = trans_para.metadata.get('layout', {})
         pf = para.paragraph_format
         for attr, val in layout.items():
@@ -1094,18 +1100,17 @@ class UltimateDocumentTranslator:
                 if val is not None: setattr(pf, attr, val)
             except: pass
 
-        # 3. Clear existing content
+        # 2. Clear content
         for run in para.runs:
             p_element.remove(run._element)
 
-        # 4. START REBUILD: If it's a footnote paragraph, re-attach number at start
-        is_footnote_text = "footnote" in str(para.style.name).lower()
-        if is_footnote_text and footnote_refs:
-            for ref in footnote_refs:
-                p_element.append(ref)
-            para.add_run("\u00A0") # Non-breaking space
+        # 3. Footnote text paragraphs: re-attach numbering at start
+        is_footnote_para = "footnote" in str(para.style.name).lower()
+        if is_footnote_para and footnote_refs:
+            for ref in footnote_refs: p_element.append(ref)
+            para.add_run("\u00A0") 
 
-        # 5. Map formatting to clean target indices
+        # 4. Map formatting to Clean Target Indices
         src_clean_words = trans_para.get_words()
         tgt_raw_units = translated_text.split() 
         formatted_indices = trans_para.get_formatted_word_indices()
@@ -1117,35 +1122,37 @@ class UltimateDocumentTranslator:
                 clean_to_raw_tgt[clean_idx] = raw_idx
                 clean_idx += 1
 
-        # Use the first valid run from the source as the font template
-        font_template = next((r for r in trans_para.runs if r.text.strip()), trans_para.runs[0])
+        # Use the first run as the baseline "Aesthetic" template (Font, Size, Color)
+        font_template = trans_para.runs[0] if trans_para.runs else None
 
+        # 5. Build units with Inline Style merging
         for i, unit in enumerate(tgt_raw_units):
             run_text = unit + (" " if i < len(tgt_raw_units)-1 else "")
             run = para.add_run(run_text)
             
-            # Replicate Bold/Italic logic for this unit
-            style = None
+            # Determine Bold/Italic/Underline for this unit via Aligner
+            style_type = None
             for src_idx, align_tgt_idx in alignment:
                 if clean_to_raw_tgt.get(align_tgt_idx) == i:
-                    for s_type in ['italic_bold', 'bold', 'italic']:
-                        if src_idx in formatted_indices[s_type]:
-                            style = s_type; break
+                    for s in ['italic_bold', 'bold', 'italic']:
+                        if src_idx in formatted_indices[s]:
+                            style_type = s; break
             
-            if style == 'italic_bold': run.bold = run.italic = True
-            elif style == 'bold': run.bold = True
-            elif style == 'italic': run.italic = True
+            # Apply Aligned Inline Styles
+            if style_type == 'italic_bold': run.bold = run.italic = True
+            elif style_type == 'bold': run.bold = True
+            elif style_type == 'italic': run.italic = True
             
-            # Force the inherited or override font
-            self.copy_font_properties(run, font_template)
+            # Apply Baseline aesthetics (Font name, size, color)
+            if font_template:
+                self.copy_font_properties(run, font_template)
 
-        # 6. Re-attach body footnotes to the end of the text
-        if not is_footnote_text and footnote_refs:
-            logger.debug(f"TRACE | Body Footnote | Re-anchoring {len(footnote_refs)} references.")
-            for ref in footnote_refs:
-                p_element.append(ref)
+        # 6. Re-attach body footnotes to the end of the translated sentence
+        if not is_footnote_para and footnote_refs:
+            logger.debug(f"TRACE | Body Footnote | Re-anchoring {len(footnote_refs)} refs.")
+            for ref in footnote_refs: p_element.append(ref)
 
-        self.log_para_trace(para, "AFTER REBUILD")
+        self.log_para_trace(para, "OUTPUT")
     
     def is_paragraph_safe_to_translate(self, para: Paragraph) -> bool:
         """Check if paragraph can be safely translated"""
@@ -1307,23 +1314,21 @@ class UltimateDocumentTranslator:
         logger.debug(f"Style Inventory ({len(style_names)}): {', '.join(style_names)}")
 
     def log_para_trace(self, para: Paragraph, label: str):
-        """Logs exhaustive paragraph formatting data."""
+        """Detailed debug log showing style, font, and layout metrics."""
         pf = para.paragraph_format
         style = para.style
         
-        # Get effective font (Run override OR Style default)
-        f_name = "None"
-        f_size = "None"
-        if para.runs:
-            r = para.runs[0]
-            f_name = r.font.name if r.font.name else (style.font.name if style.font.name else "Inherited")
-            f_size = f"{r.font.size.pt if r.font.size else (style.font.size.pt if style.font.size else 'Default')}pt"
+        # Check if first run has inline formatting
+        has_bold = any(r.bold for r in para.runs)
+        has_ital = any(r.italic for r in para.runs)
         
-        logger.debug(f"PARA [{label}] | Style: '{style.name}' | Align: {para.alignment}")
-        logger.debug(f"  > Font: {f_name} @ {f_size} | Bold: {para.style.font.bold} | Italic: {para.style.font.italic}")
-        logger.debug(f"  > Layout: Indent-L:{pf.left_indent.pt if pf.left_indent else 0:.1f}pt, FirstLine:{pf.first_line_indent.pt if pf.first_line_indent else 0:.1f}pt")
-        logger.debug(f"  > Spacing: B:{pf.space_before.pt if pf.space_before else 0:.1f}pt, A:{pf.space_after.pt if pf.space_after else 0:.1f}pt | LineSpc: {pf.line_spacing}")
-    
+        f_name = para.runs[0].font.name if para.runs and para.runs[0].font.name else "Inherited"
+        f_size = f"{para.runs[0].font.size.pt if para.runs and para.runs[0].font.size else 'Default'}pt"
+        
+        logger.debug(f"PARA [{label}] | Style: '{style.name}'")
+        logger.debug(f"  > Font: {f_name} @ {f_size} | Bold-Any: {has_bold} | Ital-Any: {has_ital}")
+        logger.debug(f"  > Indent-L: {pf.left_indent.pt if pf.left_indent else 0:.1f}pt | Spacing-A: {pf.space_after.pt if pf.space_after else 0:.1f}pt")
+        
     async def translate_document(self, input_path: Path, output_path: Path):
         """Full document lifecycle with robust XML commitment and verification logs."""
         self.log_memory("Initialization")
