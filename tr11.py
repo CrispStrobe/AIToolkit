@@ -159,40 +159,45 @@ class TranslatableParagraph:
         return ''.join(run.text for run in self.runs)
     
     def get_words(self) -> List[str]:
-        """Clean tokenization for high-quality alignment"""
+        """Clean tokenization for the ALIGNER only: strips punctuation."""
+        import re
         text = self.get_text()
-        # This separates words from punctuation so the aligner can map them individually
-        return re.findall(r"[\w']+|[.,!?;:()\"-]", text)
+        # Extracts only alphanumeric sequences (e.g., "Theology" from "Theology:")
+        return re.findall(r"\w+", text)
     
     def get_formatted_word_indices(self) -> Dict[str, Set[int]]:
-        """Extract formatting using the same regex as get_words to prevent shifts."""
+        """Maps formatting to clean alphanumeric word indices."""
         formatted = {'italic': set(), 'bold': set(), 'italic_bold': set()}
         text = self.get_text()
-        # FIX: Must use the same tokenization as the aligner
-        words = self.get_words()
+        words = self.get_words() # Uses the same list the aligner sees
         
-        if not words: return formatted
+        if not words:
+            return formatted
         
         char_to_word = {}
-        char_pos = 0
+        last_found = 0
         for word_idx, word in enumerate(words):
-            while char_pos < len(text) and text[char_pos].isspace():
-                char_pos += 1
-            for i in range(len(word)):
-                if char_pos < len(text):
-                    char_to_word[char_pos] = word_idx
-                    char_pos += 1
+            # Find the word in the text, starting search after the previous word
+            start = text.find(word, last_found)
+            if start != -1:
+                for i in range(start, start + len(word)):
+                    char_to_word[i] = word_idx
+                last_found = start + len(word)
         
         char_pos = 0
         for run in self.runs:
-            if not run.text: continue
+            if not run.text:
+                continue
             for char in run.text:
                 if char_pos in char_to_word:
                     word_idx = char_to_word[char_pos]
                     if not char.isspace():
-                        if run.bold and run.italic: formatted['italic_bold'].add(word_idx)
-                        elif run.italic: formatted['italic'].add(word_idx)
-                        elif run.bold: formatted['bold'].add(word_idx)
+                        if run.bold and run.italic:
+                            formatted['italic_bold'].add(word_idx)
+                        elif run.italic:
+                            formatted['italic'].add(word_idx)
+                        elif run.bold:
+                            formatted['bold'].add(word_idx)
                 char_pos += 1
         return formatted
 
@@ -298,8 +303,15 @@ class CTranslate2Translator:
 
 
 class NLLBTranslator:
-    """NLLB-200 translator for 200+ languages"""
+    """NLLB-200 translator using CTranslate2 for 4x speedup and low memory"""
     
+    # Map sizes to specific CTranslate2 optimized repositories
+    REPOS = {
+        "600M": "JustFrederik/nllb-200-distilled-600M-ct2-int8",
+        "1.3B": "OpenNMT/nllb-200-distilled-1.3B-ct2-int8",
+        "3.3B": "OpenNMT/nllb-200-3.3B-ct2-int8"
+    }
+
     LANG_CODES = {
         'en': 'eng_Latn', 'de': 'deu_Latn', 'fr': 'fra_Latn', 
         'es': 'spa_Latn', 'it': 'ita_Latn', 'pt': 'por_Latn',
@@ -314,70 +326,93 @@ class NLLBTranslator:
         self.tgt_lang = tgt_lang
         self.available = False
         
-        if not HAS_TRANSFORMERS:
-            logger.info("⊘ NLLB: transformers not installed")
+        if not HAS_CT2:
+            logger.info("⊘ NLLB-CT2: ctranslate2 not installed")
             return
         
         self.src_code = self.LANG_CODES.get(src_lang)
         self.tgt_code = self.LANG_CODES.get(tgt_lang)
         
         if not self.src_code or not self.tgt_code:
-            logger.info(f"⊘ NLLB: {src_lang}→{tgt_lang} not in language map")
+            logger.info(f"⊘ NLLB-CT2: {src_lang}→{tgt_lang} not supported")
             return
         
         try:
-            logger.info(f"Loading NLLB-{model_size} model...")
-            model_name = f"facebook/nllb-200-{model_size}"
+            repo_id = self.REPOS.get(model_size, self.REPOS["600M"])
+            logger.info(f"Loading NLLB-{model_size} (CTranslate2 int8) from {repo_id}...")
             
-            self.tokenizer = HFTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+            # 1. Download model from Hub
+            model_path = snapshot_download(repo_id=repo_id)
             
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.model.to(self.device)
+            # 2. Initialize CT2 Translator
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            # compute_type: int8_float16 for GPU, int8 for CPU
+            compute_type = "int8_float16" if device == "cuda" else "int8"
+            
+            self.translator = ctranslate2.Translator(
+                model_path, 
+                device=device, 
+                compute_type=compute_type
+            )
+            
+            # 3. Initialize Tokenizer (from the original FB repo to ensure compatibility)
+            # We use the distilled-600M tokenizer for all because NLLB uses a shared vocab
+            self.tokenizer = HFTokenizer.from_pretrained(
+                "facebook/nllb-200-distilled-600M", 
+                src_lang=self.src_code
+            )
             
             self.available = True
-            logger.info(f"✓ NLLB-{model_size} ready on {self.device} ({src_lang}→{tgt_lang})")
+            logger.info(f"✓ NLLB-{model_size} CT2 ready on {device}")
         except Exception as e:
-            logger.error(f"NLLB init failed: {e}")
+            logger.error(f"NLLB-CT2 init failed: {e}")
     
-    def translate_batch(self, texts: List[str], batch_size: int = 8) -> List[str]:
-        """Translate batch of texts"""
+    def translate_batch(self, texts: List[str], batch_size: int = 16) -> List[str]:
+        """Translate batch using CT2 efficient beam search"""
         if not self.available or not texts:
             return texts
         
         try:
             results = []
+            # NLLB requires the target language code as the first token (target prefix)
+            target_prefix = [self.tgt_code]
+            
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
                 
-                inputs = self.tokenizer(
-                    batch, 
-                    return_tensors="pt", 
-                    padding=True, 
-                    truncation=True,
-                    max_length=512
-                ).to(self.device)
+                # Tokenize
+                source_tokens = [
+                    self.tokenizer.convert_ids_to_tokens(self.tokenizer.encode(t)) 
+                    for t in batch
+                ]
                 
-                translated_tokens = self.model.generate(
-                    **inputs,
-                    forced_bos_token_id=self.tokenizer.lang_code_to_id[self.tgt_code],
-                    max_length=512,
-                    num_beams=5,
-                    early_stopping=True
+                # Translate
+                step_results = self.translator.translate_batch(
+                    source_tokens,
+                    target_prefix=[target_prefix] * len(batch),
+                    beam_size=4,
+                    max_batch_size=batch_size,
+                    repetition_penalty=1.1
                 )
                 
-                batch_results = self.tokenizer.batch_decode(
-                    translated_tokens, 
-                    skip_special_tokens=True
-                )
-                results.extend(batch_results)
+                # Decode (skipping the lang code prefix in the output)
+                for res in step_results:
+                    tokens = res.hypotheses[0]
+                    # The first token is usually the target lang code
+                    if tokens[0] == self.tgt_code:
+                        tokens = tokens[1:]
+                    
+                    decoded = self.tokenizer.decode(
+                        self.tokenizer.convert_tokens_to_ids(tokens), 
+                        skip_special_tokens=True
+                    )
+                    results.append(decoded.strip())
             
             return results
         except Exception as e:
-            logger.error(f"NLLB translation failed: {e}")
+            logger.error(f"NLLB-CT2 translation failed: {e}")
             return texts
-
-
+        
 class LLMTranslator:
     """LLM translator (OpenAI/Anthropic/Ollama)"""
     
@@ -1007,120 +1042,75 @@ class UltimateDocumentTranslator:
             target_run.font.underline = source_run.underline
     
     def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str, alignment: List[Tuple[int, int]]):
-        """Applies formatting while preserving paragraph layout and footnotes with correct punctuation spacing."""
-        formatted_words = trans_para.get_formatted_word_indices()
-        src_words = trans_para.get_words()
-        # Use cleaner regex tokenization for target words
-        tgt_words = re.findall(r"[\w']+|[.,!?;:()\"-]", translated_text)
+        """Maps formatting from clean words to punctuated units by skipping non-alpha tokens."""
+        import re
         
-        if not tgt_words: return
-
-        # 1. IDENTIFY AND PROTECT FOOTNOTE REFERENCES
+        # 1. Protect Footnotes
         p = para._p
         footnote_refs = []
         for run_element in p.xpath('.//w:r'):
             if run_element.xpath('.//w:footnoteReference | .//w:footnoteRef'):
                 footnote_refs.append(run_element)
             run_element.getparent().remove(run_element)
-        
-        # 2. RESTORE PARAGRAPH PROPERTIES
-        para.alignment = trans_para.metadata['alignment']
-        if trans_para.metadata['style']:
-            para.style = trans_para.metadata['style']
-        
-        layout = trans_para.metadata['layout']
-        para.paragraph_format.left_indent = layout['left_indent']
-        para.paragraph_format.first_line_indent = layout['first_line_indent']
-        para.paragraph_format.line_spacing = layout['line_spacing']
 
-        # 3. BUILD TRANSLATED TEXT RUNS
-        tgt_formatting = {}
-        for src_idx, tgt_idx in alignment:
-            if src_idx < len(src_words) and tgt_idx < len(tgt_words):
-                for f_type in ['italic_bold', 'bold', 'italic']:
-                    if src_idx in formatted_words[f_type]:
-                        tgt_formatting[tgt_idx] = f_type
-                        break
+        # 2. Extract clean source and raw target units
+        src_clean_words = trans_para.get_words()
+        # WMT21 often separates punctuation with spaces, so split() catches them as units
+        tgt_raw_units = translated_text.split() 
+        formatted_indices = trans_para.get_formatted_word_indices()
 
+        # 3. Create a mapping: Clean Aligner Index -> Raw Target Unit Index
+        # We skip tokens that are strictly punctuation so the aligner index matches words
+        clean_to_raw_tgt = {}
+        clean_idx = 0
+        for raw_idx, unit in enumerate(tgt_raw_units):
+            # If the unit contains alphanumeric characters, it's a 'word' for the aligner
+            if re.search(r'\w', unit):
+                clean_to_raw_tgt[clean_idx] = raw_idx
+                clean_idx += 1
+
+        # 4. Map Style to Raw Target Units
+        tgt_styles = {} 
+        for src_idx, align_tgt_idx in alignment:
+            # align_tgt_idx is what the ALIGNER thinks is the word index
+            # raw_tgt_idx is the actual index in the punctuated list
+            raw_tgt_idx = clean_to_raw_tgt.get(align_tgt_idx)
+            
+            if src_idx in src_clean_words or True: # safety check
+                if src_idx < len(src_clean_words) and raw_tgt_idx is not None:
+                    for style in ['italic_bold', 'bold', 'italic']:
+                        if src_idx in formatted_indices[style]:
+                            tgt_styles[raw_tgt_idx] = style
+                            break
+
+        # 5. Build runs using the raw units (preserving punctuation and spacing)
         font_template = next((r for r in trans_para.runs if r.text.strip()), None)
         
-        # Group tokens into formatted runs
-        runs_to_create = []
-        if tgt_words:
-            current_format = tgt_formatting.get(0, None)
-            current_words = [tgt_words[0]]
+        for i, unit in enumerate(tgt_raw_units):
+            style = tgt_styles.get(i, None)
             
-            for i in range(1, len(tgt_words)):
-                fmt = tgt_formatting.get(i, None)
-                if fmt == current_format:
-                    current_words.append(tgt_words[i])
-                else:
-                    runs_to_create.append((current_format, current_words))
-                    current_format, current_words = fmt, [tgt_words[i]]
-            runs_to_create.append((current_format, current_words))
-        
-        # 4. PUNCTUATION-AWARE JOINING
-        def smart_join(word_list, is_first_run, next_word_starts_with_punct=False):
-            joined = ""
-            for j, word in enumerate(word_list):
-                # Add space if: not at start of run AND not punctuation AND previous word wasn't an opening bracket
-                if j > 0:
-                    if word not in ".,!?;:)]" and word_list[j-1] not in "([":
-                        joined += " "
-                joined += word
-            return joined
+            # Logic to handle spacing: don't add space before punctuation usually, 
+            # but WMT21 output text.split() + " " join is the safest restoration.
+            run_text = unit + (" " if i < len(tgt_raw_units) - 1 else "")
+            
+            # CRITICAL: If the unit is JUST punctuation, check if the PREVIOUS word was formatted
+            # This ensures "Theology:" is all bold even if ":" is a separate token
+            if not re.search(r'\w', unit) and i > 0:
+                prev_style = tgt_styles.get(i-1)
+                if prev_style:
+                    style = prev_style
 
-        for i, (f_type, words) in enumerate(runs_to_create):
-            # Generate cleaned text for this run
-            run_text = smart_join(words, i == 0)
-            
-            # Check if we need a space AFTER this run before the next one starts
-            if i < len(runs_to_create) - 1:
-                next_first_word = runs_to_create[i+1][1][0]
-                if next_first_word not in ".,!?;:)]" and words[-1] not in "([":
-                    run_text += " "
-            
             run = para.add_run(run_text)
-            
-            # Apply formatting
-            if f_type == 'italic_bold':
-                run.bold = run.italic = True
-            elif f_type == 'bold': 
-                run.bold = True
-            elif f_type == 'italic': 
-                run.italic = True
+            if style == 'italic_bold': run.bold = run.italic = True
+            elif style == 'bold': run.bold = True
+            elif style == 'italic': run.italic = True
             
             if font_template:
                 self.copy_font_properties(run, font_template)
 
-        # 5. RE-ATTACH FOOTNOTE REFERENCES
+        # 6. Restore Footnotes
         for ref in footnote_refs:
             p.append(ref)
-    
-    def apply_plain_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str):
-        """Apply formatting without alignment (for LLM_WITHOUT_ALIGN mode)"""
-        # Clear existing runs except footnotes
-        p = para._p
-        for run_element in p.xpath('.//w:r'):
-            if not run_element.xpath('.//w:footnoteRef | .//w:footnoteReference'):
-                run_element.getparent().remove(run_element)
-        
-        # Restore paragraph layout
-        para.alignment = trans_para.metadata['alignment']
-        if trans_para.metadata['style']:
-            para.style = trans_para.metadata['style']
-        
-        layout = trans_para.metadata['layout']
-        para.paragraph_format.left_indent = layout['left_indent']
-        para.paragraph_format.first_line_indent = layout['first_line_indent']
-        para.paragraph_format.line_spacing = layout['line_spacing']
-        
-        # Add translated text with default formatting from first run
-        font_template = next((r for r in trans_para.runs if r.text.strip()), None)
-        run = para.add_run(translated_text)
-        
-        if font_template:
-            self.copy_font_properties(run, font_template)
     
     def is_paragraph_safe_to_translate(self, para: Paragraph) -> bool:
         """Check if paragraph can be safely translated"""
@@ -1155,7 +1145,7 @@ class UltimateDocumentTranslator:
         return True
     
     async def translate_paragraph(self, para: Paragraph):
-        """Translate paragraph with sentence-splitting."""
+        """Translate paragraph with sentence-splitting and clean word alignment."""
         if not para.text or not para.text.strip() or not self.is_paragraph_safe_to_translate(para):
             return
         
@@ -1163,11 +1153,11 @@ class UltimateDocumentTranslator:
             trans_para = self.extract_paragraph(para)
             original_text = trans_para.get_text()
             
-            # Split into sentences: WMT21 fails on long paragraphs
+            # 1. Split into sentences: WMT21 performs best on sentence units
             sentences = re.split(r'(?<=[.!?]) +', original_text)
             translated_sentences = []
 
-            # Proper Backend Fallback
+            # 2. Translation Fallback Logic
             if self.ct2 and self.ct2.available:
                 translated_sentences = self.ct2.translate_batch(sentences)
             elif self.nllb and self.nllb.available:
@@ -1181,17 +1171,25 @@ class UltimateDocumentTranslator:
 
             translated_text = " ".join(translated_sentences)
             
-            src_words = trans_para.get_words() # FIXED: was self.get_words()
-            tgt_words = re.findall(r"[\w']+|[.,!?;:()\"-]", translated_text)
+            # 3. PREPARE CLEAN DATA FOR ALIGNER (Alphanumeric only)
+            # We strip punctuation from BOTH sides so the indices (0, 1, 2...) match words.
+            src_words = trans_para.get_words() # Uses \w+ (clean)
+            tgt_words = re.findall(r"\w+", translated_text) # FIX: Use \w+ here too
             
-            if not src_words or not tgt_words: return
-                
+            if not src_words or not tgt_words:
+                # If everything is punctuation, just apply the text as plain
+                self.apply_plain_formatting(para, trans_para, translated_text)
+                return
+            
+            # 4. ALIGNER CALL (Clean Source vs Clean Target)
             alignment = self.aligner.align(src_words, tgt_words)
 
-            logger.debug(f"SRC: {src_words}")
-            logger.debug(f"TGT: {tgt_words}")
+            # 5. DEBUG LOGS
+            logger.debug(f"SRC (Clean): {src_words}")
+            logger.debug(f"TGT (Clean): {tgt_words}")
             logger.debug(f"ALIGN: {alignment}")
             
+            # 6. ASSEMBLY (Passes punctuated text. Formatting logic handles the rest)
             self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
                 
         except Exception as e:
