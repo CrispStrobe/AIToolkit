@@ -82,6 +82,13 @@ from crypto_utils import crypto, HAS_PQ, KeyWrapper
 # Initialize the wrapper
 key_wrapper = KeyWrapper()
 
+from translator import (
+    UltimateDocumentTranslator,
+    TranslationMode,
+    TranslationBackend,
+    AlignerBackend
+)
+
 # ==========================================
 # 🗄️ DATABASE SETUP
 # ==========================================
@@ -373,6 +380,22 @@ class DSFARecord(Base):
     notes = Column(Text)
     
     user = relationship("User")
+
+
+class DocumentTranslation(Base):
+    __tablename__ = "document_translations"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    source_filename = Column(String, nullable=False)
+    target_filename = Column(String, nullable=False)
+    source_lang = Column(String, nullable=False)
+    target_lang = Column(String, nullable=False)
+    mode = Column(String, nullable=False)
+    provider = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", backref="document_translations")
 
 def auto_dsfa_check(provider: str, use_case: str, data_type: str) -> dict:
     """
@@ -1205,6 +1228,137 @@ migrate_add_media_manager_column()
 
 # Initialize default users
 create_default_users()
+
+# ==================================== 
+# DOCUMENT TRANSLATION HELPERS
+# ==================================== 
+
+def save_document_translation(user_id: int, source_file: str, target_file: str, 
+                             src_lang: str, tgt_lang: str, mode: str, provider: str):
+    """Save document translation record to database"""
+    db = SessionLocal()
+    try:
+        trans = DocumentTranslation(
+            user_id=user_id,
+            source_filename=os.path.basename(source_file),
+            target_filename=os.path.basename(target_file),
+            source_lang=src_lang,
+            target_lang=tgt_lang,
+            mode=mode,
+            provider=provider
+        )
+        db.add(trans)
+        db.commit()
+        db.refresh(trans)
+        return trans.id
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"Error saving translation: {e}")
+        raise
+    finally:
+        db.close()
+
+async def translate_document_with_progress(
+    input_file,
+    source_lang: str,
+    target_lang: str,
+    mode: str,
+    nmt_backend: str,
+    nllb_size: str,
+    aligner: str,
+    llm_provider: str,
+    user_state,
+    progress=None
+):
+    """
+    Translate document with progress updates for Gradio.
+    Returns: (output_filepath, log_message)
+    """
+    if not user_state or not user_state.get("id"):
+        yield None, "❌ Nicht angemeldet"
+        return
+    
+    if not input_file:
+        yield None, "❌ Keine Datei hochgeladen"
+        return
+    
+    username = user_state.get("username")
+    user_storage = get_user_storage_path(username)
+    
+    if not user_storage:
+        yield None, "❌ Storage nicht verfügbar"
+        return
+    
+    try:
+        # Map UI values to enums
+        mode_map = {
+            'NMT Only': TranslationMode.NMT_ONLY,
+            'LLM with Alignment': TranslationMode.LLM_WITH_ALIGN,
+            'LLM without Alignment': TranslationMode.LLM_WITHOUT_ALIGN,
+            'Hybrid (Recommended)': TranslationMode.HYBRID
+        }
+        
+        translation_mode = mode_map.get(mode, TranslationMode.HYBRID)
+        
+        # Prepare output path
+        input_path = Path(input_file if isinstance(input_file, str) else input_file.name)
+        output_filename = f"{input_path.stem}_translated_{source_lang}_{target_lang}.docx"
+        output_path = Path(user_storage) / output_filename
+        
+        yield None, f"🚀 Initialisiere Übersetzer...\n📄 Eingabe: {input_path.name}"
+        
+        # Initialize translator
+        translator = UltimateDocumentTranslator(
+            src_lang=source_lang,
+            tgt_lang=target_lang,
+            mode=translation_mode,
+            nmt_backend=nmt_backend.lower() if nmt_backend != "Auto" else "auto",
+            llm_provider=llm_provider.lower() if llm_provider and llm_provider != "None" else None,
+            aligner=aligner.lower() if aligner != "Auto" else "auto",
+            nllb_model_size=nllb_size
+        )
+        
+        yield None, f"⏳ Übersetze Dokument...\n📍 Von {source_lang} → {target_lang}"
+        
+        # Translate
+        await translator.translate_document(input_path, output_path)
+        
+        # Save to database
+        save_document_translation(
+            user_state["id"],
+            str(input_path),
+            str(output_path),
+            source_lang,
+            target_lang,
+            mode,
+            nmt_backend
+        )
+        
+        success_msg = f"""
+✅ Übersetzung abgeschlossen!
+
+📄 Eingabe: {input_path.name}
+📄 Ausgabe: {output_filename}
+🌍 Richtung: {source_lang.upper()} → {target_lang.upper()}
+⚙️ Modus: {mode}
+🔧 Backend: {nmt_backend}
+
+💾 Gespeichert in Storage Box: {output_filename}
+"""
+        
+        yield str(output_path), success_msg
+        
+    except Exception as e:
+        logger.exception(f"Translation error: {e}")
+        yield None, f"❌ Übersetzungsfehler:\n{str(e)}"
+
+def translate_document_sync(*args, **kwargs):
+    """Synchronous wrapper for Gradio"""
+    gen = translate_document_with_progress(*args, **kwargs)
+    result = None
+    for result in gen:
+        yield result
+    return result
 
 # ==========================================
 # 🎬 YOUTUBE CHANNEL WHITELIST
@@ -6924,6 +7078,202 @@ with gr.Blocks(
                     outputs=[g_save_status, g_save_btn]
                 )
 
+            # --- TAB: DOKUMENTÜBERSETZUNG ---
+            with gr.TabItem("📄 Dokument-Übersetzer"):
+                gr.Markdown("""
+                ## 📄 Professionelle Dokumentübersetzung
+                
+                Übersetze Word-Dokumente mit **Format-Erhaltung**:
+                - ✅ Fettdruck, Kursiv, Schriftarten
+                - ✅ Fußnoten, Tabellen, Kopf-/Fußzeilen
+                - ✅ Mehrere KI-Backends
+                - ✅ Wort-Level-Alignment
+                """)
+                
+                with gr.Row():
+                    with gr.Column():
+                        # File Input
+                        with gr.Tabs() as doc_input_tabs:
+                            with gr.TabItem("📤 Upload"):
+                                doc_input_file = gr.File(
+                                    label="Word-Dokument hochladen (.docx)",
+                                    file_types=[".docx"],
+                                    type="filepath"
+                                )
+                            
+                            with gr.TabItem("📦 Storage Box"):
+                                gr.Markdown("Wähle Dokument aus Cloud-Speicher:")
+                                doc_storage_browser = gr.FileExplorer(
+                                    root_dir=STORAGE_MOUNT_POINT,
+                                    glob="**/*.{docx,docx.enc}",
+                                    label="Word-Dokumente durchsuchen",
+                                    height=200
+                                )
+                                with gr.Row():
+                                    doc_refresh_sb_btn = gr.Button("🔄", size="sm", scale=0)
+                                    doc_load_sb_btn = gr.Button("✅ Verwenden", variant="secondary", scale=1)
+                                doc_sb_status = gr.Markdown("")
+                        
+                        # Language Selection
+                        gr.Markdown("### 🌍 Sprachen")
+                        
+                        languages = {
+                            "Englisch": "en",
+                            "Deutsch": "de",
+                            "Französisch": "fr",
+                            "Spanisch": "es",
+                            "Italienisch": "it",
+                            "Portugiesisch": "pt",
+                            "Russisch": "ru",
+                            "Chinesisch": "zh",
+                            "Japanisch": "ja",
+                            "Koreanisch": "ko",
+                            "Arabisch": "ar",
+                            "Hindi": "hi",
+                            "Niederländisch": "nl",
+                            "Polnisch": "pl",
+                            "Türkisch": "tr",
+                            "Tschechisch": "cs",
+                            "Ukrainisch": "uk",
+                            "Vietnamesisch": "vi"
+                        }
+                        
+                        with gr.Row():
+                            doc_source_lang = gr.Dropdown(
+                                choices=list(languages.keys()),
+                                value="Englisch",
+                                label="Quellsprache"
+                            )
+                            doc_target_lang = gr.Dropdown(
+                                choices=list(languages.keys()),
+                                value="Deutsch",
+                                label="Zielsprache"
+                            )
+                        
+                        # Settings
+                        with gr.Accordion("⚙️ Einstellungen", open=False):
+                            doc_mode = gr.Dropdown(
+                                choices=[
+                                    "Hybrid (Recommended)",
+                                    "NMT Only",
+                                    "LLM with Alignment",
+                                    "LLM without Alignment"
+                                ],
+                                value="Hybrid (Recommended)",
+                                label="Übersetzungsmodus"
+                            )
+                            
+                            doc_nmt_backend = gr.Dropdown(
+                                choices=["NLLB", "Madlad", "Opus", "CT2", "Auto"],
+                                value="NLLB",
+                                label="NMT Backend"
+                            )
+                            
+                            doc_nllb_size = gr.Dropdown(
+                                choices=["600M", "1.3B", "3.3B"],
+                                value="600M",
+                                label="NLLB Modellgröße"
+                            )
+                            
+                            doc_aligner = gr.Dropdown(
+                                choices=["Auto", "Awesome", "SimAlign", "Lindat", "Heuristic"],
+                                value="Auto",
+                                label="Wort-Aligner"
+                            )
+                            
+                            doc_llm_provider = gr.Dropdown(
+                                choices=["None", "OpenAI", "Anthropic", "Ollama"],
+                                value="None",
+                                label="LLM Provider (Optional)"
+                            )
+                        
+                        doc_translate_btn = gr.Button("🚀 Übersetzen", variant="primary", size="lg")
+                    
+                    with gr.Column():
+                        doc_output_file = gr.File(
+                            label="📥 Übersetztes Dokument",
+                            interactive=False
+                        )
+                        
+                        doc_log_output = gr.Textbox(
+                            label="Status & Log",
+                            lines=15,
+                            max_lines=20,
+                            interactive=False
+                        )
+                
+                # Helper functions for Storage Box integration
+                def refresh_doc_storage_browser(user_state):
+                    root = get_file_explorer_root(user_state)
+                    return gr.update(root_dir=root, value=None)
+                
+                def use_storage_doc(selected_file, user_state):
+                    if not selected_file:
+                        return None, "❌ Keine Datei ausgewählt"
+                    
+                    try:
+                        if isinstance(selected_file, list):
+                            selected_file = selected_file[0] if selected_file else None
+                        
+                        if not selected_file:
+                            return None, "❌ Keine Datei ausgewählt"
+                        
+                        local_temp = copy_storage_file_to_temp(selected_file, user_state)
+                        display_name = os.path.basename(selected_file)
+                        if display_name.endswith('.enc'):
+                            display_name = display_name[:-4]
+                        return local_temp, f"✅ Geladen: {display_name}"
+                    except Exception as e:
+                        logger.exception(f"Doc storage load error: {e}")
+                        return None, f"🔥 Fehler: {str(e)}"
+                
+                # Wire up storage browser
+                doc_refresh_sb_btn.click(
+                    refresh_doc_storage_browser,
+                    inputs=[session_state],
+                    outputs=[doc_storage_browser]
+                )
+                
+                doc_input_tabs.select(
+                    refresh_doc_storage_browser,
+                    inputs=[session_state],
+                    outputs=[doc_storage_browser]
+                )
+                
+                doc_load_sb_btn.click(
+                    use_storage_doc,
+                    inputs=[doc_storage_browser, session_state],
+                    outputs=[doc_input_file, doc_sb_status]
+                )
+                
+                # Main translation function
+                def handle_translate(input_f, src_lang_name, tgt_lang_name, mode, nmt, nllb_sz, algn, llm, user_state):
+                    src_code = languages.get(src_lang_name, "en")
+                    tgt_code = languages.get(tgt_lang_name, "de")
+                    
+                    for result in translate_document_sync(
+                        input_f, src_code, tgt_code, mode, nmt, nllb_sz, algn, llm, user_state
+                    ):
+                        yield result
+                
+                # Wire up translation
+                doc_translate_btn.click(
+                    fn=handle_translate,
+                    inputs=[
+                        doc_input_file,
+                        doc_source_lang,
+                        doc_target_lang,
+                        doc_mode,
+                        doc_nmt_backend,
+                        doc_nllb_size,
+                        doc_aligner,
+                        doc_llm_provider,
+                        session_state
+                    ],
+                    outputs=[doc_output_file, doc_log_output]
+                )
+            
+            
             # --- TAB 5: VERLAUF & VERWALTUNG ---
             with gr.TabItem("📚 Verlauf & Verwaltung", id="tab_management"):
                 

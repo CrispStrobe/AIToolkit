@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gradio interface for Ultimate Document Translator
+Gradio interface for Document Translator
 Designed for Hugging Face Spaces deployment
 """
 
@@ -213,23 +213,10 @@ def create_interface():
     
     with gr.Blocks(title="Document Translator") as demo:  # REMOVED theme parameter
         gr.Markdown("""
-        # 🌍 Ultimate Document Translator
+        # 🌍 Document Translator
         
         Translate Word documents while preserving formatting, footnotes, and styling.
-        
-        **Features:**
-        - Multiple neural translation backends (NLLB, Madlad, Opus-MT, WMT21)
-        - Word-level alignment for format preservation
-        - Support for footnotes, tables, headers/footers
-        - Optional LLM enhancement (OpenAI/Anthropic)
-        
-        **Recommended Settings:**
-        - Mode: Hybrid (best quality)
-        - Backend: NLLB (fastest, good quality)
-        - Size: 600M (good balance)
         """)
-        
-        gr.Markdown(f"### System Status\n```\n{SETUP_STATUS}\n```")
         
         with gr.Row():
             with gr.Column(scale=1):
@@ -312,7 +299,20 @@ def create_interface():
                     interactive=False
                 )
         
+        gr.Markdown(f"### System Status\n```\n{SETUP_STATUS}\n```")
+        
         gr.Markdown("""
+        **Features:**
+        - Multiple neural translation backends (NLLB, Madlad, Opus-MT, WMT21)
+        - Word-level alignment for format preservation
+        - Support for footnotes, tables, headers/footers
+        - Optional LLM enhancement (OpenAI/Anthropic)
+        
+        **Recommended Settings:**
+        - Mode: Hybrid (best quality)
+        - Backend: NLLB (fastest, good quality)
+        - Size: 600M (good balance)
+                    
         ### 📖 Tips
         
         - **For best quality**: Use "Hybrid" mode with NLLB backend
@@ -329,7 +329,6 @@ def create_interface():
         - LLM modes are slower and require API access
         """)
         
-        # FIXED: Proper event handler without gr.State
         def handle_translate(input_f, src_lang_name, tgt_lang_name, mode, nmt, nllb_sz, algn, llm):
             src_code = languages.get(src_lang_name, "en")
             tgt_code = languages.get(tgt_lang_name, "de")
