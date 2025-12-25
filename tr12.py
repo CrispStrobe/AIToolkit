@@ -627,8 +627,13 @@ class AwesomeAlignAligner:
                 except Exception:
                     self.encoder = ctranslate2.Encoder(model_path, device="cpu", compute_type="int8")
 
-                self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-                self.mode, self.available = "ct2", True
+                #self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+                # The Tokenizer loads from the HF repo STRING
+                # This ensures it gets the metadata it needs without CT2 choking on it
+                self.tokenizer = AutoTokenizer.from_pretrained(self.standard_repo)
+
+                self.mode = "ct2"
+                self.available = True
                 logger.info(f"✓ Awesome-Align CT2 ready.")
                 return
             except Exception as e:
