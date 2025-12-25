@@ -261,8 +261,79 @@ class CTranslate2Translator:
         except Exception as e:
             logger.error(f"CT2 Critical Error: {e}")
             return texts
+class OpusMTTranslator:
+    """Opus-MT Backend: Tiny, specialized bilingual models. Standalone logic."""
+    def __init__(self, src_lang: str, tgt_lang: str):
+        self.src_lang, self.tgt_lang = src_lang, tgt_lang
+        self.available = False
+        self.ct2_dev, self.ct2_compute = get_ct2_settings()
+        
+        # The standard name format for Opus-MT
+        original_repo = f"Helsinki-NLP/opus-mt-{src_lang}-{tgt_lang}"
+        # Your custom optimized repo
+        self.custom_repo = f"cstr/opus-mt-{src_lang}-{tgt_lang}-ct2-int8"
 
+        try:
+            logger.info(f"NMT | Loading weights from {self.custom_repo}...")
+            model_path = snapshot_download(repo_id=self.custom_repo)
+            
+            self.translator = ctranslate2.Translator(model_path, device=self.ct2_dev, compute_type=self.ct2_compute)
+            
+            # FIXED: Load tokenizer from the ORIGINAL repo name to get the correct Marian model_type
+            # Transformers library will use the tiny cached JSON files from the original.
+            self.tokenizer = AutoTokenizer.from_pretrained(original_repo)
+            
+            self.available = True
+            logger.info(f"✓ NMT | Opus-MT ready (Weights: cstr / Tokenizer: original)")
+        except Exception as e:
+            logger.warning(f"NMT | Opus-MT primary load failed: {e}. Trying michaelfeil fallback...")
+            try:
+                fallback = f"michaelfeil/ct2fast-opus-mt-{src_lang}-{tgt_lang}"
+                model_path = snapshot_download(repo_id=fallback)
+                self.translator = ctranslate2.Translator(model_path, device=self.ct2_dev, compute_type=self.ct2_compute)
+                self.tokenizer = AutoTokenizer.from_pretrained(original_repo)
+                self.available = True
+                logger.info(f"✓ NMT | Opus-MT ready using {fallback}")
+            except:
+                logger.error("NMT | All Opus-MT paths failed.")
 
+    def translate_batch(self, texts: List[str]) -> List[str]:
+        if not self.available or not texts: return texts
+        source_tokens = [self.tokenizer.convert_ids_to_tokens(self.tokenizer.encode(t)) for t in texts]
+        results = self.translator.translate_batch(source_tokens, beam_size=5)
+        return [self.tokenizer.decode(self.tokenizer.convert_tokens_to_ids(r.hypotheses[0]), skip_special_tokens=True) for r in results]
+    
+class Madlad400Translator:
+    """Madlad-400 Backend: Google's 3B powerhouse. Optimized for your cstr/ repo."""
+    def __init__(self, src_lang: str, tgt_lang: str, model_size: str = "3b"):
+        self.src_lang, self.tgt_lang = src_lang, tgt_lang
+        self.available = False
+        self.ct2_dev, self.ct2_compute = get_ct2_settings()
+        
+        original_repo = f"google/madlad400-{model_size}-mt"
+        self.custom_repo = f"cstr/madlad400-{model_size}-ct2-int8"
+        self.tgt_prefix = f"<2{tgt_lang}>"
+
+        try:
+            logger.info(f"NMT | Loading Madlad-400 from {self.custom_repo}...")
+            model_path = snapshot_download(repo_id=self.custom_repo)
+            
+            self.translator = ctranslate2.Translator(model_path, device=self.ct2_dev, compute_type=self.ct2_compute)
+            
+            # FIXED: Point tokenizer to Google's repo to resolve the T5 architecture correctly
+            self.tokenizer = AutoTokenizer.from_pretrained(original_repo)
+            
+            self.available = True
+            logger.info(f"✓ NMT | Madlad-400 ready.")
+        except Exception as e:
+            logger.error(f"NMT | Madlad-400 load failed: {e}")
+
+    def translate_batch(self, texts: List[str]) -> List[str]:
+        if not self.available or not texts: return texts
+        # Prepends <2de> (or similar) to every sentence in the batch
+        source_tokens = [self.tokenizer.convert_ids_to_tokens(self.tokenizer.encode(f"{self.tgt_prefix} {t}")) for t in texts]
+        results = self.translator.translate_batch(source_tokens, beam_size=1, repetition_penalty=2.0)
+        return [self.tokenizer.decode(self.tokenizer.convert_tokens_to_ids(r.hypotheses[0]), skip_special_tokens=True) for r in results]
 class NLLBTranslator:
     """NLLB-200 translator using CTranslate2 for 4x speedup and low memory"""
     
@@ -919,6 +990,8 @@ class UltimateDocumentTranslator:
         self.nllb = None # NLLB translator
         self.llm = None
         self.aligner = None
+        self.opus = None
+        self.madlad = None
 
         logger.info(f"INIT | Starting Translator ({src_lang}→{tgt_lang})")
         logger.info(f"INIT | Mode: {mode.value} | NMT: {nmt_backend} | Aligner: {aligner or 'auto'}")
@@ -930,6 +1003,12 @@ class UltimateDocumentTranslator:
                 self.nllb = NLLBTranslator(src_lang, tgt_lang, nllb_model_size)
                 if not self.nllb.available:
                     logger.error("INIT | CRITICAL: NLLB specifically requested but failed to load.")
+            
+            elif nmt_backend == "opus":
+                self.opus = OpusMTTranslator(src_lang, tgt_lang)
+            
+            elif nmt_backend == "madlad":
+                self.madlad = Madlad400Translator(src_lang, tgt_lang, "3b")
             
             elif nmt_backend == "ct2":
                 self.ct2 = CTranslate2Translator(src_lang, tgt_lang)
@@ -957,6 +1036,19 @@ class UltimateDocumentTranslator:
             
         self.log_memory("Initialization Complete")
 
+        # FINAL VERIFICATION: Ensure at least one engine is ready
+        engines_ready = any([
+            self.nllb and self.nllb.available,
+            self.ct2 and self.ct2.available,
+            self.opus and self.opus.available,
+            self.madlad and self.madlad.available,
+            self.llm and self.llm.providers
+        ])
+        
+        if not engines_ready:
+            logger.error("INIT | CRITICAL FAILURE: No translation engines were able to load.")
+            raise RuntimeError("No translation backends available. Check your model paths and API keys.")
+
     def log_memory(self, stage: str):
         """Log current RAM usage (requires psutil)."""
         try:
@@ -970,19 +1062,30 @@ class UltimateDocumentTranslator:
             logger.debug(f"Memory log failed: {e}")
     
     async def translate_text(self, text: str) -> str:
+        """Routes text through the active neural engine chain."""
         if not text.strip(): return text
         
-        # 1. Try NLLB if loaded
+        # 1. Try NLLB (Local CT2)
         if self.nllb and self.nllb.available:
             result = self.nllb.translate_batch([text])[0]
-            if result and result != text: return result
+            if result and result.strip() != text.strip(): return result
             
-        # 2. Try WMT21 if loaded
+        # 2. Try WMT21 (Local CT2 - 'ct2' backend)
         if self.ct2 and self.ct2.available:
             result = self.ct2.translate_batch([text])[0]
-            if result and result != text: return result
+            if result and result.strip() != text.strip(): return result
 
-        # 3. Try LLM (Hybrid/LLM modes)
+        # 3. Try OPUS-MT (Local CT2)
+        if self.opus and self.opus.available:
+            result = self.opus.translate_batch([text])[0]
+            if result and result.strip() != text.strip(): return result
+
+        # 4. Try MADLAD-400 (Local CT2)
+        if self.madlad and self.madlad.available:
+            result = self.madlad.translate_batch([text])[0]
+            if result and result.strip() != text.strip(): return result
+
+        # 5. Try LLM (Hybrid/LLM modes)
         if self.llm and self.llm.providers:
             # use_alignment depends on mode
             use_align = (self.mode != TranslationMode.LLM_WITHOUT_ALIGN)
@@ -1182,7 +1285,7 @@ class UltimateDocumentTranslator:
         return True
     
     async def translate_paragraph(self, para: Paragraph):
-        """Paragraph translation with heavy trace logging for format debugging."""
+        """Paragraph translation with multi-backend routing and alignment."""
         if not para.text or not para.text.strip() or not self.is_paragraph_safe_to_translate(para):
             return
         
@@ -1191,39 +1294,42 @@ class UltimateDocumentTranslator:
             trans_para = self.extract_paragraph(para)
             original_text = trans_para.get_text()
             
+            # 1. Split into sentences for higher NMT quality
             sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', original_text) if s.strip()]
             if not sentences: return
 
-            if self.ct2 and self.ct2.available:
-                translated_sentences = self.ct2.translate_batch(sentences)
-            elif self.nllb and self.nllb.available:
-                translated_sentences = self.nllb.translate_batch(sentences)
-            else: return
-
+            # 2. FIXED: Use the central router for each sentence
+            translated_sentences = []
+            for s in sentences:
+                t = await self.translate_text(s)
+                translated_sentences.append(t)
+            
             translated_text = " ".join(translated_sentences)
             
-            # Prep for Aligner
+            # 3. Preparation for Aligner
             src_words = trans_para.get_words() 
             tgt_words_clean = re.findall(r"\w+", translated_text)
             
-            logger.debug("-" * 40)
-            logger.debug(f"TRACE | RAW SRC: {original_text[:100]}...")
-            logger.debug(f"TRACE | CLEAN SRC WORDS: {src_words}")
-            logger.debug(f"TRACE | CLEAN TGT WORDS: {tgt_words_clean}")
+            # Log the translation for the CLI trace
+            logger.info("-" * 30)
+            logger.info(f"TRANS | Out: {translated_text[:60]}...")
             
             if not src_words or not tgt_words_clean:
                 para.text = translated_text
                 return
                 
-            alignment = self.aligner.align(src_words, tgt_words_clean)
-            logger.debug(f"TRACE | ALIGNMENT MAP: {alignment}")
+            # 4. Alignment Pass
+            alignment = []
+            if self.aligner:
+                alignment = self.aligner.align(src_words, tgt_words_clean)
+                logger.info(f"ALIGN | Matches: {len(alignment)}")
             
+            # 5. Reconstruction
             self.apply_aligned_formatting(para, trans_para, translated_text, alignment)
-            logger.debug("-" * 40)
             self.log_memory("Post-Paragraph")
                     
         except Exception as e:
-            logger.error(f"Error in translate_paragraph: {e}", exc_info=True)
+            logger.error(f"PARA | Translation Failed: {e}", exc_info=True)
     
     def get_footnotes(self, doc: Document) -> List[Paragraph]:
         """Extract footnotes. We pass doc as parent to avoid Part attribute error"""
@@ -1370,98 +1476,97 @@ class UltimateDocumentTranslator:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description='Document Translator',
+        description='🚀 Ultimate Document Translator - Multi-Backend Production Version',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Backends Comparison:
+  nllb       - Distilled 600M (Default). Best speed/RAM ratio. Great general support.
+  madlad     - Google's 3B model. Superior academic/formal quality (~3GB RAM).
+  opus       - Specialized bilingual models. Tiny (~200MB), extremely fast, literal.
+  ct2 (wmt)  - Dense Facebook models. Peak German/European quality (~6GB RAM).
+
 Examples:
-  # Default (auto-detect best backends)
+  # Standard use (NLLB-600M)
   %(prog)s input.docx output.docx -s en -t de
   
-  # Use NLLB for translation
-  %(prog)s input.docx output.docx -s en -t fr --nmt nllb
+  # High-quality academic translation (Madlad-400)
+  %(prog)s input.docx output.docx -s en -t de --nmt madlad
   
-  # Use LLM with alignment
-  %(prog)s input.docx output.docx -s en -t es --mode llm-align --llm openai
+  # Maximum speed for EN-DE specialized pair (Opus-MT)
+  %(prog)s input.docx output.docx -s en -t de --nmt opus
   
-  # Use LLM without alignment (natural translation)
-  %(prog)s input.docx output.docx -s en -t it --mode llm-plain --llm anthropic
+  # Use LLM (Claude) with local neural alignment
+  %(prog)s input.docx output.docx -s en -t es --mode llm-align --llm anthropic
   
-  # Hybrid mode (will use Lindat aligner)
-  %(prog)s input.docx output.docx -s en -t de --mode hybrid
-  
-  # Use larger NLLB model
+  # Larger NLLB model for rare languages
   %(prog)s input.docx output.docx -s en -t ja --nmt nllb --nllb-size 1.3B
 
 Environment Variables:
-  OPENAI_API_KEY       - OpenAI API key
-  OPENAI_MODEL         - OpenAI model (default: gpt-4o-mini)
-  ANTHROPIC_API_KEY    - Anthropic API key
-  ANTHROPIC_MODEL      - Anthropic model (default: claude-3-5-sonnet-20241022)
-
-Installation Notes:
-  fast_align: This is a C++ tool, not a Python package. 
-              See: https://github.com/clab/fast_align
-              Or install Python wrapper: pip install fast-align
-  
-  SimAlign:   pip install simalign
-  NLLB:       pip install transformers torch
+  OPENAI_API_KEY, ANTHROPIC_API_KEY - Required for LLM backends.
         """
     )
     
-    parser.add_argument('input', help='Input .docx file')
-    parser.add_argument('output', help='Output .docx file')
-    parser.add_argument('-s', '--source', default='en', help='Source language (default: en)')
-    parser.add_argument('-t', '--target', default='de', help='Target language (default: de)')
+    # 1. POSITIONAL ARGUMENTS
+    parser.add_argument('input', help='Input .docx file path')
+    parser.add_argument('output', help='Output .docx file path')
     
+    # 2. LANGUAGE ARGUMENTS
+    parser.add_argument('-s', '--source', default='en', help='Source language code (default: en)')
+    parser.add_argument('-t', '--target', default='de', help='Target language code (default: de)')
+    
+    # 3. TRANSLATION MODE
     parser.add_argument(
         '--mode',
         choices=['nmt', 'llm-align', 'llm-plain', 'hybrid'],
         default='hybrid',
-        help='Translation mode (default: hybrid)'
+        help='Translation strategy (default: hybrid)'
     )
     
+    # 4. NMT ENGINE SELECTION 
     parser.add_argument(
         '--nmt',
-        choices=['ct2', 'nllb', 'auto'],
+        choices=['nllb', 'madlad', 'opus', 'ct2', 'auto'],
         default='nllb',
-        help='NMT backend (default: nllb)'
+        help='Local NMT Engine: NLLB (general), Madlad (academic), Opus (specialized), CT2 (dense)'
     )
     
     parser.add_argument(
         '--nllb-size',
         choices=['600M', '1.3B', '3.3B'],
         default='600M',
-        help='NLLB model size (default: 600M)'
+        help='NLLB variant only: 600M (fastest), 1.3B (balanced), 3.3B (heavy)'
     )
     
+    # 5. LLM PROVIDER
     parser.add_argument(
         '--llm',
         choices=['openai', 'anthropic', 'ollama'],
-        help='LLM provider (default: auto-detect)'
+        help='LLM provider for hybrid/llm modes'
     )
     
+    # 6. ALIGNER SELECTION
     parser.add_argument(
         '--aligner',
-        choices=['lindat', 'fast_align', 'simalign', 'awesome', 'heuristic', 'auto'],
-        help='Word aligner (default: auto)'
+        choices=['awesome', 'simalign', 'lindat', 'fast_align', 'heuristic', 'auto'],
+        default='auto',
+        help='Word Aligner: awesome (M1 optimized), simalign (heavy), lindat (API)'
     )
     
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose logging')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable detailed TRACE logging')
     
     args = parser.parse_args()
     
+    # Set global logging level based on verbose flag
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
+    # Path validation
     input_path = Path(args.input)
     if not input_path.exists():
-        print(f"Error: File not found: {input_path}")
+        logger.error(f"File not found: {input_path}")
         sys.exit(1)
     
-    if input_path.suffix.lower() != '.docx':
-        print(f"Error: Only .docx files supported")
-        sys.exit(1)
-    
+    # Mapping CLI strings to Enums
     mode_map = {
         'nmt': TranslationMode.NMT_ONLY,
         'llm-align': TranslationMode.LLM_WITH_ALIGN,
@@ -1469,23 +1574,21 @@ Installation Notes:
         'hybrid': TranslationMode.HYBRID
     }
     
+    # --- LOGO & STATUS HEADER ---
     print(f"\n{'='*60}")
-    print(f"Document Translator")
+    print(f"🌍 DOCUMENT TRANSLATOR - PRODUCTION v12")
     print(f"{'='*60}")
-    print(f"Input:      {input_path}")
+    print(f"Input:      {input_path.name}")
     print(f"Output:     {args.output}")
     print(f"Direction:  {args.source.upper()} → {args.target.upper()}")
-    print(f"Mode:       {args.mode}")
-    if args.nmt:
-        print(f"NMT:        {args.nmt}")
-    if args.nmt == 'nllb':
-        print(f"NLLB Size:  {args.nllb_size}")
+    print(f"Mode:       {args.mode.upper()}")
+    print(f"NMT Engine: {args.nmt.upper()} {'('+args.nllb_size+')' if args.nmt=='nllb' else ''}")
+    print(f"Aligner:    {args.aligner.upper()}")
     if args.llm:
-        print(f"LLM:        {args.llm}")
-    if args.aligner:
-        print(f"Aligner:    {args.aligner}")
+        print(f"LLM:        {args.llm.upper()}")
     print(f"{'='*60}\n")
     
+    # Initialize the engine
     translator = UltimateDocumentTranslator(
         src_lang=args.source,
         tgt_lang=args.target,
@@ -1496,12 +1599,17 @@ Installation Notes:
         nllb_model_size=args.nllb_size
     )
     
-    await translator.translate_document(input_path, Path(args.output))
-    
-    print(f"\n{'='*60}")
-    print(f"✓ Success!")
-    print(f"Output saved to: {args.output}")
-    print(f"{'='*60}\n")
+    # Execute lifecycle
+    try:
+        await translator.translate_document(input_path, Path(args.output))
+        
+        print(f"\n{'='*60}")
+        print(f"✅ Success! Document processed in {args.mode} mode.")
+        print(f"💾 File saved to: {args.output}")
+        print(f"{'='*60}\n")
+    except Exception as e:
+        logger.error(f"FAILED | Document translation aborted: {e}", exc_info=args.verbose)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
