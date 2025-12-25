@@ -35,6 +35,7 @@ HAS_CT2 = check_library("CTranslate2", "import ctranslate2; from huggingface_hub
 HAS_TRANSFORMERS = check_library("Transformers", "from transformers import AutoTokenizer, AutoModelForSeq2SeqLM")
 HAS_OPENAI = check_library("OpenAI", "from openai import AsyncOpenAI")
 HAS_ANTHROPIC = check_library("Anthropic", "from anthropic import AsyncAnthropic")
+HAS_SIMALIGN = check_library("simalign", "from simalign import SentenceAligner")
 
 # --- Device & Backend Configuration ---
 def get_torch_device():
@@ -492,110 +493,35 @@ class LLMTranslator:
 # ============================================================================
 
 class LindatAligner:
-    """Lindat word alignment API"""
+    """Lindat word alignment API: Zero RAM usage fallback."""
     
     def __init__(self, src_lang: str, tgt_lang: str):
-        self.src_lang = src_lang
-        self.tgt_lang = tgt_lang
+        self.src_lang, self.tgt_lang = src_lang, tgt_lang
         self.available = self._check_available()
         if self.available:
-            logger.info(f"✓ Lindat aligner available ({src_lang}-{tgt_lang})")
-        else:
-            logger.info(f"⊘ Lindat aligner not available ({src_lang}-{tgt_lang})")
+            logger.info(f"✓ ALIGN | Lindat API available ({src_lang}-{tgt_lang})")
     
     def _check_available(self) -> bool:
         try:
-            r = requests.get(
-                f"https://lindat.cz/services/text-aligner/align/{self.src_lang}-{self.tgt_lang}",
-                timeout=5
-            )
+            r = requests.get(f"https://lindat.cz/services/text-aligner/align/{self.src_lang}-{self.tgt_lang}", timeout=3)
             return r.status_code in [200, 405]
-        except:
-            return False
+        except: return False
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
-        """
-        Extracts high-precision word alignments using BERT embeddings.
-        Compatible with all CTranslate2 versions. Uses Softmax Intersection for precision.
-        """
-        if not self.available or not src_words or not tgt_words:
-            return []
-        
-        # Local imports for total robustness
-        import numpy as np
+        if not self.available or not src_words or not tgt_words: return []
         try:
-            # 1. PRE-PROCESSING
-            def get_tokens_and_map(words):
-                subtokens, word_map = [], []
-                for i, w in enumerate(words):
-                    tokens = self.tokenizer.tokenize(w) or [self.tokenizer.unk_token]
-                    subtokens.extend(tokens)
-                    word_map.extend([i] * len(tokens))
-                return subtokens, word_map
-
-            src_subtokens, src_word_map = get_tokens_and_map(src_words)
-            tgt_subtokens, tgt_word_map = get_tokens_and_map(tgt_words)
-
-            # 2. EMBEDDING EXTRACTION
-            if self.mode == "ct2":
-                # Prepare inputs
-                src_input = [["[CLS]"] + src_subtokens + ["[SEP]"]]
-                tgt_input = [["[CLS]"] + tgt_subtokens + ["[SEP]"]]
-                
-                # Standard forward (compatible with all CT2 versions)
-                res_src = self.encoder.forward_batch(src_input)
-                res_tgt = self.encoder.forward_batch(tgt_input)
-                
-                # Extract last hidden state (Layer 12)
-                src_out = np.array(res_src.last_hidden_state)[0, 1:-1]
-                tgt_out = np.array(res_tgt.last_hidden_state)[0, 1:-1]
-            else:
-                import torch
-                def to_ids(tokens):
-                    ids = self.tokenizer.convert_tokens_to_ids(tokens)
-                    return torch.tensor([self.tokenizer.cls_token_id] + ids + [self.tokenizer.sep_token_id]).to(self.device)
-                
-                with torch.no_grad():
-                    # PyTorch still targets Layer 8 for maximum precision
-                    src_h = self.model(to_ids(src_subtokens).unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
-                    tgt_h = self.model(to_ids(tgt_subtokens).unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
-                    src_out = src_h.detach().cpu().float().numpy()
-                    tgt_out = tgt_h.detach().cpu().float().numpy()
-
-            # 3. SIMILARITY & SOFTMAX INTERSECTION
-            # Normalize
-            src_norm = src_out / np.linalg.norm(src_out, axis=-1, keepdims=True)
-            tgt_norm = tgt_out / np.linalg.norm(tgt_out, axis=-1, keepdims=True)
-            similarity = np.dot(src_norm, tgt_norm.T)
-
-            # Softmax Intersection Logic
-            def softmax(x, axis):
-                e_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
-                return e_x / e_x.sum(axis=axis, keepdims=True)
-
-            probs_src_to_tgt = softmax(similarity, axis=1)
-            probs_tgt_to_src = softmax(similarity, axis=0)
-            
-            # Mutual agreement threshold
-            threshold = 1e-3
-            mask = (probs_src_to_tgt > threshold) * (probs_tgt_to_src > threshold)
-            
-            # 4. MAPPING
-            coords = np.argwhere(mask)
-            align_words = set()
-            for i, j in coords:
-                align_words.add((src_word_map[i], tgt_word_map[j]))
-            
-            final_alignments = sorted(list(align_words))
-            
-            # VERBOSE CLI LOG
-            logger.debug(f"TRACE | Awesome-Align ({self.mode.upper()}) | Clean Words: {len(src_words)}x{len(tgt_words)} | Links Found: {len(final_alignments)}")
-
-            return final_alignments
-            
+            r = requests.post(
+                f"https://lindat.cz/services/text-aligner/align/{self.src_lang}-{self.tgt_lang}",
+                headers={'Content-Type': 'application/json'},
+                json={'src_tokens': [src_words], 'trg_tokens': [tgt_words]},
+                timeout=15
+            )
+            if r.status_code == 200:
+                alignment = r.json()["alignment"][0]
+                return [(int(a[0]), int(a[1])) for a in alignment]
         except Exception as e:
-            logger.error(f"ALIGN | Critical Logic Error: {e}")
-            return []
+            logger.debug(f"ALIGN | Lindat request failed: {e}")
+        return []
 
 class AwesomeAlignAligner:
     """BERT Aligner: Uses custom CT2-INT8 model from HuggingFace."""
@@ -848,38 +774,31 @@ class FastAlignAligner:
             logger.debug(f"fast_align execution failed: {e}")
             return []
 
-
 class SimAlignAligner:
-    """SimAlign aligner"""
-    
+    """SimAlign Aligner: Heavy PyTorch BERT (1.2GB RAM)."""
     def __init__(self):
-        self.available = HAS_SIMALIGN
+        self.available = globals().get('HAS_SIMALIGN', False)
         if self.available:
             try:
-                self.aligner = SentenceAligner(model="bert", token_type="bpe", matching_methods="mai")
-                logger.info("✓ SimAlign available")
+                from simalign import SentenceAligner
+                # FIXED: matching_methods must be a short string mapping code
+                # "m" maps to "mwmf" internally in simalign.simalign.py
+                self.aligner = SentenceAligner(model="bert", token_type="bpe", matching_methods="m", device="cpu")
+                logger.info("✓ ALIGN | SimAlign (Standard BERT) ready.")
             except Exception as e:
-                logger.debug(f"SimAlign init failed: {e}")
+                logger.error(f"ALIGN | SimAlign init failed: {e}")
                 self.available = False
-                logger.info("⊘ SimAlign init failed")
-        else:
-            logger.info("⊘ SimAlign not available (install: pip install simalign)")
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
-        """Align word indices"""
-        if not self.available or not src_words or not tgt_words:
-            return []
-        
+        if not self.available or not src_words or not tgt_words: return []
         try:
+            # returns dict of lists: {'mwmf': [(0,0), ...]}
             result = self.aligner.get_word_aligns(src_words, tgt_words)
-            alignments = []
-            for src_idx, tgt_idx in result['mwmf'].items():
-                alignments.append((src_idx, tgt_idx))
-            return alignments
+            alignments = result.get('mwmf', [])
+            return [(int(a[0]), int(a[1])) for a in alignments]
         except Exception as e:
-            logger.debug(f"SimAlign failed: {e}")
+            logger.error(f"ALIGN | SimAlign failed: {e}")
             return []
-
 
 class HeuristicAligner:
     """Heuristic fallback - align words that appear in both"""
@@ -1135,6 +1054,8 @@ class UltimateDocumentTranslator:
     def copy_font_properties(self, target_run, source_run: FormatRun):
         """Forces Font Name, Size, and Color into XML. Does NOT touch bold/italic."""
         try:
+            from docx.shared import Pt, RGBColor
+            from docx.oxml.ns import qn
             if source_run.font_size:
                 target_run.font.size = Pt(source_run.font_size)
             if source_run.font_color:
