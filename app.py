@@ -14,6 +14,7 @@ os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
 from typing import Tuple, List, Dict, Optional
 import glob
+from pathlib import Path
 
 # ==========================================
 # IMPORTS FROM MODULES
@@ -1354,81 +1355,69 @@ async def translate_document_with_progress(
 
 
 def translate_document_sync(*args, **kwargs):
-    """Synchronous wrapper for Gradio - yields progress updates"""
+    """
+    Thread-safe synchronous wrapper for Gradio.
+    Uses a Queue to stream real-time updates from an async generator 
+    running in a background thread.
+    """
     import asyncio
-    import concurrent.futures
+    import threading
+    import queue
     from datetime import datetime
-    
+
     print(f"\n{'='*60}")
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 translate_document_sync called")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 translate_document_sync started")
     
-    def consume_async_gen_in_new_loop(async_gen_func, *args, **kwargs):
-        """Consume async generator in a new event loop"""
+    # Create a thread-safe queue to communicate between threads
+    update_queue = queue.Queue()
+    
+    def run_async_in_thread(func, q, *args, **kwargs):
+        """Worker function: Runs the async generator and puts results in the queue"""
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
-        results = []
+        
+        async def task():
+            try:
+                # Iterate through the actual translation generator
+                async for update in func(*args, **kwargs):
+                    q.put(("UPDATE", update))
+                q.put(("DONE", None))
+            except Exception as e:
+                q.put(("ERROR", str(e)))
+        
         try:
-            async def collect():
-                async_gen = async_gen_func(*args, **kwargs)
-                async for item in async_gen:
-                    results.append(item)
-            new_loop.run_until_complete(collect())
+            new_loop.run_until_complete(task())
         finally:
             new_loop.close()
-        return results
-    
-    try:
+
+    # Start the background thread
+    worker_thread = threading.Thread(
+        target=run_async_in_thread, 
+        args=(translate_document_with_progress, update_queue, *args), 
+        kwargs=kwargs
+    )
+    worker_thread.start()
+
+    # Main thread: Pull from the queue and YIELD to Gradio in real-time
+    while True:
         try:
-            # Check if event loop is running (Gradio context)
-            asyncio.get_running_loop()
-            print(f"[DEBUG] ⚠️  Event loop running - using ThreadPool")
+            # Check the queue every 0.1 seconds
+            msg_type, data = update_queue.get(timeout=600) # 10 min timeout
             
-            # Run in thread pool
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    consume_async_gen_in_new_loop,
-                    translate_document_with_progress,
-                    *args,
-                    **kwargs
-                )
-                results = future.result(timeout=600)
-                
-            # Yield all collected results
-            for result in results:
-                yield result
-                
-        except RuntimeError:
-            # No running loop - create new one
-            print(f"[DEBUG] ℹ️  No running loop - creating new one")
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                async def consume():
-                    results = []
-                    async_gen = translate_document_with_progress(*args, **kwargs)
-                    async for item in async_gen:
-                        results.append(item)
-                    return results
-                
-                results = loop.run_until_complete(consume())
-                
-                # Yield all collected results
-                for result in results:
-                    yield result
-                    
-            finally:
-                loop.close()
-                
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        import traceback
-        traceback.print_exc()
-        yield None, f"❌ Error: {str(e)}"
-        
-    finally:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🏁 Finished")
-        print(f"{'='*60}\n")
+            if msg_type == "UPDATE":
+                yield data  # This sends the log/file to the UI immediately!
+            elif msg_type == "DONE":
+                break
+            elif msg_type == "ERROR":
+                yield None, f"❌ Hintergrundfehler: {data}"
+                break
+        except queue.Empty:
+            yield None, "❌ Zeitüberschreitung (Timeout)"
+            break
+
+    worker_thread.join()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🏁 translate_document_sync finished")
+    print(f"{'='*60}\n")
 
 # ==========================================
 # 🎬 YOUTUBE CHANNEL WHITELIST
