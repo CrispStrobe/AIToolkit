@@ -40,4 +40,4 @@ tokens/
 
 # App-specific hidden keys
 .master_key
-.pq_keypair
+.pq_keypairbert-base-multilingual-cased-ct2/model.bin

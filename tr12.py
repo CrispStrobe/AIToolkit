@@ -93,11 +93,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def get_torch_device():
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
+    """Returns 'mps', 'cuda', or 'cpu' for PyTorch."""
+    if torch.cuda.is_available(): return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+def get_ct2_settings():
+    """Returns ('cpu', 'int8') for Mac/CPU or ('cuda', 'float16') for Nvidia."""
+    if torch.cuda.is_available():
+        return "cuda", "float16"
+    # Mac M1/M2/M3: Must use 'cpu' to trigger Accelerate backend and 'int8' for speed
+    return "cpu", "int8"
 
 # Optional: fast_align (FIXED: Added global check for package or binary)
 def check_fast_align_available():
@@ -225,7 +232,7 @@ class TranslatableParagraph:
 # ============================================================================
 
 class CTranslate2Translator:
-    """CTranslate2 for fast translation"""
+    """WMT21 Backend: High-quality dense model."""
     
     MODELS = {
         'en_to_x': 'cstr/wmt21ct2_int8',
@@ -235,35 +242,31 @@ class CTranslate2Translator:
     SUPPORTED_LANGS = ['de', 'es', 'fr', 'it', 'ja', 'zh', 'ru', 'pt', 'nl', 'cs', 'uk']
     
     def __init__(self, src_lang: str, tgt_lang: str):
-        self.src_lang = src_lang
-        self.tgt_lang = tgt_lang
+        self.src_lang, self.tgt_lang = src_lang, tgt_lang
         self.available = False
+        self.device = get_torch_device()
+        self.ct2_dev, self.ct2_compute = get_ct2_settings()
         
-        if not HAS_CT2:
-            logger.info("⊘ CT2: library not installed")
-            return
+        if not HAS_CT2: return
         
         if src_lang == 'en' and tgt_lang in self.SUPPORTED_LANGS:
-            self.direction = 'en_to_x'
-            self.tokenizer_name = "facebook/wmt21-dense-24-wide-en-x"
+            self.direction, self.tokenizer_name = 'en_to_x', "facebook/wmt21-dense-24-wide-en-x"
         elif tgt_lang == 'en' and src_lang in self.SUPPORTED_LANGS:
-            self.direction = 'x_to_en'
-            self.tokenizer_name = "facebook/wmt21-dense-24-wide-x-en"
-        else:
-            logger.info(f"⊘ CT2: {src_lang}→{tgt_lang} not supported")
-            return
+            self.direction, self.tokenizer_name = 'x_to_en', "facebook/wmt21-dense-24-wide-x-en"
+        else: return
         
         try:
-            logger.info(f"Loading CT2 model...")
+            logger.info(f"Loading WMT21-CT2 from {self.MODELS[self.direction]}...")
             model_path = self._get_or_download_model()
-            self.translator = ctranslate2.Translator(model_path, device="auto")
+            
+            self.translator = ctranslate2.Translator(
+                model_path, device=self.ct2_dev, compute_type=self.ct2_compute
+            )
             self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name)
-            self.tokenizer.src_lang = src_lang
-            self.tokenizer.tgt_lang = tgt_lang
             self.available = True
-            logger.info(f"✓ CT2 ready ({src_lang}→{tgt_lang})")
+            logger.info(f"✓ WMT21 CT2 ready on {self.ct2_dev} ({self.ct2_compute})")
         except Exception as e:
-            logger.error(f"CT2 init failed: {e}")
+            logger.error(f"WMT21 CT2 critical failure: {e}")
     
     def _get_or_download_model(self) -> str:
         cache_base = Path.home() / '.cache' / 'huggingface' / 'hub'
@@ -340,50 +343,58 @@ class NLLBTranslator:
     }
     
     def __init__(self, src_lang: str, tgt_lang: str, model_size: str = "600M"):
-        self.src_lang = src_lang
-        self.tgt_lang = tgt_lang
+        self.src_lang, self.tgt_lang = src_lang, tgt_lang
         self.available = False
-        
-        if not HAS_CT2:
-            logger.info("⊘ NLLB-CT2: ctranslate2 not installed")
-            return
+        self.mode = None
+        self.device = get_torch_device()
+        self.ct2_dev, self.ct2_compute = get_ct2_settings()
         
         self.src_code = self.LANG_CODES.get(src_lang)
         self.tgt_code = self.LANG_CODES.get(tgt_lang)
         
-        if not self.src_code or not self.tgt_code:
-            logger.info(f"⊘ NLLB-CT2: {src_lang}→{tgt_lang} not supported")
-            return
-        
-        try:
-            repo_id = self.REPOS.get(model_size, self.REPOS["600M"])
-            logger.info(f"Loading NLLB-{model_size} (CTranslate2 int8) from {repo_id}...")
-            
-            # 1. Download model from Hub
-            model_path = snapshot_download(repo_id=repo_id)
-            
-            # 2. Initialize CT2 Translator
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            # compute_type: int8_float16 for GPU, int8 for CPU
-            compute_type = "int8_float16" if device == "cuda" else "int8"
-            
-            self.translator = ctranslate2.Translator(
-                model_path, 
-                device=device, 
-                compute_type=compute_type
-            )
-            
-            # 3. Initialize Tokenizer (from the original FB repo to ensure compatibility)
-            # We use the distilled-600M tokenizer for all because NLLB uses a shared vocab
-            self.tokenizer = HFTokenizer.from_pretrained(
-                "facebook/nllb-200-distilled-600M", 
-                src_lang=self.src_code
-            )
-            
-            self.available = True
-            logger.info(f"✓ NLLB-{model_size} CT2 ready on {device}")
-        except Exception as e:
-            logger.error(f"NLLB-CT2 init failed: {e}")
+        if not self.src_code or not self.tgt_code: return
+
+        ct2_repo = self.REPOS.get(model_size, self.REPOS["600M"])
+        standard_repo = f"facebook/nllb-200-distilled-{model_size}"
+
+        # 1. ATTEMPT CT2 ( prioritized )
+        if HAS_CT2:
+            try:
+                logger.info(f"Loading NLLB-CT2 from {ct2_repo}...")
+                model_path = snapshot_download(repo_id=ct2_repo)
+                
+                # Double-try logic to prevent fallback to 2.4GB download
+                try:
+                    self.translator = ctranslate2.Translator(
+                        model_path, device=self.ct2_dev, compute_type=self.ct2_compute
+                    )
+                except Exception:
+                    logger.warning(f"Retrying NLLB with safe int8 on cpu...")
+                    self.translator = ctranslate2.Translator(
+                        model_path, device="cpu", compute_type="int8"
+                    )
+
+                self.tokenizer = HFTokenizer.from_pretrained(standard_repo, src_lang=self.src_code)
+                self.mode, self.available = "ct2", True
+                logger.info(f"✓ NLLB-{model_size} CT2 ready.")
+                return
+            except Exception as e:
+                logger.warning(f"NLLB-CT2 failed, trying PyTorch: {e}")
+
+        # 2. PYTORCH FALLBACK ( only if CT2 fails )
+        if HAS_TRANSFORMERS:
+            try:
+                logger.info(f"Loading standard NLLB (PyTorch) from {standard_repo}...")
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(standard_repo)
+                self.tokenizer = HFTokenizer.from_pretrained(standard_repo, src_lang=self.src_code)
+                
+                if self.device.type == "mps": self.model = self.model.half()
+                self.model.to(self.device)
+                self.model.eval()
+                self.mode, self.available = "torch", True
+                logger.info(f"✓ NLLB-{model_size} PyTorch ready on {self.device}")
+            except Exception as e:
+                logger.error(f"Critical: All NLLB fallbacks failed: {e}")
     
     def translate_batch(self, texts: List[str], batch_size: int = 16) -> List[str]:
         """Translate batch using CT2 efficient beam search"""
@@ -591,79 +602,196 @@ class LindatAligner:
         return []
 
 class AwesomeAlignAligner:
-    """awesome-align: BERT-based word aligner"""
+    """BERT Aligner: Uses custom CT2-INT8 model from HuggingFace."""
     
     def __init__(self):
         self.available = False
-        self.model = None
-        self.tokenizer = None
+        self.mode = None
+        self.device = get_torch_device()
+        self.ct2_dev, self.ct2_compute = get_ct2_settings()
         
-        if not HAS_TRANSFORMERS:
-            logger.info("⊘ awesome-align not available (needs transformers)")
-            return
-        
-        try:
-            from transformers import BertModel, BertTokenizer
-            
-            logger.info("Loading awesome-align (mBERT)...")
-            self.model = BertModel.from_pretrained('bert-base-multilingual-cased')
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
-            
-            # Use the new device detection
-            self.device = get_torch_device()
-            self.model.to(self.device)
-            self.model.eval()
-            
-            self.available = True
-            logger.info(f"✓ awesome-align ready on {self.device}")
-        except Exception as e:
-            logger.info(f"⊘ awesome-align init failed: {e}")
+        # FIXED: Hardcoded optimized repo
+        self.ct2_repo = "cstr/bert-base-multilingual-cased-ct2-int8"
+        self.standard_repo = "bert-base-multilingual-cased"
+
+        # 1. ATTEMPT CT2
+        if HAS_CT2:
+            try:
+                logger.info(f"Loading optimized Aligner from {self.ct2_repo}...")
+                model_path = snapshot_download(repo_id=self.ct2_repo)
+                
+                try:
+                    self.encoder = ctranslate2.Encoder(
+                        model_path, device=self.ct2_dev, compute_type=self.ct2_compute
+                    )
+                except Exception:
+                    self.encoder = ctranslate2.Encoder(model_path, device="cpu", compute_type="int8")
+
+                self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+                self.mode, self.available = "ct2", True
+                logger.info(f"✓ Awesome-Align CT2 ready.")
+                return
+            except Exception as e:
+                logger.warning(f"CT2 Aligner load failed, trying PyTorch: {e}")
+
+        # 2. PYTORCH FALLBACK
+        if HAS_TRANSFORMERS:
+            try:
+                from transformers import BertModel, BertTokenizer
+                logger.info(f"Loading standard BERT Aligner (PyTorch)...")
+                self.model = BertModel.from_pretrained(self.standard_repo)
+                self.tokenizer = BertTokenizer.from_pretrained(self.standard_repo)
+                
+                if self.device.type == "mps": self.model = self.model.half()
+                self.model.to(self.device)
+                self.model.eval()
+                self.mode, self.available = "torch", True
+                logger.info(f"✓ Awesome-Align PyTorch ready on {self.device}")
+            except Exception as e:
+                logger.error(f"Critical: Aligner fallback failed: {e}")
     
     def align(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
+        """
+        Extracts word alignments using BERT embeddings.
+        Supports both CTranslate2 (INT8) and PyTorch (FP16/FP32) modes.
+        """
         if not self.available or not src_words or not tgt_words:
             return []
         
         try:
-            import torch
-            import itertools
+            import numpy as np
             
-            # Tokenization
-            token_src = [self.tokenizer.tokenize(word) for word in src_words]
-            token_tgt = [self.tokenizer.tokenize(word) for word in tgt_words]
-            
-            # Convert to IDs and move to MPS/GPU
-            wid_src = [self.tokenizer.convert_tokens_to_ids(x) for x in token_src]
-            wid_tgt = [self.tokenizer.convert_tokens_to_ids(x) for x in token_tgt]
-            
-            ids_src = self.tokenizer.prepare_for_model(list(itertools.chain(*wid_src)), return_tensors='pt', truncation=True)['input_ids'].to(self.device)
-            ids_tgt = self.tokenizer.prepare_for_model(list(itertools.chain(*wid_tgt)), return_tensors='pt', truncation=True)['input_ids'].to(self.device)
+            # 1. Helper: Tokenize and keep track of original word boundaries
+            def get_tokens_and_map(words):
+                subtokens = []
+                word_map = []
+                for i, w in enumerate(words):
+                    # BERT-style subword tokenization
+                    tokens = self.tokenizer.tokenize(w)
+                    if not tokens: # Handle empty/weird strings
+                        tokens = [self.tokenizer.unk_token]
+                    subtokens.extend(tokens)
+                    word_map.extend([i] * len(tokens))
+                return subtokens, word_map
 
-            # Subword maps
-            sub2word_map_src = [i for i, word_list in enumerate(token_src) for _ in word_list]
-            sub2word_map_tgt = [i for i, word_list in enumerate(token_tgt) for _ in word_list]
+            src_subtokens, src_word_map = get_tokens_and_map(src_words)
+            tgt_subtokens, tgt_word_map = get_tokens_and_map(tgt_words)
 
-            with torch.no_grad():
-                # Extract hidden states from Layer 8
-                out_src = self.model(ids_src.unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
-                out_tgt = self.model(ids_tgt.unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
+            # 2. Extract Embeddings based on the active Mode
+            if self.mode == "ct2":
+                # Prepare batch input with BERT special tokens
+                src_input = [["[CLS]"] + src_subtokens + ["[SEP]"]]
+                tgt_input = [["[CLS]"] + tgt_subtokens + ["[SEP]"]]
                 
-                # Dot product alignment
-                dot_prod = torch.matmul(out_src, out_tgt.transpose(-1, -2))
-                softmax_srctgt = torch.nn.Softmax(dim=-1)(dot_prod)
-                softmax_tgtsrc = torch.nn.Softmax(dim=-2)(dot_prod)
+                # Forward pass through INT8 Encoder
+                src_res = self.encoder.forward_batch(src_input)
+                tgt_res = self.encoder.forward_batch(tgt_input)
                 
-                # Intersection threshold
-                softmax_inter = (softmax_srctgt > 1e-3) * (softmax_tgtsrc > 1e-3)
+                # Convert StorageView to NumPy and strip [CLS]/[SEP]
+                src_out = np.array(src_res.last_hidden_state)[0, 1:-1]
+                tgt_out = np.array(tgt_res.last_hidden_state)[0, 1:-1]
+                
+            else: # PyTorch Mode (Fallback)
+                import torch
+                # Token IDs to device
+                def to_ids(tokens):
+                    ids = self.tokenizer.convert_tokens_to_ids(tokens)
+                    return torch.tensor([self.tokenizer.cls_token_id] + ids + [self.tokenizer.sep_token_id]).to(self.device)
+                
+                with torch.no_grad():
+                    # Pick Layer 8 (Index 8 in hidden_states) - the 'sweet spot' for alignment
+                    src_h = self.model(to_ids(src_subtokens).unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
+                    tgt_h = self.model(to_ids(tgt_subtokens).unsqueeze(0), output_hidden_states=True)[2][8][0, 1:-1]
+                    
+                    # Convert to NumPy for unified similarity math
+                    src_out = src_h.detach().cpu().float().numpy()
+                    tgt_out = tgt_h.detach().cpu().float().numpy()
+
+            # 3. Compute Cosine Similarity Matrix
+            # Normalize vectors to unit length
+            src_norm = src_out / np.linalg.norm(src_out, axis=-1, keepdims=True)
+            tgt_norm = tgt_out / np.linalg.norm(tgt_out, axis=-1, keepdims=True)
             
-            align_subwords = torch.nonzero(softmax_inter, as_tuple=False)
+            # Matrix multiplication (Correlation)
+            similarity = np.dot(src_norm, tgt_norm.T)
+
+            # 4. Extract Alignments using Mutual Agreement (Intersection)
+            # Find the best target for every source, and best source for every target
+            best_src_for_tgt = np.argmax(similarity, axis=0) # Shape: (len_tgt,)
+            best_tgt_for_src = np.argmax(similarity, axis=1) # Shape: (len_src,)
+
+            threshold = 1e-3 # Minimum similarity to consider a link
             align_words = set()
-            for i, j in align_subwords:
-                align_words.add((sub2word_map_src[i.item()], sub2word_map_tgt[j.item()]))
+
+            for i, j in enumerate(best_tgt_for_src):
+                # i = src_sub_idx, j = tgt_sub_idx
+                # Check if they "mutually" picked each other
+                if best_src_for_tgt[j] == i and similarity[i, j] > threshold:
+                    # Map the subword indices back to the original word indices
+                    src_word_idx = src_word_map[i]
+                    tgt_word_idx = tgt_word_map[j]
+                    align_words.add((src_word_idx, tgt_word_idx))
+            
+            # 5. Cleanup for Mac GPU memory
+            if self.mode == "torch" and self.device.type == "mps":
+                torch.mps.empty_cache()
+
+            return sorted(list(align_words))
+            
+        except Exception as e:
+            logger.debug(f"Awesome-Align Logic Error: {e}")
+            return []
+    
+    def align_old(self, src_words: List[str], tgt_words: List[str]) -> List[Tuple[int, int]]:
+        if not self.available or not src_words or not tgt_words:
+            return []
+        
+        try:
+            import numpy as np
+            
+            # 1. Tokenize
+            def get_tokens_and_map(words):
+                tokens = []
+                word_map = []
+                for i, w in enumerate(words):
+                    subwords = self.tokenizer.tokenize(w)
+                    tokens.extend(subwords)
+                    word_map.extend([i] * len(subwords))
+                return tokens, word_map
+
+            src_tokens, src_map = get_tokens_and_map(src_words)
+            tgt_tokens, tgt_map = get_tokens_and_map(tgt_words)
+
+            # 2. Extract Embeddings using CTranslate2
+            # We add [CLS] and [SEP] just like BERT expects
+            src_input = [["[CLS]"] + src_tokens + ["[SEP]"]]
+            tgt_input = [["[CLS]"] + tgt_tokens + ["[SEP]"]]
+
+            # forward_batch returns a StorageView; we convert to numpy for easy math
+            src_out = np.array(self.encoder.forward_batch(src_input).last_hidden_state)[0, 1:-1]
+            tgt_out = np.array(self.encoder.forward_batch(tgt_input).last_hidden_state)[0, 1:-1]
+
+            # 3. Compute Similarity (Dot Product)
+            # Normalizing vectors first ensures we are doing Cosine Similarity
+            src_out /= np.linalg.norm(src_out, axis=-1, keepdims=True)
+            tgt_out /= np.linalg.norm(tgt_out, axis=-1, keepdims=True)
+            
+            similarity = np.dot(src_out, tgt_out.T)
+
+            # 4. Extract Alignments (Mutual Argmax / Threshold)
+            threshold = 1e-3
+            best_src = np.argmax(similarity, axis=1)
+            best_tgt = np.argmax(similarity, axis=0)
+
+            align_words = set()
+            for i, j in enumerate(best_src):
+                if best_tgt[j] == i and similarity[i, j] > threshold:
+                    align_words.add((src_map[i], tgt_map[j]))
             
             return sorted(list(align_words))
             
         except Exception as e:
-            logger.debug(f"awesome-align failed: {e}")
+            logger.debug(f"CT2 Alignment failed: {e}")
             return []
 
 class FastAlignAligner:
@@ -851,7 +979,7 @@ class MultiAligner:
             if simalign.available:
                 self.aligners.append(("SimAlign", simalign))
             
-            # Then fast_align
+            # Then fast_align but will work right only with snapshot
             fast_align = FastAlignAligner()
             if fast_align.available:
                 self.aligners.append(("fast_align", fast_align))
@@ -886,56 +1014,42 @@ class UltimateDocumentTranslator:
         src_lang: str,
         tgt_lang: str,
         mode: TranslationMode = TranslationMode.HYBRID,
-        nmt_backend: Optional[str] = None,
+        nmt_backend: Optional[str] = "nllb", # Default to nllb to avoid massive downloads
         llm_provider: Optional[str] = None,
         aligner: Optional[str] = None,
         nllb_model_size: str = "600M"
     ):
-        self.src_lang = src_lang
-        self.tgt_lang = tgt_lang
-        self.mode = mode
-        
+        self.src_lang, self.tgt_lang, self.mode = src_lang, tgt_lang, mode
+        self.ct2 = None  # This will store the WMT translator
+        self.nllb = None # This will store the NLLB translator
+        self.llm = None
+
         logger.info(f"Initializing translator ({src_lang}→{tgt_lang}, mode={mode.value})")
 
-        # Ensure nmt_backend defaults to auto if in NMT or HYBRID mode
-        if nmt_backend is None:
-            nmt_backend = "auto"
-        
-        # Initialize translators based on mode
-        self.ct2 = None
-        self.nllb = None
-        self.llm = None
-        
+        # Exclusive NMT Backend Selection
         if mode in [TranslationMode.NMT_ONLY, TranslationMode.HYBRID]:
-            if nmt_backend == "nllb" or nmt_backend == "auto":
+            # Priority 1: Specifically requested NLLB
+            if nmt_backend == "nllb":
                 self.nllb = NLLBTranslator(src_lang, tgt_lang, nllb_model_size)
             
-            if nmt_backend == "ct2" or nmt_backend == "auto":
+            # Priority 2: Specifically requested CT2/WMT
+            elif nmt_backend == "ct2":
                 self.ct2 = CTranslate2Translator(src_lang, tgt_lang)
-        
+            
+            # Priority 3: Auto selection (We prefer NLLB for efficiency on Mac)
+            elif nmt_backend == "auto" or nmt_backend is None:
+                self.nllb = NLLBTranslator(src_lang, tgt_lang, nllb_model_size)
+                if not self.nllb.available:
+                    logger.info("NLLB unavailable, attempting WMT21...")
+                    self.ct2 = CTranslate2Translator(src_lang, tgt_lang)
+
+        # Initialize LLM only if mode requires it
         if mode in [TranslationMode.LLM_WITH_ALIGN, TranslationMode.LLM_WITHOUT_ALIGN, TranslationMode.HYBRID]:
             self.llm = LLMTranslator(src_lang, tgt_lang, llm_provider)
-        
-        # Initialize aligner if needed
-        self.aligner = None
+
+        # Initialize Aligner
         if mode in [TranslationMode.LLM_WITH_ALIGN, TranslationMode.HYBRID]:
             self.aligner = MultiAligner(src_lang, tgt_lang, aligner or "auto")
-        
-        # Check we have at least one backend
-        has_backend = False
-        if self.ct2 and self.ct2.available:
-            has_backend = True
-            logger.info("Primary backend: CTranslate2")
-        if self.nllb and self.nllb.available:
-            has_backend = True
-            logger.info("Primary backend: NLLB")
-        if self.llm and self.llm.providers:
-            has_backend = True
-            logger.info(f"LLM backend: {list(self.llm.providers.keys())}")
-        
-        if not has_backend:
-            logger.error("No translation backends available!")
-            sys.exit(1)
 
     def log_memory(self, stage: str):
         """Log current RAM usage (requires psutil)."""
@@ -950,50 +1064,25 @@ class UltimateDocumentTranslator:
             logger.debug(f"Memory log failed: {e}")
     
     async def translate_text(self, text: str) -> str:
-        """Translate single text with fallback chain"""
-        if not text.strip():
-            return text
+        if not text.strip(): return text
         
-        if self.mode == TranslationMode.NMT_ONLY:
-            if self.nllb and self.nllb.available:
-                result = self.nllb.translate_batch([text])[0]
-                if result and result != text:
-                    return result
+        # 1. Try NLLB if loaded
+        if self.nllb and self.nllb.available:
+            result = self.nllb.translate_batch([text])[0]
+            if result and result != text: return result
             
-            if self.ct2 and self.ct2.available:
-                result = self.ct2.translate_batch([text])[0]
-                if result and result != text:
-                    return result
-        
-        elif self.mode == TranslationMode.LLM_WITH_ALIGN:
-            if self.llm and self.llm.providers:
-                result = await self.llm.translate_text(text, use_alignment=True)
-                if result:
-                    return result
-        
-        elif self.mode == TranslationMode.LLM_WITHOUT_ALIGN:
-            if self.llm and self.llm.providers:
-                result = await self.llm.translate_text(text, use_alignment=False)
-                if result:
-                    return result
-        
-        elif self.mode == TranslationMode.HYBRID:
-            if self.nllb and self.nllb.available:
-                result = self.nllb.translate_batch([text])[0]
-                if result and result != text:
-                    return result
+        # 2. Try WMT21 if loaded
+        if self.ct2 and self.ct2.available:
+            result = self.ct2.translate_batch([text])[0]
+            if result and result != text: return result
+
+        # 3. Try LLM (Hybrid/LLM modes)
+        if self.llm and self.llm.providers:
+            # use_alignment depends on mode
+            use_align = (self.mode != TranslationMode.LLM_WITHOUT_ALIGN)
+            result = await self.llm.translate_text(text, use_alignment=use_align)
+            if result: return result
             
-            if self.ct2 and self.ct2.available:
-                result = self.ct2.translate_batch([text])[0]
-                if result and result != text:
-                    return result
-            
-            if self.llm and self.llm.providers:
-                result = await self.llm.translate_text(text, use_alignment=True)
-                if result:
-                    return result
-        
-        logger.error(f"Translation failed for: {text[:50]}...")
         return text
     
     def extract_paragraph(self, para: Paragraph) -> TranslatableParagraph:
@@ -1426,7 +1515,8 @@ Installation Notes:
     parser.add_argument(
         '--nmt',
         choices=['ct2', 'nllb', 'auto'],
-        help='NMT backend (default: auto)'
+        default='nllb',
+        help='NMT backend (default: nllb)'
     )
     
     parser.add_argument(
