@@ -1275,6 +1275,9 @@ async def translate_document_with_progress(
     Translate document with progress updates for Gradio.
     Returns: (output_filepath, log_message)
     """
+    import tempfile
+    import shutil
+    
     if not user_state or not user_state.get("id"):
         yield None, "❌ Nicht angemeldet"
         return
@@ -1298,15 +1301,27 @@ async def translate_document_with_progress(
             'LLM without Alignment': TranslationMode.LLM_WITHOUT_ALIGN,
             'Hybrid (Recommended)': TranslationMode.HYBRID
         }
-        
         translation_mode = mode_map.get(mode, TranslationMode.HYBRID)
         
-        # Prepare output path
+        # Prepare paths
         input_path = Path(input_file if isinstance(input_file, str) else input_file.name)
         output_filename = f"{input_path.stem}_translated_{source_lang}_{target_lang}.docx"
         output_path = Path(user_storage) / output_filename
         
-        yield None, f"🚀 Initialisiere Übersetzer...\n📄 Eingabe: {input_path.name}"
+        # Progress 1: Starting
+        yield None, f"""🚀 Übersetzung gestartet
+📄 Eingabe: {input_path.name}
+📊 Dateigröße: {input_path.stat().st_size / 1024:.1f} KB
+🌍 Richtung: {source_lang.upper()} → {target_lang.upper()}
+⚙️ Modus: {mode}
+"""
+        
+        # Progress 2: Initializing translator
+        yield None, f"""⏳ Initialisiere Übersetzer...
+🔧 Backend: {nmt_backend}
+📦 Modellgröße: {nllb_size}
+🔗 Aligner: {aligner}
+"""
         
         # Initialize translator
         translator = UltimateDocumentTranslator(
@@ -1319,10 +1334,44 @@ async def translate_document_with_progress(
             nllb_model_size=nllb_size
         )
         
-        yield None, f"⏳ Übersetze Dokument...\n📍 Von {source_lang} → {target_lang}"
+        # Progress 3: Models loaded
+        yield None, f"""✅ Modelle geladen
+🤖 NMT-Engine: Bereit
+🔗 Aligner: Bereit
+📝 Beginne Übersetzung...
+"""
         
-        # Translate
+        # Progress 4: Document analysis
+        yield None, f"""🔍 Analysiere Dokument...
+📄 Lese Absätze und Formatierung
+🎨 Erkenne Styles und Fußnoten
+"""
+        
+        import time
+        start_time = time.time()
+        
+        # Progress 5: Translating
+        yield None, f"""⚡ Übersetze Inhalt...
+⏱️ Dies kann einige Minuten dauern
+🔄 Verarbeite Absätze mit {mode} Modus
+"""
+        
+        # Translate (this is where the heavy work happens)
         await translator.translate_document(input_path, output_path)
+        
+        elapsed = time.time() - start_time
+        
+        # Progress 6: Post-processing
+        yield None, f"""✨ Finalisiere Dokument...
+💾 Speichere in Storage Box
+🔐 Verschlüssele Datei
+⏱️ Verarbeitungszeit: {elapsed:.1f}s
+"""
+        
+        # ✅ FIX: Copy to /tmp for Gradio to serve
+        temp_output = Path(tempfile.gettempdir()) / output_filename
+        shutil.copy2(output_path, temp_output)
+        logger.info(f"✅ Copied translation to temp for Gradio: {temp_output}")
         
         # Save to database
         save_document_translation(
@@ -1335,23 +1384,38 @@ async def translate_document_with_progress(
             nmt_backend
         )
         
+        # Calculate file size
+        output_size = output_path.stat().st_size / 1024
+        
         success_msg = f"""
 ✅ Übersetzung abgeschlossen!
 
 📄 Eingabe: {input_path.name}
 📄 Ausgabe: {output_filename}
+📊 Ausgabegröße: {output_size:.1f} KB
 🌍 Richtung: {source_lang.upper()} → {target_lang.upper()}
 ⚙️ Modus: {mode}
 🔧 Backend: {nmt_backend}
-
+⏱️ Dauer: {elapsed:.1f} Sekunden
 💾 Gespeichert in Storage Box: {output_filename}
+
+🎉 Datei bereit zum Download!
 """
         
-        yield str(output_path), success_msg
+        # Yield the TEMP path (not the storage path!) so Gradio can serve it
+        yield str(temp_output), success_msg
         
     except Exception as e:
         logger.exception(f"Translation error: {e}")
-        yield None, f"❌ Übersetzungsfehler:\n{str(e)}"
+        yield None, f"""❌ Übersetzungsfehler:
+
+Fehler: {str(e)}
+
+Bitte überprüfen Sie:
+- Dateiformat (.docx)
+- Sprachauswahl
+- Backend-Verfügbarkeit
+"""
 
 
 def translate_document_sync(*args, **kwargs):
@@ -7140,13 +7204,9 @@ with gr.Blocks(
             # --- TAB: DOKUMENTÜBERSETZUNG ---
             with gr.TabItem("📄 Dokument-Übersetzer"):
                 gr.Markdown("""
-                ## 📄 Professionelle Dokumentübersetzung
+                ## 📄 Dokumentübersetzung
                 
-                Übersetze Word-Dokumente mit **Format-Erhaltung**:
-                - ✅ Fettdruck, Kursiv, Schriftarten
-                - ✅ Fußnoten, Tabellen, Kopf-/Fußzeilen
-                - ✅ Mehrere KI-Backends
-                - ✅ Wort-Level-Alignment
+                Übersetze Word-Dokumente mit **Format-Erhaltung**
                 """)
                 
                 with gr.Row():
