@@ -1180,75 +1180,110 @@ class UltimateDocumentTranslator:
             logger.debug(f"TRACE | Font Force Error: {e}")
     
     def apply_aligned_formatting(self, para: Paragraph, trans_para: TranslatableParagraph, translated_text: str, alignment: List[Tuple[int, int]]):
-        """Reconstructs paragraph using a precise map of inline styles and anchored footnotes."""
+        """
+        Reconstructs the Word paragraph by mapping source formatting onto translated text
+        using neural word alignments. Preserves layout, font themes, and footnote anchors.
+        """
+        # 1. INITIAL TRACE & ANCHOR EXTRACTION
         self.log_para_trace(para, "INPUT")
         p_element = para._p
-        footnote_refs = p_element.xpath('.//w:r[w:footnoteReference or w:footnoteRef]')
         
-        # 1. Restore Para-level metadata
+        # Extract all footnote reference elements (w:footnoteReference) or 
+        # auto-numbered markers (w:footnoteRef) before we clear the paragraph.
+        footnote_refs = p_element.xpath('.//w:r[w:footnoteReference or w:footnoteRef]')
+        if footnote_refs:
+            logger.debug(f"TRACE | Found {len(footnote_refs)} footnote anchors to re-attach.")
+
+        # 2. RESTORE PARAGRAPH-LEVEL METADATA (Layout & Style)
         if trans_para.metadata.get('style'):
             para.style = trans_para.metadata['style']
         para.alignment = trans_para.metadata.get('alignment')
         
-        # Re-apply layout spacing/indents
         layout = trans_para.metadata.get('layout', {})
         pf = para.paragraph_format
-        for attr, val in layout.items():
-            try:
-                if val is not None: setattr(pf, attr, val)
-            except: pass
+        try:
+            # We explicitly set these to bypass Word's 'Normal' style defaults
+            if layout.get('left_indent') is not None: pf.left_indent = layout['left_indent']
+            if layout.get('right_indent') is not None: pf.right_indent = layout['right_indent']
+            if layout.get('first_line_indent') is not None: pf.first_line_indent = layout['first_line_indent']
+            if layout.get('line_spacing') is not None: pf.line_spacing = layout['line_spacing']
+            if layout.get('space_before') is not None: pf.space_before = layout['space_before']
+            if layout.get('space_after') is not None: pf.space_after = layout['space_after']
+            logger.debug(f"TRACE | Layout metrics restored: Indent={pf.left_indent}, Spacing={pf.line_spacing}")
+        except Exception as e:
+            logger.error(f"TRACE | Layout Restore Error: {e}")
 
-        # 2. Clear content
+        # 3. CLEAR EXISTING CONTENT
+        # We must remove runs one-by-one to keep the paragraph container intact
         for run in para.runs:
             p_element.remove(run._element)
 
-        # 3. Footnote text paragraphs: re-attach numbering at start
-        is_footnote_para = "footnote" in str(para.style.name).lower()
-        if is_footnote_para and footnote_refs:
-            for ref in footnote_refs: p_element.append(ref)
-            para.add_run("\u00A0") 
+        # 4. HANDLE FOOTNOTE-SPECIFIC STARTUP
+        # For paragraphs that ARE footnote text, the marker must come first.
+        is_footnote_content_para = "footnote" in str(para.style.name).lower()
+        if is_footnote_content_para and footnote_refs:
+            for ref in footnote_refs: 
+                p_element.append(ref)
+            para.add_run("\u00A0") # Add a non-breaking space after the number
+            logger.debug("TRACE | Footnote number marker re-attached to start.")
 
-        # 4. Map formatting to Clean Target Indices
+        # 5. MAPPING LOGIC PREPARATION
         src_clean_words = trans_para.get_words()
         tgt_raw_units = translated_text.split() 
         formatted_indices = trans_para.get_formatted_word_indices()
         
+        # Map Clean Aligner indices to Raw whitespace-split units
         clean_to_raw_tgt = {}
         clean_idx = 0
         for raw_idx, unit in enumerate(tgt_raw_units):
+            # Only count as a 'word' if it contains alphanumeric characters
             if re.search(r'\w', unit):
                 clean_to_raw_tgt[clean_idx] = raw_idx
                 clean_idx += 1
 
-        # Use the first run as the baseline "Aesthetic" template (Font, Size, Color)
+        # Use the first source run as the baseline "Aesthetic" (Font Name/Size/Color)
         font_template = trans_para.runs[0] if trans_para.runs else None
 
-        # 5. Build units with Inline Style merging
+        # 6. RECONSTRUCT RUNS WITH INLINE STYLES
+        logger.debug(f"TRACE | Reconstructing {len(tgt_raw_units)} target units...")
+        
         for i, unit in enumerate(tgt_raw_units):
+            # Maintain original spacing
             run_text = unit + (" " if i < len(tgt_raw_units)-1 else "")
             run = para.add_run(run_text)
             
-            # Determine Bold/Italic/Underline for this unit via Aligner
+            # Determine Bold/Italic/Underline for this specific unit
             style_type = None
-            for src_idx, align_tgt_idx in alignment:
-                if clean_to_raw_tgt.get(align_tgt_idx) == i:
-                    for s in ['italic_bold', 'bold', 'italic']:
-                        if src_idx in formatted_indices[s]:
-                            style_type = s; break
+            matched_src_indices = [s_idx for s_idx, t_idx in alignment if clean_to_raw_tgt.get(t_idx) == i]
+            
+            if matched_src_indices:
+                for s_idx in matched_src_indices:
+                    # Check style priority: Bold+Italic > Bold > Italic
+                    if s_idx in formatted_indices['italic_bold']:
+                        style_type = 'italic_bold'; break
+                    elif s_idx in formatted_indices['bold']:
+                        style_type = 'bold'
+                    elif s_idx in formatted_indices['italic'] and style_type != 'bold':
+                        style_type = 'italic'
             
             # Apply Aligned Inline Styles
-            if style_type == 'italic_bold': run.bold = run.italic = True
-            elif style_type == 'bold': run.bold = True
-            elif style_type == 'italic': run.italic = True
+            if style_type == 'italic_bold': 
+                run.bold = run.italic = True
+            elif style_type == 'bold': 
+                run.bold = True
+            elif style_type == 'italic': 
+                run.italic = True
             
-            # Apply Baseline aesthetics (Font name, size, color)
+            # Apply Baseline Aesthetics (The "Look" of the document)
             if font_template:
                 self.copy_font_properties(run, font_template)
 
-        # 6. Re-attach body footnotes to the end of the translated sentence
-        if not is_footnote_para and footnote_refs:
-            logger.debug(f"TRACE | Body Footnote | Re-anchoring {len(footnote_refs)} refs.")
-            for ref in footnote_refs: p_element.append(ref)
+        # 7. RE-ANCHOR BODY FOOTNOTES
+        # For main text, footnote citations usually go at the end of the translated block
+        if not is_footnote_content_para and footnote_refs:
+            logger.debug(f"TRACE | Body Footnote | Re-anchoring {len(footnote_refs)} refs to end of paragraph.")
+            for ref in footnote_refs: 
+                p_element.append(ref)
 
         self.log_para_trace(para, "OUTPUT")
     
