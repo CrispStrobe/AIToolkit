@@ -1352,13 +1352,83 @@ async def translate_document_with_progress(
         logger.exception(f"Translation error: {e}")
         yield None, f"❌ Übersetzungsfehler:\n{str(e)}"
 
+
 def translate_document_sync(*args, **kwargs):
-    """Synchronous wrapper for Gradio"""
-    gen = translate_document_with_progress(*args, **kwargs)
-    result = None
-    for result in gen:
-        yield result
-    return result
+    """Synchronous wrapper for Gradio - yields progress updates"""
+    import asyncio
+    import concurrent.futures
+    from datetime import datetime
+    
+    print(f"\n{'='*60}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 translate_document_sync called")
+    
+    def consume_async_gen_in_new_loop(async_gen_func, *args, **kwargs):
+        """Consume async generator in a new event loop"""
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        results = []
+        try:
+            async def collect():
+                async_gen = async_gen_func(*args, **kwargs)
+                async for item in async_gen:
+                    results.append(item)
+            new_loop.run_until_complete(collect())
+        finally:
+            new_loop.close()
+        return results
+    
+    try:
+        try:
+            # Check if event loop is running (Gradio context)
+            asyncio.get_running_loop()
+            print(f"[DEBUG] ⚠️  Event loop running - using ThreadPool")
+            
+            # Run in thread pool
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    consume_async_gen_in_new_loop,
+                    translate_document_with_progress,
+                    *args,
+                    **kwargs
+                )
+                results = future.result(timeout=600)
+                
+            # Yield all collected results
+            for result in results:
+                yield result
+                
+        except RuntimeError:
+            # No running loop - create new one
+            print(f"[DEBUG] ℹ️  No running loop - creating new one")
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                async def consume():
+                    results = []
+                    async_gen = translate_document_with_progress(*args, **kwargs)
+                    async for item in async_gen:
+                        results.append(item)
+                    return results
+                
+                results = loop.run_until_complete(consume())
+                
+                # Yield all collected results
+                for result in results:
+                    yield result
+                    
+            finally:
+                loop.close()
+                
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        import traceback
+        traceback.print_exc()
+        yield None, f"❌ Error: {str(e)}"
+        
+    finally:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🏁 Finished")
+        print(f"{'='*60}\n")
 
 # ==========================================
 # 🎬 YOUTUBE CHANNEL WHITELIST

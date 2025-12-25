@@ -179,8 +179,63 @@ Recent Logs:
         return None, error_msg
 
 def translate_document_sync(*args, **kwargs):
-    """Synchronous wrapper for Gradio"""
-    return asyncio.run(translate_document_async(*args, **kwargs))
+    """Synchronous wrapper with explicit event loop management"""
+    import asyncio
+    import concurrent.futures
+    from datetime import datetime
+    
+    print(f"\n{'='*60}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 translate_document_sync called")
+    
+    # Define a helper to run the async function in a new thread's loop
+    def run_in_new_loop(func, *args, **kwargs):
+        """Create a fresh event loop in the new thread"""
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            return new_loop.run_until_complete(func(*args, **kwargs))
+        finally:
+            new_loop.close()
+    
+    try:
+        try:
+            # Check if a loop is already running (Gradio/HF Spaces context)
+            asyncio.get_running_loop()
+            print(f"[DEBUG] ⚠️  Event loop running - Offloading to ThreadPool")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                # Pass the FUNCTION and ARGS separately
+                future = executor.submit(
+                    run_in_new_loop, 
+                    translate_document_async, 
+                    *args, 
+                    **kwargs
+                )
+                result = future.result(timeout=600)
+                print(f"[DEBUG] ✓ Thread execution completed")
+                return result
+                
+        except RuntimeError:
+            # No loop running (Standalone context)
+            print(f"[DEBUG] ℹ️  No running loop - Using standard asyncio.run")
+            result = asyncio.run(translate_document_async(*args, **kwargs))
+            print(f"[DEBUG] ✓ asyncio.run() completed")
+            return result
+            
+    except concurrent.futures.TimeoutError:
+        error_msg = "❌ Translation timeout (>10 minutes)"
+        print(f"[ERROR] {error_msg}")
+        return None, error_msg
+        
+    except Exception as e:
+        print(f"[ERROR] Critical failure: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, f"❌ Error: {str(e)}"
+        
+    finally:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🏁 Finished")
+        print(f"{'='*60}\n")
 
 # ============================================================================
 # GRADIO INTERFACE
