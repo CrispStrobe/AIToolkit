@@ -1702,7 +1702,7 @@ class UltimateDocumentTranslator:
             return None
         
     # ============================================================================
-    # PPTX SAFETY CHECKS - NEW SECTION
+    # PPTX SAFETY CHECKS 
     # ============================================================================
 
     def is_shape_safe_to_translate(self, shape) -> bool:

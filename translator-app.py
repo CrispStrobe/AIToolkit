@@ -41,7 +41,31 @@ def check_and_setup_environment():
     """
     status_messages = []
     
-    # 1. Check CTranslate2
+    # 1. Check python-docx
+    try:
+        from docx import Document
+        status_messages.append("✓ python-docx installed")
+    except ImportError:
+        status_messages.append("⚠ python-docx not found - installing...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "python-docx"], check=True)
+            status_messages.append("✓ python-docx installed successfully")
+        except Exception as e:
+            status_messages.append(f"✗ python-docx installation failed: {e}")
+    
+    # 2. Check python-pptx 
+    try:
+        from pptx import Presentation
+        status_messages.append("✓ python-pptx installed")
+    except ImportError:
+        status_messages.append("⚠ python-pptx not found - installing...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "python-pptx"], check=True)
+            status_messages.append("✓ python-pptx installed successfully")
+        except Exception as e:
+            status_messages.append(f"✗ python-pptx installation failed: {e}")
+    
+    # 3. Check CTranslate2
     try:
         import ctranslate2
         status_messages.append("✓ CTranslate2 installed")
@@ -53,16 +77,14 @@ def check_and_setup_environment():
         except Exception as e:
             status_messages.append(f"✗ CTranslate2 installation failed: {e}")
     
-    # 2. Check fast_align (optional, complex to build on HF Spaces)
+    # 4. Check fast_align (optional, complex to build on HF Spaces)
     fast_align_path = shutil.which("fast_align")
     if fast_align_path:
         status_messages.append(f"✓ fast_align found at {fast_align_path}")
     else:
         status_messages.append("ℹ fast_align not available (optional - will use other aligners)")
-        # Note: Building fast_align on HF Spaces is challenging due to build dependencies
-        # We'll rely on the Python-based aligners instead
     
-    # 3. Check for API keys (optional)
+    # 5. Check for API keys (optional)
     if os.getenv("OPENAI_API_KEY"):
         status_messages.append("✓ OpenAI API key detected")
     if os.getenv("ANTHROPIC_API_KEY"):
@@ -75,6 +97,70 @@ def check_and_setup_environment():
 # Run setup on startup
 SETUP_STATUS = check_and_setup_environment()
 logger.info(f"Setup complete:\n{SETUP_STATUS}")
+
+# ============================================================================
+# FILE TYPE DETECTION & VALIDATION 
+# ============================================================================
+
+def detect_and_validate_file(file_path: Path) -> Tuple[bool, str, str]:
+    """
+    Detect file type and validate it.
+    
+    Returns:
+        Tuple of (is_valid, file_type, error_message)
+        file_type: 'docx', 'pptx', or 'unknown'
+    """
+    if not file_path.exists():
+        return False, 'unknown', f"File not found: {file_path}"
+    
+    suffix = file_path.suffix.lower()
+    
+    # Quick check by extension
+    if suffix == '.docx':
+        try:
+            from docx import Document
+            doc = Document(str(file_path))
+            return True, 'docx', ""
+        except Exception as e:
+            return False, 'docx', f"Invalid Word document: {str(e)}"
+    
+    elif suffix == '.pptx':
+        try:
+            from pptx import Presentation
+            prs = Presentation(str(file_path))
+            return True, 'pptx', ""
+        except Exception as e:
+            return False, 'pptx', f"Invalid PowerPoint presentation: {str(e)}"
+    
+    else:
+        return False, 'unknown', "Unsupported format. Only .docx and .pptx files are supported."
+
+
+def get_file_info(file_path: Path, file_type: str) -> str:
+    """
+    Get basic info about the uploaded file.
+    
+    Returns formatted string with file statistics.
+    """
+    try:
+        if file_type == 'docx':
+            from docx import Document
+            doc = Document(str(file_path))
+            para_count = len([p for p in doc.paragraphs if p.text.strip()])
+            table_count = len(doc.tables)
+            return f"📄 Word Document | {para_count} paragraphs | {table_count} tables"
+        
+        elif file_type == 'pptx':
+            from pptx import Presentation
+            prs = Presentation(str(file_path))
+            slide_count = len(prs.slides)
+            shape_count = sum(len(slide.shapes) for slide in prs.slides)
+            return f"📊 PowerPoint Presentation | {slide_count} slides | ~{shape_count} shapes"
+    
+    except Exception as e:
+        return f"📎 {file_type.upper()} file"
+    
+    return "📎 Document"
 
 # ============================================================================
 # TRANSLATION FUNCTION
@@ -92,7 +178,7 @@ async def translate_document_async(
     progress=gr.Progress()
 ) -> Tuple[Optional[str], str]:
     """
-    Asynchronous document translation with progress tracking.
+    Asynchronous document translation with progress tracking. Handles both .docx and .pptx files
     
     Returns:
         Tuple of (output_file_path, log_messages)
@@ -107,12 +193,20 @@ async def translate_document_async(
     try:
         # Setup paths
         input_path = Path(input_file.name)
-        output_filename = f"{input_path.stem}_translated_{source_lang}_{target_lang}.docx"
+        
+        # Detect file type and validate
+        is_valid, file_type, error_msg = detect_and_validate_file(input_path)
+        
+        if not is_valid:
+            return None, f"❌ Error: {error_msg}"
+        
+        # Dynamic output filename based on detected type
+        output_extension = input_path.suffix  # Preserve original extension
+        output_filename = f"{input_path.stem}_translated_{source_lang}_{target_lang}{output_extension}"
         output_path = temp_dir / output_filename
         
-        # Validate file type
-        if not input_path.suffix.lower() == '.docx':
-            return None, "❌ Error: Only .docx files are supported"
+        # Get file info for display
+        file_info = get_file_info(input_path, file_type)
         
         # Map UI selections to enums
         mode_map = {
@@ -133,7 +227,7 @@ async def translate_document_async(
         log_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
         logging.getLogger().addHandler(log_handler)
         
-        progress(0.1, desc="Initializing translator...")
+        progress(0.1, desc=f"Initializing translator for {file_type.upper()}...")
         
         # Initialize translator
         translator = UltimateDocumentTranslator(
@@ -146,21 +240,29 @@ async def translate_document_async(
             nllb_model_size=nllb_size
         )
         
-        progress(0.2, desc="Processing document...")
+        # Progress message based on file type
+        if file_type == 'docx':
+            progress(0.2, desc="Processing Word document...")
+        else:
+            progress(0.2, desc="Processing PowerPoint slides...")
         
-        # Translate
-        await translator.translate_document(input_path, output_path)
+        # Use unified translate_file() method instead of translate_document()
+        await translator.translate_file(input_path, output_path)
         
         progress(1.0, desc="Translation complete!")
         
         # Cleanup log handler
         logging.getLogger().removeHandler(log_handler)
         
+        # Format-aware success message
+        format_name = "Word Document" if file_type == 'docx' else "PowerPoint Presentation"
+        
         # Format log output
         log_output = "\n".join(log_messages[-50:])  # Last 50 messages
         success_msg = f"""
 ✅ Translation Complete!
 
+{file_info}
 📄 Input: {input_path.name}
 📄 Output: {output_filename}
 🌍 Direction: {source_lang.upper()} → {target_lang.upper()}
@@ -172,6 +274,15 @@ Recent Logs:
 """
         
         return str(output_path), success_msg
+        
+    except ImportError as e:
+        error_msg = f"❌ Missing Library Error:\n{str(e)}\n\n"
+        if 'docx' in str(e):
+            error_msg += "Install with: pip install python-docx"
+        elif 'pptx' in str(e):
+            error_msg += "Install with: pip install python-pptx"
+        logger.error(f"Import error: {e}", exc_info=True)
+        return None, error_msg
         
     except Exception as e:
         error_msg = f"❌ Translation Error:\n{str(e)}\n\nPlease check your settings and try again."
@@ -242,9 +353,11 @@ def translate_document_sync(*args, **kwargs):
 # ============================================================================
 
 def create_interface():
-    """Create the Gradio interface"""
+    """
+    Supports both .docx and .pptx files
+    """
     
-    # Language options (common pairs)
+    # Language options (unchanged)
     languages = {
         "English": "en",
         "German": "de",
@@ -266,11 +379,15 @@ def create_interface():
         "Vietnamese": "vi"
     }
     
-    with gr.Blocks(title="Document Translator") as demo:  # REMOVED theme parameter
+    with gr.Blocks(title="Document Translator") as demo:
+        
         gr.Markdown("""
         # 🌍 Document Translator
         
-        Translate Word documents while preserving formatting, footnotes, and styling.
+        Translate Word documents and PowerPoint presentations while preserving formatting, 
+        footnotes, styling, and layout.
+        
+        **Supported formats:** `.docx` (Word) and `.pptx` (PowerPoint)
         """)
         
         with gr.Row():
@@ -278,8 +395,8 @@ def create_interface():
                 gr.Markdown("### 📤 Input")
                 
                 input_file = gr.File(
-                    label="Upload Document (.docx)",
-                    file_types=[".docx"],
+                    label="Upload Document (.docx or .pptx)",
+                    file_types=[".docx", ".pptx"],
                     type="filepath"
                 )
                 
@@ -353,35 +470,86 @@ def create_interface():
                     max_lines=30,
                     interactive=False
                 )
+
+            
+                file_preview = gr.Markdown(label="File Preview")
+                input_file.change(
+                     fn=preview_uploaded_file,
+                     inputs=[input_file],
+                     outputs=[file_preview]
+                )
         
         gr.Markdown(f"### System Status\n```\n{SETUP_STATUS}\n```")
         
         gr.Markdown("""
-        **Features:**
-        - Multiple neural translation backends (NLLB, Madlad, Opus-MT, WMT21)
-        - Word-level alignment for format preservation
-        - Support for footnotes, tables, headers/footers
+        ### ✨ Features
+        
+        **Word Documents (.docx):**
+        - Preserves formatting, footnotes, headers/footers
+        - Maintains tables, styles, and paragraph formatting
+        - Word-level alignment for accurate format transfer
+        
+        **PowerPoint Presentations (.pptx):**
+        - Translates all text boxes and placeholders
+        - Preserves slide layouts and positioning
+        - Maintains tables, speaker notes, and formatting
+        - Handles grouped shapes and complex layouts
+        
+        **Translation Engines:**
+        - Multiple neural backends (NLLB, Madlad, Opus-MT, WMT21)
         - Optional LLM enhancement (OpenAI/Anthropic)
+        - Word-level alignment for format preservation
         
         **Recommended Settings:**
         - Mode: Hybrid (best quality)
         - Backend: NLLB (fastest, good quality)
-        - Size: 600M (good balance)
+        - Size: 600M (good balance for Spaces)
                     
-        ### 📖 Tips
+        ### 📖 Usage Tips
         
-        - **For best quality**: Use "Hybrid" mode with NLLB backend
-        - **For speed**: Use "NMT Only" with NLLB 600M
-        - **For academic texts**: Try Madlad backend
-        - **For specific language pairs**: Opus-MT (if available)
-        - **LLM modes**: Require API keys set as environment variables
+        **For Word Documents:**
+        - Best for: Academic papers, reports, articles
+        - Use "Hybrid" mode for complex formatting
+        - Madlad backend excels with technical content
+        
+        **For PowerPoint:**
+        - Best for: Business presentations, slides
+        - Use "NMT Only" for speed
+        - Check speaker notes in output file
+        
+        **General:**
+        - Larger NLLB models (1.3B, 3.3B) improve quality but use more RAM
+        - LLM modes require API keys and are slower
+        - First translation may be slower (model download)
         
         ### ⚠️ Limitations
         
-        - Only .docx format supported (not .doc)
-        - Large documents may take several minutes
-        - Complex formatting may require manual review
+        - Only modern Office formats (.docx, .pptx) - not legacy .doc/.ppt
+        - Large files may take several minutes to process
+        - Complex formatting may require manual review after translation
         - LLM modes are slower and require API access
+        - Embedded images and charts are not translated (text only)
+        - On Hugging Face Spaces: Limited to 600M model due to RAM constraints
+        
+        ### 🔧 Advanced Settings Guide
+        
+        **Translation Modes:**
+        - **NMT Only**: Pure neural translation, fastest, most reliable
+        - **Hybrid**: Combines NMT with selective LLM enhancement (recommended)
+        - **LLM with Alignment**: Uses LLM + word alignment for formatting
+        - **LLM without Alignment**: LLM-only, best for natural output
+        
+        **Backends:**
+        - **NLLB**: 200+ languages, fast, balanced quality
+        - **Madlad**: Google's 3B model, excellent for academic/formal text
+        - **Opus**: Specialized bilingual pairs, very fast for supported pairs
+        - **CT2**: Dense models, best German/European quality
+        
+        **Aligners:**
+        - **Awesome**: BERT-based, high precision (recommended for Mac/M1)
+        - **SimAlign**: Heavy PyTorch BERT, good quality but slower
+        - **Lindat**: Cloud API, no local resources needed
+        - **Heuristic**: Simple fallback, fast but basic
         """)
         
         def handle_translate(input_f, src_lang_name, tgt_lang_name, mode, nmt, nllb_sz, algn, llm):
@@ -405,6 +573,130 @@ def create_interface():
         )
     
     return demo
+
+# ============================================================================
+# FILE PREVIEW
+# ============================================================================
+
+def preview_uploaded_file(file_path) -> str:
+    """
+    Generate a preview of the uploaded file content.
+    Simplified version with better error handling.
+    """
+    if file_path is None:
+        return "No file uploaded"
+    
+    try:
+        input_path = Path(file_path.name)
+        is_valid, file_type, error = detect_and_validate_file(input_path)
+        
+        if not is_valid:
+            return f"❌ {error}"
+        
+        if file_type == 'docx':
+            from docx import Document
+            doc = Document(str(input_path))
+            
+            para_count = len([p for p in doc.paragraphs if p.text.strip()])
+            table_count = len(doc.tables)
+            
+            preview_lines = [
+                "📄 **Word Document Preview**\n",
+                f"📊 Statistics:",
+                f"  • {para_count} paragraphs with text",
+                f"  • {table_count} tables",
+                "\n**First paragraphs:**\n"
+            ]
+            
+            count = 0
+            for para in doc.paragraphs:
+                if para.text.strip() and count < 3:
+                    text = para.text.strip().replace('\n', ' ')
+                    preview_lines.append(f"{count+1}. {text[:100]}{'...' if len(text) > 100 else ''}")
+                    count += 1
+            
+            if count == 0:
+                preview_lines.append("(No text content found)")
+            
+            return "\n".join(preview_lines)
+        
+        elif file_type == 'pptx':
+            from pptx import Presentation
+            
+            try:
+                prs = Presentation(str(input_path))
+                slide_count = len(prs.slides)
+                
+                preview_lines = [
+                    "📊 **PowerPoint Preview**\n",
+                    f"📈 Statistics:",
+                    f"  • {slide_count} slide{'s' if slide_count != 1 else ''}",
+                ]
+                
+                # Count shapes across all slides
+                total_shapes = 0
+                text_shapes = 0
+                
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        total_shapes += 1
+                        try:
+                            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                                if shape.text_frame.text.strip():
+                                    text_shapes += 1
+                        except:
+                            pass
+                
+                preview_lines.append(f"  • {total_shapes} total shapes")
+                preview_lines.append(f"  • {text_shapes} text boxes/placeholders")
+                preview_lines.append("\n**Sample content from first slides:**\n")
+                
+                # Preview first 3 slides
+                previewed = 0
+                for idx in range(min(3, slide_count)):
+                    try:
+                        slide = prs.slides[idx]
+                        preview_lines.append(f"**Slide {idx+1}:**")
+                        
+                        texts_found = 0
+                        for shape in slide.shapes:
+                            try:
+                                if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                                    text = shape.text_frame.text.strip()
+                                    if text:
+                                        text = text.replace('\n', ' ')
+                                        preview_lines.append(f"  • {text[:80]}{'...' if len(text) > 80 else ''}")
+                                        texts_found += 1
+                                        if texts_found >= 2:  # Max 2 texts per slide
+                                            break
+                            except Exception as shape_err:
+                                # Skip problematic shapes silently
+                                continue
+                        
+                        if texts_found == 0:
+                            preview_lines.append("  (No text content)")
+                        
+                        preview_lines.append("")
+                        previewed += 1
+                        
+                    except Exception as slide_err:
+                        logger.debug(f"Could not preview slide {idx+1}: {slide_err}")
+                        preview_lines.append(f"**Slide {idx+1}:** (Could not access)\n")
+                        continue
+                
+                if previewed == 0:
+                    preview_lines.append("(Could not access slide content)")
+                
+                return "\n".join(preview_lines)
+                
+            except Exception as prs_error:
+                return f"📊 PowerPoint file detected\n\n❌ Preview unavailable: {str(prs_error)}\n\nFile appears valid and should translate successfully."
+    
+    except Exception as e:
+        logger.error(f"Preview generation failed: {e}", exc_info=True)
+        return f"❌ Preview error: {str(e)}"
+    
+    return "Could not generate preview"
 
 # ============================================================================
 # MAIN
