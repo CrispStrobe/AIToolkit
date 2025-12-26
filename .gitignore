@@ -36,7 +36,7 @@ tokens/
 # Local Video and Document Files (avoiding large binary commits)
 *.mp4
 *.docx
-
+*.pptx
 
 # App-specific hidden keys
 .master_key
