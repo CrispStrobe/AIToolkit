@@ -30,6 +30,7 @@ def check_library(name, import_stmt):
         return False
 
 HAS_DOCX = check_library("python-docx", "from docx import Document; from docx.shared import Pt, RGBColor; from docx.text.paragraph import Paragraph; from docx.oxml.shared import OxmlElement; from docx.oxml.ns import qn")
+HAS_PPTX = check_library("python-pptx", "from pptx import Presentation; from pptx.util import Pt, Inches; from pptx.enum.text import PP_ALIGN, MSO_VERTICAL_ANCHOR; from pptx.dml.color import RGBColor")
 HAS_TORCH = check_library("torch", "import torch")
 HAS_CT2 = check_library("CTranslate2", "import ctranslate2; from huggingface_hub import snapshot_download")
 HAS_TRANSFORMERS = check_library("Transformers", "from transformers import AutoTokenizer, AutoModelForSeq2SeqLM")
@@ -967,6 +968,33 @@ class MultiAligner:
         logger.debug("Using heuristic fallback (no quality alignments found)")
         return []
 
+# ============================================================================
+# PPTX HANDLING
+# ============================================================================
+
+# ============================================================================
+# POWERPOINT-SPECIFIC STRUCTURES
+# ============================================================================
+
+@dataclass
+class TranslatableTextFrame:
+    """Text frame with positioning and shape metadata"""
+    paragraphs: List[TranslatableParagraph] = field(default_factory=list)
+    shape_metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def get_all_text(self) -> str:
+        return '\n'.join(p.get_text() for p in self.paragraphs)
+
+
+@dataclass
+class SlideMetadata:
+    """Slide-level properties"""
+    layout: Any = None
+    background: Any = None
+    notes: Optional[str] = None
+
+
+
 
 # ============================================================================
 # DOCUMENT TRANSLATOR
@@ -985,14 +1013,19 @@ class UltimateDocumentTranslator:
         aligner: Optional[str] = None,
         nllb_model_size: str = "600M"
     ):
+        # Main initialization code
         self.src_lang, self.tgt_lang, self.mode = src_lang, tgt_lang, mode
-        self.ct2 = None  # WMT translator
-        self.nllb = None # NLLB translator
+        self.ct2 = None
+        self.nllb = None
         self.llm = None
         self.aligner = None
         self.opus = None
         self.madlad = None
+        
+        # File type tracking
+        self.current_file_type = None
 
+        # Rest of initialization unchanged...
         logger.info(f"INIT | Starting Translator ({src_lang}→{tgt_lang})")
         logger.info(f"INIT | Mode: {mode.value} | NMT: {nmt_backend} | Aligner: {aligner or 'auto'}")
         self.log_memory("Initialization Start")
@@ -1060,6 +1093,36 @@ class UltimateDocumentTranslator:
             pass
         except Exception as e:
             logger.debug(f"Memory log failed: {e}")
+    
+    # with format specific error messages
+    async def translate_file(self, input_path: Path, output_path: Path):
+        """Main entry point with enhanced error handling"""
+        try:
+            is_valid, file_type, error = self.validate_file(input_path)
+            if not is_valid:
+                raise ValueError(error)
+            
+            self.current_file_type = file_type
+            logger.info(f"Processing {file_type.upper()} file: {input_path.name}")
+            
+            if file_type == 'docx':
+                await self.translate_document(input_path, output_path)
+            elif file_type == 'pptx':
+                await self.translate_presentation(input_path, output_path)
+            else:
+                raise ValueError(f"Unsupported file type: {file_type}")
+        
+        except ImportError as e:
+            if 'docx' in str(e) and self.current_file_type == 'docx':
+                logger.error("python-docx not installed. Install with: pip install python-docx")
+            elif 'pptx' in str(e) and self.current_file_type == 'pptx':
+                logger.error("python-pptx not installed. Install with: pip install python-pptx")
+            raise
+        
+        except Exception as e:
+            format_name = "Word document" if self.current_file_type == 'docx' else "PowerPoint presentation"
+            logger.error(f"Failed to translate {format_name}: {e}")
+            raise
     
     async def translate_text(self, text: str) -> str:
         """Routes text through the active neural engine chain."""
@@ -1466,7 +1529,10 @@ class UltimateDocumentTranslator:
         logger.debug(f"  > Indent-L: {pf.left_indent.pt if pf.left_indent else 0:.1f}pt | Spacing-A: {pf.space_after.pt if pf.space_after else 0:.1f}pt")
 
     async def translate_document(self, input_path: Path, output_path: Path):
-        """Full document lifecycle with robust XML commitment and verification logs."""
+        """
+        Full Word document translation lifecycle with robust XML commitment and verification logs.
+        Called internally by translate_file().
+        """
         self.log_memory("Initialization")
         doc = Document(str(input_path))
         
@@ -1504,6 +1570,581 @@ class UltimateDocumentTranslator:
             self.log_document_info(Document(str(output_path)), "OUTPUT")
         logger.info("✓ Document Translation Complete.")
 
+    # ============================================================================
+    # PPTX EXTRACTION METHODS
+    # ============================================================================
+
+    def extract_text_frame(self, shape) -> TranslatableTextFrame:
+        """
+        Extract text frame with shape positioning and paragraph hierarchy.
+        PPT equivalent of extract_paragraph().
+        """
+        from pptx.util import Pt, Inches
+        
+        trans_frame = TranslatableTextFrame()
+        
+        # Capture shape-level metadata (positioning, size, rotation)
+        trans_frame.shape_metadata = {
+            'left': shape.left,
+            'top': shape.top,
+            'width': shape.width,
+            'height': shape.height,
+            'rotation': shape.rotation,
+            'shape_type': shape.shape_type,
+            'name': shape.name
+        }
+        
+        # Capture text frame properties
+        if hasattr(shape, 'text_frame'):
+            tf = shape.text_frame
+            trans_frame.shape_metadata['text_frame'] = {
+                'margin_left': tf.margin_left,
+                'margin_right': tf.margin_right,
+                'margin_top': tf.margin_top,
+                'margin_bottom': tf.margin_bottom,
+                'vertical_anchor': tf.vertical_anchor,
+                'word_wrap': tf.word_wrap,
+                'auto_size': tf.auto_size
+            }
+            
+            # Extract each paragraph with runs
+            for para in tf.paragraphs:
+                trans_para = self.extract_ppt_paragraph(para)
+                trans_frame.paragraphs.append(trans_para)
+        
+        return trans_frame
+
+
+    def extract_ppt_paragraph(self, para) -> TranslatableParagraph:
+        """
+        Extract PowerPoint paragraph with run-level formatting.
+        Similar to Word's extract_paragraph but for PPT-specific properties.
+        """
+        from pptx.util import Pt
+        
+        # Resolve base font from theme/master
+        def get_resolved_ppt_font(p):
+            # Check runs first
+            for r in p.runs:
+                if r.font.name:
+                    return r.font.name
+            # Check theme defaults
+            try:
+                if hasattr(p, '_element') and hasattr(p._element, 'pPr'):
+                    # Theme font resolution logic here
+                    pass
+            except:
+                pass
+            return "Calibri"  # PPT default
+        
+        resolved_font = get_resolved_ppt_font(para)
+        
+        runs = []
+        for run in para.runs:
+            f_color = None
+            try:
+                if run.font.color and run.font.color.rgb:
+                    rgb = run.font.color.rgb
+                    f_color = (rgb[0], rgb[1], rgb[2])
+            except:
+                pass
+            
+            runs.append(FormatRun(
+                text=run.text,
+                bold=run.font.bold,
+                italic=run.font.italic,
+                underline=run.font.underline,
+                font_name=run.font.name if run.font.name else resolved_font,
+                font_size=run.font.size.pt if run.font.size else 18.0,
+                font_color=f_color
+            ))
+        
+        trans_para = TranslatableParagraph(runs=runs)
+        
+        # Capture paragraph-level properties
+        trans_para.metadata['alignment'] = para.alignment
+        trans_para.metadata['level'] = para.level  # Indentation level
+        trans_para.metadata['line_spacing'] = para.line_spacing
+        trans_para.metadata['space_before'] = para.space_before
+        trans_para.metadata['space_after'] = para.space_after
+        
+        return trans_para
+
+
+    def extract_table_from_slide(self, table) -> List[List[TranslatableTextFrame]]:
+        """
+        Extract table structure with cell-level text frames.
+        PPT tables are similar to Word but stored differently.
+        """
+        table_data = []
+        
+        for row in table.rows:
+            row_data = []
+            for cell in row.cells:
+                cell_frame = self.extract_text_frame(cell)
+                row_data.append(cell_frame)
+            table_data.append(row_data)
+        
+        return table_data
+
+
+    def get_speaker_notes(self, slide) -> Optional[str]:
+        """
+        Extract speaker notes from slide.
+        PPT equivalent of footnotes in Word.
+        """
+        try:
+            if slide.has_notes_slide:
+                notes_slide = slide.notes_slide
+                text_frame = notes_slide.notes_text_frame
+                return text_frame.text if text_frame.text.strip() else None
+        except:
+            return None
+        
+    # ============================================================================
+    # PPTX SAFETY CHECKS - NEW SECTION
+    # ============================================================================
+
+    def is_shape_safe_to_translate(self, shape) -> bool:
+        """
+        Check if PowerPoint shape can be safely translated.
+        Equivalent to is_paragraph_safe_to_translate() for Word.
+        """
+        # Skip shapes without text frames
+        if not hasattr(shape, 'text_frame'):
+            return False
+        
+        try:
+            text_frame = shape.text_frame
+            
+            # Skip empty text frames
+            if not text_frame.text or not text_frame.text.strip():
+                return False
+            
+            # Skip placeholder shapes with no actual content
+            if len(text_frame.text.strip()) <= 1:
+                return False
+            
+            # Skip shapes that are likely logos or decorative
+            if shape.name and any(keyword in shape.name.lower() 
+                                for keyword in ['logo', 'watermark', 'decoration', 'icon']):
+                logger.debug(f"Skipping decorative shape: {shape.name}")
+                return False
+            
+            # Skip very small shapes (likely decorative)
+            if shape.width < 100000 or shape.height < 100000:  # Less than ~0.14 inches
+                logger.debug(f"Skipping tiny shape: {shape.width}x{shape.height}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.debug(f"Shape safety check failed: {e}")
+            return False
+
+
+    def is_slide_master_or_layout(self, slide) -> bool:
+        """
+        Detect if this is a master slide or layout (should not be translated).
+        """
+        try:
+            # Master slides don't have a slide_id in the normal sense
+            if not hasattr(slide, 'slide_id'):
+                return True
+            # Additional checks could go here
+            return False
+        except:
+            return True
+
+
+    # ============================================================================
+    # PPTX RECONSTRUCTION METHODS
+    # ============================================================================
+
+    def apply_text_frame_formatting(
+        self, 
+        shape,
+        trans_frame: TranslatableTextFrame,
+        translated_paragraphs: List[Tuple[str, List[Tuple[int, int]]]]
+    ):
+        """
+        Reconstruct text frame with aligned formatting.
+        PPT equivalent of apply_aligned_formatting().
+        
+        Args:
+            shape: PowerPoint shape object
+            trans_frame: Original extracted text frame
+            translated_paragraphs: List of (translated_text, alignment) tuples
+        """
+        from pptx.util import Pt
+        from pptx.enum.text import PP_ALIGN, MSO_VERTICAL_ANCHOR
+        
+        tf = shape.text_frame
+        
+        # Restore text frame properties
+        tf_meta = trans_frame.shape_metadata.get('text_frame', {})
+        if tf_meta:
+            try:
+                tf.margin_left = tf_meta.get('margin_left', tf.margin_left)
+                tf.margin_right = tf_meta.get('margin_right', tf.margin_right)
+                tf.margin_top = tf_meta.get('margin_top', tf.margin_top)
+                tf.margin_bottom = tf_meta.get('margin_bottom', tf.margin_bottom)
+                tf.vertical_anchor = tf_meta.get('vertical_anchor', tf.vertical_anchor)
+                tf.word_wrap = tf_meta.get('word_wrap', tf.word_wrap)
+                tf.auto_size = tf_meta.get('auto_size', tf.auto_size)
+            except Exception as e:
+                logger.debug(f"Text frame property restoration failed: {e}")
+        
+        # Clear existing paragraphs
+        for _ in range(len(tf.paragraphs)):
+            tf._element.remove(tf.paragraphs[0]._element)
+        
+        # Reconstruct paragraphs
+        for i, (trans_para, (translated_text, alignment)) in enumerate(
+            zip(trans_frame.paragraphs, translated_paragraphs)
+        ):
+            para = tf.add_paragraph()
+            
+            # Restore paragraph properties
+            para.alignment = trans_para.metadata.get('alignment')
+            para.level = trans_para.metadata.get('level', 0)
+            
+            if trans_para.metadata.get('line_spacing'):
+                para.line_spacing = trans_para.metadata['line_spacing']
+            if trans_para.metadata.get('space_before'):
+                para.space_before = trans_para.metadata['space_before']
+            if trans_para.metadata.get('space_after'):
+                para.space_after = trans_para.metadata['space_after']
+            
+            # Apply aligned formatting to runs
+            self.apply_ppt_paragraph_formatting(
+                para, trans_para, translated_text, alignment
+            )
+
+
+    def apply_ppt_paragraph_formatting(
+        self,
+        para,
+        trans_para: TranslatableParagraph,
+        translated_text: str,
+        alignment: List[Tuple[int, int]]
+    ):
+        """
+        Apply aligned formatting to PowerPoint paragraph runs.
+        Core formatting transfer logic - same as Word but for PPT runs.
+        """
+        from pptx.util import Pt
+        from pptx.dml.color import RGBColor
+        
+        src_clean_words = trans_para.get_words()
+        tgt_raw_units = translated_text.split()
+        formatted_indices = trans_para.get_formatted_word_indices()
+        
+        # Map clean indices to raw units
+        clean_to_raw_tgt = {}
+        clean_idx = 0
+        for raw_idx, unit in enumerate(tgt_raw_units):
+            if re.search(r'\w', unit):
+                clean_to_raw_tgt[clean_idx] = raw_idx
+                clean_idx += 1
+        
+        # Get font template
+        font_template = trans_para.runs[0] if trans_para.runs else None
+        
+        # Reconstruct runs
+        for i, unit in enumerate(tgt_raw_units):
+            run_text = unit + (" " if i < len(tgt_raw_units)-1 else "")
+            run = para.add_run()
+            run.text = run_text
+            
+            # Determine style from alignment
+            style_type = None
+            matched_src = [s for s, t in alignment if clean_to_raw_tgt.get(t) == i]
+            
+            if matched_src:
+                for s_idx in matched_src:
+                    if s_idx in formatted_indices['italic_bold']:
+                        style_type = 'italic_bold'
+                        break
+                    elif s_idx in formatted_indices['bold']:
+                        style_type = 'bold'
+                    elif s_idx in formatted_indices['italic'] and style_type != 'bold':
+                        style_type = 'italic'
+            
+            # Apply inline styles
+            if style_type == 'italic_bold':
+                run.font.bold = run.font.italic = True
+            elif style_type == 'bold':
+                run.font.bold = True
+            elif style_type == 'italic':
+                run.font.italic = True
+            
+            # Apply baseline aesthetics
+            if font_template:
+                self.copy_ppt_font_properties(run, font_template)
+
+
+    def copy_ppt_font_properties(self, target_run, source_run: FormatRun):
+        """
+        Force font properties in PowerPoint run.
+        PPT equivalent of copy_font_properties().
+        """
+        from pptx.util import Pt
+        from pptx.dml.color import RGBColor
+        
+        try:
+            if source_run.font_name:
+                target_run.font.name = source_run.font_name
+            
+            if source_run.font_size:
+                target_run.font.size = Pt(source_run.font_size)
+            
+            if source_run.font_color:
+                target_run.font.color.rgb = RGBColor(*source_run.font_color)
+            
+            if source_run.underline is not None:
+                target_run.font.underline = source_run.underline
+                
+        except Exception as e:
+            logger.debug(f"PPT font property copy failed: {e}")
+
+
+    def restore_table_to_slide(
+        self,
+        table,
+        table_data: List[List[TranslatableTextFrame]],
+        translated_cells: List[List[Tuple[str, List[Tuple[int, int]]]]]
+    ):
+        """
+        Restore translated content to PowerPoint table.
+        """
+        for i, row in enumerate(table.rows):
+            for j, cell in enumerate(row.cells):
+                if i < len(table_data) and j < len(table_data[i]):
+                    trans_frame = table_data[i][j]
+                    trans_paragraphs = translated_cells[i][j]
+                    
+                    # Treat cell as a shape with text frame
+                    self.apply_text_frame_formatting(
+                        cell, trans_frame, trans_paragraphs
+                    )
+
+
+    def set_speaker_notes(self, slide, translated_notes: str):
+        """
+        Set translated speaker notes.
+        """
+        try:
+            if not slide.has_notes_slide:
+                notes_slide = slide.notes_slide  # Creates if doesn't exist
+            else:
+                notes_slide = slide.notes_slide
+            
+            text_frame = notes_slide.notes_text_frame
+            text_frame.clear()
+            text_frame.text = translated_notes
+        except Exception as e:
+            logger.warning(f"Could not set speaker notes: {e}")
+
+
+    # ============================================================================
+    # PPTX SLIDE PROCESSING
+    # ============================================================================
+
+    async def translate_shape(self, shape):
+        """
+        Translate a single shape (text box, placeholder, etc.)
+        """
+        if not shape.has_text_frame:
+            return
+        
+        try:
+            # Extract
+            trans_frame = self.extract_text_frame(shape)
+            
+            if not trans_frame.paragraphs:
+                return
+            
+            # Translate each paragraph
+            translated_paragraphs = []
+            for trans_para in trans_frame.paragraphs:
+                original_text = trans_para.get_text()
+                if not original_text.strip():
+                    translated_paragraphs.append(("", []))
+                    continue
+                
+                # Translate
+                translated_text = await self.translate_text(original_text)
+                
+                # Align
+                src_words = trans_para.get_words()
+                tgt_words = re.findall(r"\w+", translated_text)
+                alignment = []
+                if self.aligner and src_words and tgt_words:
+                    alignment = self.aligner.align(src_words, tgt_words)
+                
+                translated_paragraphs.append((translated_text, alignment))
+            
+            # Reconstruct
+            self.apply_text_frame_formatting(shape, trans_frame, translated_paragraphs)
+            
+        except Exception as e:
+            logger.error(f"Shape translation failed: {e}", exc_info=True)
+
+
+    async def translate_slide(self, slide):
+        """
+        Translate all content in a slide.
+        """
+        # Process shapes
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                await self.translate_shape(shape)
+            
+            # Handle tables
+            if shape.has_table:
+                await self.translate_table_in_slide(shape.table)
+            
+            # Handle groups (recursive)
+            if shape.shape_type == 6:  # MSO_SHAPE_TYPE.GROUP
+                for sub_shape in shape.shapes:
+                    if sub_shape.has_text_frame:
+                        await self.translate_shape(sub_shape)
+        
+        # Process speaker notes
+        notes_text = self.get_speaker_notes(slide)
+        if notes_text:
+            translated_notes = await self.translate_text(notes_text)
+            self.set_speaker_notes(slide, translated_notes)
+
+
+    async def translate_table_in_slide(self, table):
+        """
+        Translate table content in slide.
+        """
+        table_data = self.extract_table_from_slide(table)
+        translated_cells = []
+        
+        for row_data in table_data:
+            translated_row = []
+            for cell_frame in row_data:
+                cell_paragraphs = []
+                for trans_para in cell_frame.paragraphs:
+                    text = trans_para.get_text()
+                    if text.strip():
+                        translated = await self.translate_text(text)
+                        src_words = trans_para.get_words()
+                        tgt_words = re.findall(r"\w+", translated)
+                        alignment = self.aligner.align(src_words, tgt_words) if self.aligner else []
+                        cell_paragraphs.append((translated, alignment))
+                    else:
+                        cell_paragraphs.append(("", []))
+                translated_row.append(cell_paragraphs)
+            translated_cells.append(translated_row)
+        
+        self.restore_table_to_slide(table, table_data, translated_cells)
+
+
+    async def translate_presentation(self, input_path: Path, output_path: Path):
+        """
+        Main presentation translation lifecycle.
+        PPT equivalent of translate_document().
+        """
+        from pptx import Presentation
+        
+        prs = Presentation(str(input_path))
+        
+        logger.info(f"Processing {len(prs.slides)} slides")
+        
+        for slide_num, slide in enumerate(tqdm(prs.slides, desc="Translating slides"), 1):
+            logger.info(f"Processing slide {slide_num}")
+            await self.translate_slide(slide)
+        
+        logger.info(f"Saving presentation to {output_path}")
+        prs.save(str(output_path))
+        logger.info("✓ Presentation Translation Complete.")
+
+    # ============================================================================
+    # FILE TYPE DETECTION
+    # ============================================================================
+
+    def detect_file_type(self, file_path: Path) -> str:
+        """
+        Detect if file is Word (.docx) or PowerPoint (.pptx).
+        Returns: 'docx', 'pptx', or 'unknown'
+        """
+        suffix = file_path.suffix.lower()
+        
+        if suffix == '.docx':
+            return 'docx'
+        elif suffix == '.pptx':
+            return 'pptx'
+        else:
+            # Try to detect by magic bytes
+            try:
+                with open(file_path, 'rb') as f:
+                    header = f.read(4)
+                    # Both formats are ZIP files (PK header)
+                    if header[:2] == b'PK':
+                        # Try to open as docx first
+                        try:
+                            from docx import Document
+                            Document(str(file_path))
+                            return 'docx'
+                        except:
+                            pass
+                        # Try as pptx
+                        try:
+                            from pptx import Presentation
+                            Presentation(str(file_path))
+                            return 'pptx'
+                        except:
+                            pass
+            except:
+                pass
+        
+        return 'unknown'
+
+
+    def validate_file(self, file_path: Path) -> Tuple[bool, str, str]:
+        """
+        Validate input file and return (is_valid, file_type, error_message).
+        
+        Returns:
+            Tuple of (success, file_type, error_msg)
+        """
+        if not file_path.exists():
+            return False, 'unknown', f"File not found: {file_path}"
+        
+        file_type = self.detect_file_type(file_path)
+        
+        if file_type == 'unknown':
+            return False, 'unknown', f"Unsupported file format. Only .docx and .pptx are supported."
+        
+        # Verify we can actually open it
+        try:
+            if file_type == 'docx':
+                from docx import Document
+                doc = Document(str(file_path))
+                # Basic sanity check
+                if not hasattr(doc, 'paragraphs'):
+                    return False, file_type, "Invalid .docx file structure"
+            
+            elif file_type == 'pptx':
+                from pptx import Presentation
+                prs = Presentation(str(file_path))
+                # Basic sanity check
+                if not hasattr(prs, 'slides'):
+                    return False, file_type, "Invalid .pptx file structure"
+            
+            return True, file_type, ""
+        
+        except Exception as e:
+            return False, file_type, f"Cannot open file: {str(e)}"
+        
+
+
+
 
 # ============================================================================
 # CLI
@@ -1520,36 +2161,35 @@ Backends Comparison:
   opus       - Specialized bilingual models. Tiny (~200MB), extremely fast, literal.
   ct2 (wmt)  - Dense Facebook models. Peak German/European quality (~6GB RAM).
 
+Supported Formats:
+  .docx      - Microsoft Word documents (paragraphs, tables, footnotes, headers/footers)
+  .pptx      - Microsoft PowerPoint presentations (slides, text boxes, tables, notes)
+
 Examples:
-  # Standard use (NLLB-600M)
+  # Translate Word document (NLLB-600M)
   %(prog)s input.docx output.docx -s en -t de
   
+  # Translate PowerPoint presentation
+  %(prog)s presentation.pptx translated.pptx -s en -t es
+  
   # High-quality academic translation (Madlad-400)
-  %(prog)s input.docx output.docx -s en -t de --nmt madlad
+  %(prog)s thesis.docx thesis_de.docx -s en -t de --nmt madlad
   
-  # Maximum speed for EN-DE specialized pair (Opus-MT)
-  %(prog)s input.docx output.docx -s en -t de --nmt opus
-  
-  # Use LLM (Claude) with local neural alignment
-  %(prog)s input.docx output.docx -s en -t es --mode llm-align --llm anthropic
-  
-  # Larger NLLB model for rare languages
-  %(prog)s input.docx output.docx -s en -t ja --nmt nllb --nllb-size 1.3B
+  # Translate slides with LLM (Claude)
+  %(prog)s slides.pptx slides_fr.pptx -s en -t fr --mode llm-align --llm anthropic
 
 Environment Variables:
   OPENAI_API_KEY, ANTHROPIC_API_KEY - Required for LLM backends.
         """
     )
     
-    # 1. POSITIONAL ARGUMENTS
-    parser.add_argument('input', help='Input .docx file path')
-    parser.add_argument('output', help='Output .docx file path')
+    # 1. POSITIONAL ARGUMENTS, HELP TEXT
+    parser.add_argument('input', help='Input file (.docx or .pptx)')
+    parser.add_argument('output', help='Output file (.docx or .pptx)')
     
-    # 2. LANGUAGE ARGUMENTS
     parser.add_argument('-s', '--source', default='en', help='Source language code (default: en)')
     parser.add_argument('-t', '--target', default='de', help='Target language code (default: de)')
     
-    # 3. TRANSLATION MODE
     parser.add_argument(
         '--mode',
         choices=['nmt', 'llm-align', 'llm-plain', 'hybrid'],
@@ -1557,7 +2197,6 @@ Environment Variables:
         help='Translation strategy (default: hybrid)'
     )
     
-    # 4. NMT ENGINE SELECTION 
     parser.add_argument(
         '--nmt',
         choices=['nllb', 'madlad', 'opus', 'ct2', 'auto'],
@@ -1572,14 +2211,12 @@ Environment Variables:
         help='NLLB variant only: 600M (fastest), 1.3B (balanced), 3.3B (heavy)'
     )
     
-    # 5. LLM PROVIDER
     parser.add_argument(
         '--llm',
         choices=['openai', 'anthropic', 'ollama'],
         help='LLM provider for hybrid/llm modes'
     )
     
-    # 6. ALIGNER SELECTION
     parser.add_argument(
         '--aligner',
         choices=['awesome', 'simalign', 'lindat', 'fast_align', 'heuristic', 'auto'],
@@ -1591,17 +2228,32 @@ Environment Variables:
     
     args = parser.parse_args()
     
-    # Set global logging level based on verbose flag
+    # Set logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Path validation
+    # Enhanced validation
     input_path = Path(args.input)
+    output_path = Path(args.output)
+    
     if not input_path.exists():
         logger.error(f"File not found: {input_path}")
         sys.exit(1)
     
-    # Mapping CLI strings to Enums
+    # Validate file type compatibility
+    input_type = input_path.suffix.lower()
+    output_type = output_path.suffix.lower()
+    
+    if input_type not in ['.docx', '.pptx']:
+        logger.error(f"Unsupported input format: {input_type}. Only .docx and .pptx are supported.")
+        sys.exit(1)
+    
+    # Warn if output extension doesn't match input
+    if output_type != input_type:
+        logger.warning(f"Output extension ({output_type}) doesn't match input ({input_type}). Using {input_type}.")
+        output_path = output_path.with_suffix(input_type)
+    
+    # Mode mapping unchanged
     mode_map = {
         'nmt': TranslationMode.NMT_ONLY,
         'llm-align': TranslationMode.LLM_WITH_ALIGN,
@@ -1609,12 +2261,15 @@ Environment Variables:
         'hybrid': TranslationMode.HYBRID
     }
     
-    # --- LOGO & STATUS HEADER ---
+    # Updated status header
+    file_type_name = "Word Document" if input_type == '.docx' else "PowerPoint Presentation"
+    
     print(f"\n{'='*60}")
     print(f"🌍 DOCUMENT TRANSLATOR - PRODUCTION v12")
     print(f"{'='*60}")
+    print(f"Format:     {file_type_name}")
     print(f"Input:      {input_path.name}")
-    print(f"Output:     {args.output}")
+    print(f"Output:     {output_path.name}")
     print(f"Direction:  {args.source.upper()} → {args.target.upper()}")
     print(f"Mode:       {args.mode.upper()}")
     print(f"NMT Engine: {args.nmt.upper()} {'('+args.nllb_size+')' if args.nmt=='nllb' else ''}")
@@ -1623,7 +2278,7 @@ Environment Variables:
         print(f"LLM:        {args.llm.upper()}")
     print(f"{'='*60}\n")
     
-    # Initialize the engine
+    # Initialize translator
     translator = UltimateDocumentTranslator(
         src_lang=args.source,
         tgt_lang=args.target,
@@ -1634,16 +2289,16 @@ Environment Variables:
         nllb_model_size=args.nllb_size
     )
     
-    # Execute lifecycle
+    # Use unified translate_file method
     try:
-        await translator.translate_document(input_path, Path(args.output))
+        await translator.translate_file(input_path, output_path)
         
         print(f"\n{'='*60}")
-        print(f"✅ Success! Document processed in {args.mode} mode.")
-        print(f"💾 File saved to: {args.output}")
+        print(f"✅ Success! {file_type_name} processed in {args.mode} mode.")
+        print(f"💾 File saved to: {output_path}")
         print(f"{'='*60}\n")
     except Exception as e:
-        logger.error(f"FAILED | Document translation aborted: {e}", exc_info=args.verbose)
+        logger.error(f"FAILED | Translation aborted: {e}", exc_info=args.verbose)
         sys.exit(1)
 
 
