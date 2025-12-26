@@ -37,6 +37,8 @@ tokens/
 *.mp4
 *.docx
 *.pptx
+*.doc
+*.ppt
 
 # App-specific hidden keys
 .master_key
