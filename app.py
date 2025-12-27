@@ -1357,7 +1357,7 @@ async def translate_document_with_progress(
 """
         
         # Translate (this is where the heavy work happens)
-        await translator.translate_document(input_path, output_path)
+        await translator.translate_file(input_path, output_path) 
         
         elapsed = time.time() - start_time
         
@@ -3636,15 +3636,28 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
             raw_messages.append({"role": "system", "content": str(system_prompt)})
         
         # Chat History
-        for msg in history:
-            # FIX: Properly extract text if content is a list/dict
-            content = extract_clean_content(msg.get("content"))
-            raw_messages.append({"role": msg["role"], "content": content})
+        #  (already cleaned by bot_msg)
+        # for msg in history:
+        #    # Properly extract text if content is a list/dict
+        #    content = extract_clean_content(msg.get("content"))
+        #    raw_messages.append({"role": msg["role"], "content": content})
             
         # Current Message
-        # FIX: Also extract content for the current message
-        current_content = extract_clean_content(message)
-        raw_messages.append({"role": "user", "content": current_content})
+        # Also extract content for the current message
+        # current_content = extract_clean_content(message)
+        
+        # raw_messages.append({"role": "user", "content": current_content})
+
+        raw_messages.append({"role": "user", "content": message})
+        print(f"[DEBUG] 📨 Built message list with {len(raw_messages)} messages")
+
+        # Log the last user message to verify attachment is present, if any
+        if raw_messages:
+            last_msg = raw_messages[-1]
+            if isinstance(last_msg.get("content"), list):
+                print(f"[DEBUG] 🖼️ Last message is multimodal with {len(last_msg['content'])} parts")
+            elif isinstance(last_msg.get("content"), str):
+                print(f"[DEBUG] 💬 Last message is text: {last_msg['content'][:50]}...")
 
         # 2. Get Context Limit Logic
         context_limit = get_model_context_limit(provider, model)
@@ -5043,9 +5056,13 @@ def user_msg(msg, hist):
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     """
     Execute chat with support for text and images.
+    Converts Gradio's {"path": ...} format to base64 for APIs.
     """
-    current_time = time.time()
+    import time
+    import base64
+    import os
     
+    current_time = time.time()
     print(f"[DEBUG] 🤖 bot_msg called at {current_time}")
 
     # DEBOUNCE LOCK
@@ -5068,89 +5085,82 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         yield hist
         return
 
-    # Get last user message(s) - could be text, images, or both
+    # Helper: Convert Gradio path format to API base64 format
+    def convert_image_to_base64(content):
+        """Convert {"path": ...} to base64 image format"""
+        if not isinstance(content, dict) or "path" not in content:
+            return content
+        
+        try:
+            file_path = content["path"]
+            with open(file_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            # Determine mime type
+            ext = os.path.splitext(file_path)[1].lower()
+            mime_map = {
+                '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                '.png': 'image/png', '.webp': 'image/webp',
+                '.gif': 'image/gif'
+            }
+            mime_type = mime_map.get(ext, 'image/jpeg')
+            
+            print(f"[DEBUG] 🖼️ Converted image to base64: {os.path.basename(file_path)} ({len(img_data)} chars)")
+            
+            return {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
+            }
+        except Exception as e:
+            print(f"[DEBUG] ⚠️ Failed to convert image: {e}")
+            return {"type": "text", "text": "[Image could not be loaded]"}
+
+    # Collect all consecutive user messages from the end (could be image + text)
     last_user_messages = []
-    
-    # Collect all consecutive user messages (text + images)
     for msg in reversed(hist):
         if msg["role"] == "user":
             last_user_messages.insert(0, msg)
         else:
             break
     
+    print(f"[DEBUG] 📥 Collected {len(last_user_messages)} consecutive user message(s)")
+    
     # Build context (everything before the latest user message(s))
     context_end_idx = len(hist) - len(last_user_messages)
     raw_context = hist[:context_end_idx]
     
-    # Clean context for API
+    # Clean context for API (convert images)
     clean_context = []
     for m in raw_context:
         role = m["role"]
         if role in ["bot", "model"]: 
             role = "assistant"
         
-        content = m["content"]
-        # Convert Gradio's {"path": ...} format to API format if needed
-        if isinstance(content, dict) and "path" in content:
-            # For vision models, convert to base64
-            try:
-                import base64
-                with open(content["path"], "rb") as f:
-                    img_data = base64.b64encode(f.read()).decode('utf-8')
-                
-                # Determine mime type
-                ext = os.path.splitext(content["path"])[1].lower()
-                mime_map = {
-                    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                    '.png': 'image/png', '.webp': 'image/webp',
-                    '.gif': 'image/gif'
-                }
-                mime_type = mime_map.get(ext, 'image/jpeg')
-                
-                content = {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
-                }
-            except Exception as e:
-                print(f"[DEBUG] ⚠️ Failed to process image: {e}")
-                content = "[Image could not be loaded]"
-        
+        content = convert_image_to_base64(m["content"])
         clean_context.append({"role": role, "content": content})
     
-    # Build final message from last user input(s)
+    # Build final user message content (could be multimodal: text + images)
     final_user_content = []
+    
     for msg in last_user_messages:
         content = msg["content"]
         
         if isinstance(content, dict) and "path" in content:
-            # Image
-            try:
-                import base64
-                with open(content["path"], "rb") as f:
-                    img_data = base64.b64encode(f.read()).decode('utf-8')
-                
-                ext = os.path.splitext(content["path"])[1].lower()
-                mime_map = {
-                    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                    '.png': 'image/png', '.webp': 'image/webp',
-                    '.gif': 'image/gif'
-                }
-                mime_type = mime_map.get(ext, 'image/jpeg')
-                
-                final_user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
-                })
-            except Exception as e:
-                print(f"[DEBUG] ⚠️ Failed to process image: {e}")
-                final_user_content.append({"type": "text", "text": "[Image could not be loaded]"})
+            # Image message
+            final_user_content.append(convert_image_to_base64(content))
         else:
-            # Text
+            # Text message
             final_user_content.append({"type": "text", "text": str(content)})
     
-    # If only one text item, unwrap it
+    # If only one text item, unwrap it (API expects string for text-only)
     if len(final_user_content) == 1 and final_user_content[0].get("type") == "text":
         final_user_content = final_user_content[0]["text"]
+    
+    print(f"[DEBUG] 📤 Final message format: {type(final_user_content)}")
+    if isinstance(final_user_content, list):
+        print(f"[DEBUG]    - Multimodal message with {len(final_user_content)} parts")
+        for i, part in enumerate(final_user_content):
+            print(f"[DEBUG]      Part {i+1}: {part.get('type', 'unknown')}")
     
     # Add assistant placeholder
     hist.append({"role": "assistant", "content": ""})
@@ -5160,7 +5170,7 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         
         # Call run_chat with the prepared messages
         generator = run_chat(
-            final_user_content, 
+            final_user_content,  # This now contains properly formatted images!
             clean_context, 
             prov, mod, temp, sys, key, r_effort, r_tokens, user_state
         )
@@ -5171,6 +5181,8 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
             
     except Exception as e:
         print(f"[DEBUG] 🔥 ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         hist[-1]["content"] = f"🔥 Wrapper Fehler: {str(e)}"
         yield hist
 
