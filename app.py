@@ -3649,7 +3649,35 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
         # raw_messages.append({"role": "user", "content": current_content})
 
         raw_messages.append({"role": "user", "content": message})
+        
         print(f"[DEBUG] 📨 Built message list with {len(raw_messages)} messages")
+
+        # =====  DEBUG BLOCK =====
+        print(f"[DEBUG] 🔍 Inspecting final message to API:")
+        for i, msg in enumerate(raw_messages):
+            role = msg.get("role")
+            content = msg.get("content")
+            
+            if isinstance(content, list):
+                print(f"[DEBUG]   Msg {i} ({role}): MULTIMODAL list with {len(content)} parts")
+                for j, part in enumerate(content):
+                    if isinstance(part, dict):
+                        part_type = part.get("type", "no-type")
+                        if part_type == "image_url":
+                            url = part.get("image_url", {}).get("url", "")
+                            print(f"[DEBUG]     Part {j}: image_url (base64 len: {len(url)})")
+                        elif part_type == "text":
+                            text = part.get("text", "")
+                            print(f"[DEBUG]     Part {j}: text: {text[:50]}...")
+                        else:
+                            print(f"[DEBUG]     Part {j}: {part_type}")
+                    else:
+                        print(f"[DEBUG]     Part {j}: {type(part)} = {str(part)[:50]}")
+            elif isinstance(content, dict):
+                print(f"[DEBUG]   Msg {i} ({role}): DICT with keys: {list(content.keys())}")
+            else:
+                print(f"[DEBUG]   Msg {i} ({role}): {type(content)} = {str(content)[:50]}...")
+        # ===== END DEBUG BLOCK =====
 
         # Log the last user message to verify attachment is present, if any
         if raw_messages:
@@ -5088,11 +5116,22 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     # Helper: Convert Gradio path format to API base64 format
     def convert_image_to_base64(content):
         """Convert {"path": ...} to base64 image format"""
+        print(f"[DEBUG] 🔄 convert_image_to_base64 called with: {type(content)}")
+        print(f"[DEBUG]    Content keys: {content.keys() if isinstance(content, dict) else 'N/A'}")
+        
         if not isinstance(content, dict) or "path" not in content:
+            print(f"[DEBUG] ⚠️ Not a path dict, returning as-is")
             return content
         
         try:
             file_path = content["path"]
+            print(f"[DEBUG] 📂 Reading image file: {file_path}")
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                print(f"[DEBUG] ❌ File does not exist!")
+                return {"type": "text", "text": f"[Image not found: {file_path}]"}
+            
             with open(file_path, "rb") as f:
                 img_data = base64.b64encode(f.read()).decode('utf-8')
             
@@ -5105,15 +5144,23 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
             }
             mime_type = mime_map.get(ext, 'image/jpeg')
             
-            print(f"[DEBUG] 🖼️ Converted image to base64: {os.path.basename(file_path)} ({len(img_data)} chars)")
-            
-            return {
+            result = {
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
             }
+            
+            print(f"[DEBUG] ✅ Converted image to base64: {os.path.basename(file_path)}")
+            print(f"[DEBUG]    - Mime: {mime_type}")
+            print(f"[DEBUG]    - Base64 length: {len(img_data)} chars")
+            print(f"[DEBUG]    - Result type: {result.get('type')}")
+            
+            return result
+            
         except Exception as e:
-            print(f"[DEBUG] ⚠️ Failed to convert image: {e}")
-            return {"type": "text", "text": "[Image could not be loaded]"}
+            print(f"[DEBUG] 🔥 Exception in convert_image_to_base64: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"type": "text", "text": f"[Image error: {str(e)}]"}
 
     # Collect all consecutive user messages from the end (could be image + text)
     last_user_messages = []
@@ -5125,42 +5172,50 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     
     print(f"[DEBUG] 📥 Collected {len(last_user_messages)} consecutive user message(s)")
     
+    # Debug: Show what we collected
+    for i, msg in enumerate(last_user_messages):
+        content = msg.get("content")
+        print(f"[DEBUG]    Message {i+1}: {type(content)}")
+        if isinstance(content, dict):
+            print(f"[DEBUG]       Keys: {list(content.keys())}")
+            if "path" in content:
+                print(f"[DEBUG]       Path: {content['path']}")
+    
     # Build context (everything before the latest user message(s))
     context_end_idx = len(hist) - len(last_user_messages)
     raw_context = hist[:context_end_idx]
     
-    # Clean context for API (convert images)
-    clean_context = []
-    for m in raw_context:
-        role = m["role"]
-        if role in ["bot", "model"]: 
-            role = "assistant"
-        
-        content = convert_image_to_base64(m["content"])
-        clean_context.append({"role": role, "content": content})
-    
     # Build final user message content (could be multimodal: text + images)
     final_user_content = []
     
-    for msg in last_user_messages:
+    print(f"[DEBUG] 🔨 Building final_user_content...")
+    
+    for i, msg in enumerate(last_user_messages):
         content = msg["content"]
+        print(f"[DEBUG]    Processing message {i+1}/{len(last_user_messages)}...")
         
         if isinstance(content, dict) and "path" in content:
             # Image message
-            final_user_content.append(convert_image_to_base64(content))
+            print(f"[DEBUG]       → This is an IMAGE message (has 'path' key)")
+            converted = convert_image_to_base64(content)
+            print(f"[DEBUG]       → Converted to: {converted.get('type', 'UNKNOWN TYPE')}")
+            final_user_content.append(converted)
         else:
             # Text message
+            print(f"[DEBUG]       → This is a TEXT message")
             final_user_content.append({"type": "text", "text": str(content)})
     
     # If only one text item, unwrap it (API expects string for text-only)
     if len(final_user_content) == 1 and final_user_content[0].get("type") == "text":
         final_user_content = final_user_content[0]["text"]
+        print(f"[DEBUG] 📝 Single text message, unwrapped to string")
     
     print(f"[DEBUG] 📤 Final message format: {type(final_user_content)}")
     if isinstance(final_user_content, list):
         print(f"[DEBUG]    - Multimodal message with {len(final_user_content)} parts")
         for i, part in enumerate(final_user_content):
-            print(f"[DEBUG]      Part {i+1}: {part.get('type', 'unknown')}")
+            part_type = part.get('type', 'unknown') if isinstance(part, dict) else type(part).__name__
+            print(f"[DEBUG]      Part {i+1}: {part_type}")
     
     # Add assistant placeholder
     hist.append({"role": "assistant", "content": ""})
@@ -5170,8 +5225,8 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         
         # Call run_chat with the prepared messages
         generator = run_chat(
-            final_user_content,  # This now contains properly formatted images!
-            clean_context, 
+            final_user_content,  # This should contain properly formatted images!
+            raw_context, 
             prov, mod, temp, sys, key, r_effort, r_tokens, user_state
         )
         
