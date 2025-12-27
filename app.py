@@ -4982,8 +4982,6 @@ def update_t_ui_old(prov, force_all=False):
 def user_msg(msg, hist):
     """
     Handle multimodal input (text + images from clipboard/upload).
-    Includes duplicate detection to prevent double-bubble bug.
-    
     Gradio 6 format: msg = {"text": str, "files": [paths]}
     """
     import time
@@ -4999,92 +4997,34 @@ def user_msg(msg, hist):
             print("[DEBUG] ❌ Empty multimodal message ignored")
             return None, hist
         
-        # Build list of messages to add (can be multiple: images + text)
-        messages_to_add = []
-        
-        # Add files (images)
+        # Add files (images) - Use Gradio 6 format!
         for file_path in files:
-            messages_to_add.append({"role": "user", "content": {"path": file_path}})
+            hist.append({
+                "role": "user", 
+                "content": [{"file": {"path": file_path}}]  # ✅ Correct Gradio 6 format
+            })
+            print(f"[DEBUG] 🖼️ Added image: {file_path}")
         
-        # Add text if present
+        # Add text if present - Use Gradio 6 format!
         if text and text.strip():
-            messages_to_add.append({"role": "user", "content": text.strip()})
-        
-        # DUPLICATE CHECK: Compare with last message(s) in history
-        if hist and len(hist) >= len(messages_to_add):
-            # Check if the last N messages match what we're about to add
-            potentially_duplicate = True
-            
-            for i, new_msg in enumerate(reversed(messages_to_add)):
-                hist_idx = len(hist) - 1 - i
-                if hist_idx < 0:
-                    potentially_duplicate = False
-                    break
-                
-                hist_msg = hist[hist_idx]
-                
-                # Compare role
-                if hist_msg.get("role") != new_msg.get("role"):
-                    potentially_duplicate = False
-                    break
-                
-                # Compare content
-                hist_content = hist_msg.get("content")
-                new_content = new_msg.get("content")
-                
-                # Handle different content types
-                if isinstance(hist_content, dict) and isinstance(new_content, dict):
-                    # Both are dicts (images) - compare paths
-                    if hist_content.get("path") != new_content.get("path"):
-                        potentially_duplicate = False
-                        break
-                elif isinstance(hist_content, str) and isinstance(new_content, str):
-                    # Both are strings (text) - compare text
-                    if hist_content != new_content:
-                        potentially_duplicate = False
-                        break
-                else:
-                    # Different types - not duplicate
-                    potentially_duplicate = False
-                    break
-            
-            if potentially_duplicate:
-                print(f"[DEBUG] 🚫 DUPLICATE multimodal message detected. Ignoring.")
-                return None, hist
-        
-        # Not a duplicate - add messages
-        for msg_to_add in messages_to_add:
-            hist.append(msg_to_add)
-            if isinstance(msg_to_add["content"], dict) and "path" in msg_to_add["content"]:
-                print(f"[DEBUG] 🖼️ Added image: {msg_to_add['content']['path']}")
-            else:
-                print(f"[DEBUG] 💬 Added text: {str(msg_to_add['content'])[:50]}...")
+            hist.append({
+                "role": "user",
+                "content": [{"text": text.strip(), "type": "text"}]  # ✅ Correct Gradio 6 format
+            })
+            print(f"[DEBUG] 💬 Added text: {text[:50]}...")
         
         return None, hist
     
-    # Legacy fallback for plain text string (shouldn't happen with MultimodalTextbox)
-    if isinstance(msg, str):
-        if not msg or not msg.strip():
-            print("[DEBUG] ❌ Empty text message ignored")
-            return None, hist
-        
-        # Duplicate check for plain text
-        if hist and len(hist) > 0:
-            if hist[-1].get('role') == 'user' and hist[-1].get('content') == msg:
-                print(f"[DEBUG] 🚫 DUPLICATE text message detected. Ignoring.")
-                return None, hist
-        
-        print(f"[DEBUG] 💬 Added legacy text: {msg[:50]}...")
+    # Legacy fallback for plain text string
+    if isinstance(msg, str) and msg.strip():
         return None, hist + [{"role": "user", "content": msg}]
     
-    # Shouldn't reach here
-    print("[DEBUG] ⚠️ Unknown message format")
     return None, hist
 
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     """
     Execute chat with support for text and images.
-    Converts Gradio's {"path": ...} format to base64 for APIs.
+    Converts Gradio 6 format to API format.
     """
     import time
     import base64
@@ -5113,56 +5053,76 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         yield hist
         return
 
-    # Helper: Convert Gradio path format to API base64 format
-    def convert_image_to_base64(content):
-        """Convert {"path": ...} to base64 image format"""
-        print(f"[DEBUG] 🔄 convert_image_to_base64 called with: {type(content)}")
-        print(f"[DEBUG]    Content keys: {content.keys() if isinstance(content, dict) else 'N/A'}")
+    # Helper: Convert Gradio 6 format to API format
+    def convert_gradio_content_to_api(content):
+        """
+        Convert Gradio 6 content format to API format.
         
-        if not isinstance(content, dict) or "path" not in content:
-            print(f"[DEBUG] ⚠️ Not a path dict, returning as-is")
-            return content
+        Gradio 6 format:
+        - Image: [{"file": {"path": "..."}}]
+        - Text: [{"text": "...", "type": "text"}]
         
-        try:
-            file_path = content["path"]
-            print(f"[DEBUG] 📂 Reading image file: {file_path}")
+        API format:
+        - Image: {"type": "image_url", "image_url": {"url": "data:..."}}
+        - Text: {"type": "text", "text": "..."}
+        """
+        print(f"[DEBUG] 🔄 Converting content: {type(content)}")
+        
+        # Handle list format (Gradio 6)
+        if isinstance(content, list) and len(content) > 0:
+            item = content[0]
+            print(f"[DEBUG]    First item type: {type(item)}, keys: {item.keys() if isinstance(item, dict) else 'N/A'}")
             
-            # Check if file exists
-            if not os.path.exists(file_path):
-                print(f"[DEBUG] ❌ File does not exist!")
-                return {"type": "text", "text": f"[Image not found: {file_path}]"}
+            # Check if it's an image
+            if isinstance(item, dict) and "file" in item:
+                file_info = item["file"]
+                if isinstance(file_info, dict) and "path" in file_info:
+                    file_path = file_info["path"]
+                    print(f"[DEBUG]    📂 Found image path: {file_path}")
+                    
+                    try:
+                        if not os.path.exists(file_path):
+                            print(f"[DEBUG]    ❌ File does not exist!")
+                            return {"type": "text", "text": f"[Image not found]"}
+                        
+                        with open(file_path, "rb") as f:
+                            img_data = base64.b64encode(f.read()).decode('utf-8')
+                        
+                        ext = os.path.splitext(file_path)[1].lower()
+                        mime_map = {
+                            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                            '.png': 'image/png', '.webp': 'image/webp',
+                            '.gif': 'image/gif'
+                        }
+                        mime_type = mime_map.get(ext, 'image/jpeg')
+                        
+                        result = {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
+                        }
+                        
+                        print(f"[DEBUG]    ✅ Converted to image_url (base64 len: {len(img_data)})")
+                        return result
+                        
+                    except Exception as e:
+                        print(f"[DEBUG]    🔥 Error converting image: {e}")
+                        return {"type": "text", "text": f"[Image error: {str(e)}]"}
             
-            with open(file_path, "rb") as f:
-                img_data = base64.b64encode(f.read()).decode('utf-8')
-            
-            # Determine mime type
-            ext = os.path.splitext(file_path)[1].lower()
-            mime_map = {
-                '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                '.png': 'image/png', '.webp': 'image/webp',
-                '.gif': 'image/gif'
-            }
-            mime_type = mime_map.get(ext, 'image/jpeg')
-            
-            result = {
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
-            }
-            
-            print(f"[DEBUG] ✅ Converted image to base64: {os.path.basename(file_path)}")
-            print(f"[DEBUG]    - Mime: {mime_type}")
-            print(f"[DEBUG]    - Base64 length: {len(img_data)} chars")
-            print(f"[DEBUG]    - Result type: {result.get('type')}")
-            
-            return result
-            
-        except Exception as e:
-            print(f"[DEBUG] 🔥 Exception in convert_image_to_base64: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"type": "text", "text": f"[Image error: {str(e)}]"}
+            # Check if it's text
+            elif isinstance(item, dict) and "text" in item:
+                text_content = item["text"]
+                print(f"[DEBUG]    📝 Found text: {text_content[:50]}...")
+                return {"type": "text", "text": str(text_content)}
+        
+        # Fallback for non-list content (legacy)
+        if isinstance(content, str):
+            print(f"[DEBUG]    📝 Legacy string format")
+            return {"type": "text", "text": content}
+        
+        print(f"[DEBUG]    ⚠️ Unknown format, returning as text")
+        return {"type": "text", "text": str(content)}
 
-    # Collect all consecutive user messages from the end (could be image + text)
+    # Collect all consecutive user messages from the end
     last_user_messages = []
     for msg in reversed(hist):
         if msg["role"] == "user":
@@ -5172,20 +5132,11 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     
     print(f"[DEBUG] 📥 Collected {len(last_user_messages)} consecutive user message(s)")
     
-    # Debug: Show what we collected
-    for i, msg in enumerate(last_user_messages):
-        content = msg.get("content")
-        print(f"[DEBUG]    Message {i+1}: {type(content)}")
-        if isinstance(content, dict):
-            print(f"[DEBUG]       Keys: {list(content.keys())}")
-            if "path" in content:
-                print(f"[DEBUG]       Path: {content['path']}")
-    
     # Build context (everything before the latest user message(s))
     context_end_idx = len(hist) - len(last_user_messages)
     raw_context = hist[:context_end_idx]
     
-    # Build final user message content (could be multimodal: text + images)
+    # Build final user message content (convert all to API format)
     final_user_content = []
     
     print(f"[DEBUG] 🔨 Building final_user_content...")
@@ -5194,16 +5145,8 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         content = msg["content"]
         print(f"[DEBUG]    Processing message {i+1}/{len(last_user_messages)}...")
         
-        if isinstance(content, dict) and "path" in content:
-            # Image message
-            print(f"[DEBUG]       → This is an IMAGE message (has 'path' key)")
-            converted = convert_image_to_base64(content)
-            print(f"[DEBUG]       → Converted to: {converted.get('type', 'UNKNOWN TYPE')}")
-            final_user_content.append(converted)
-        else:
-            # Text message
-            print(f"[DEBUG]       → This is a TEXT message")
-            final_user_content.append({"type": "text", "text": str(content)})
+        converted = convert_gradio_content_to_api(content)
+        final_user_content.append(converted)
     
     # If only one text item, unwrap it (API expects string for text-only)
     if len(final_user_content) == 1 and final_user_content[0].get("type") == "text":
@@ -5225,7 +5168,7 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         
         # Call run_chat with the prepared messages
         generator = run_chat(
-            final_user_content,  # This should contain properly formatted images!
+            final_user_content,
             raw_context, 
             prov, mod, temp, sys, key, r_effort, r_tokens, user_state
         )
