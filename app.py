@@ -4939,66 +4939,231 @@ def update_t_ui_old(prov, force_all=False):
     
 # --- Chat functions ---
 def user_msg(msg, hist):
-    # 1. CLI DEBUG LOG
+    """
+    Handle multimodal input (text + images from clipboard/upload).
+    Includes duplicate detection to prevent double-bubble bug.
+    
+    Gradio 6 format: msg = {"text": str, "files": [paths]}
+    """
+    import time
     print(f"\n[DEBUG] 👤 user_msg called at {time.time()}")
     
-    if not msg or not msg.strip():
-        print("[DEBUG] ❌ Empty message ignored")
-        return "", hist
+    # Handle MultimodalTextbox format
+    if isinstance(msg, dict):
+        files = msg.get("files", [])
+        text = msg.get("text", "")
+        
+        # Check if completely empty
+        if not files and not text:
+            print("[DEBUG] ❌ Empty multimodal message ignored")
+            return None, hist
+        
+        # Build list of messages to add (can be multiple: images + text)
+        messages_to_add = []
+        
+        # Add files (images)
+        for file_path in files:
+            messages_to_add.append({"role": "user", "content": {"path": file_path}})
+        
+        # Add text if present
+        if text and text.strip():
+            messages_to_add.append({"role": "user", "content": text.strip()})
+        
+        # DUPLICATE CHECK: Compare with last message(s) in history
+        if hist and len(hist) >= len(messages_to_add):
+            # Check if the last N messages match what we're about to add
+            potentially_duplicate = True
+            
+            for i, new_msg in enumerate(reversed(messages_to_add)):
+                hist_idx = len(hist) - 1 - i
+                if hist_idx < 0:
+                    potentially_duplicate = False
+                    break
+                
+                hist_msg = hist[hist_idx]
+                
+                # Compare role
+                if hist_msg.get("role") != new_msg.get("role"):
+                    potentially_duplicate = False
+                    break
+                
+                # Compare content
+                hist_content = hist_msg.get("content")
+                new_content = new_msg.get("content")
+                
+                # Handle different content types
+                if isinstance(hist_content, dict) and isinstance(new_content, dict):
+                    # Both are dicts (images) - compare paths
+                    if hist_content.get("path") != new_content.get("path"):
+                        potentially_duplicate = False
+                        break
+                elif isinstance(hist_content, str) and isinstance(new_content, str):
+                    # Both are strings (text) - compare text
+                    if hist_content != new_content:
+                        potentially_duplicate = False
+                        break
+                else:
+                    # Different types - not duplicate
+                    potentially_duplicate = False
+                    break
+            
+            if potentially_duplicate:
+                print(f"[DEBUG] 🚫 DUPLICATE multimodal message detected. Ignoring.")
+                return None, hist
+        
+        # Not a duplicate - add messages
+        for msg_to_add in messages_to_add:
+            hist.append(msg_to_add)
+            if isinstance(msg_to_add["content"], dict) and "path" in msg_to_add["content"]:
+                print(f"[DEBUG] 🖼️ Added image: {msg_to_add['content']['path']}")
+            else:
+                print(f"[DEBUG] 💬 Added text: {str(msg_to_add['content'])[:50]}...")
+        
+        return None, hist
     
-    # 2. Simple Deduplication (Prevents double visual bubble)
-    if hist and len(hist) > 0:
-        if hist[-1]['role'] == 'user' and hist[-1]['content'] == msg:
-            print(f"[DEBUG] 🚫 DUPLICATE user message detected. Ignoring.")
-            return "", hist
-
-    return "", hist + [{"role": "user", "content": msg}]
+    # Legacy fallback for plain text string (shouldn't happen with MultimodalTextbox)
+    if isinstance(msg, str):
+        if not msg or not msg.strip():
+            print("[DEBUG] ❌ Empty text message ignored")
+            return None, hist
+        
+        # Duplicate check for plain text
+        if hist and len(hist) > 0:
+            if hist[-1].get('role') == 'user' and hist[-1].get('content') == msg:
+                print(f"[DEBUG] 🚫 DUPLICATE text message detected. Ignoring.")
+                return None, hist
+        
+        print(f"[DEBUG] 💬 Added legacy text: {msg[:50]}...")
+        return None, hist + [{"role": "user", "content": msg}]
+    
+    # Shouldn't reach here
+    print("[DEBUG] ⚠️ Unknown message format")
+    return None, hist
 
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     """
-    Execute chat with Debounce Lock to prevent double-generation
+    Execute chat with support for text and images.
     """
     current_time = time.time()
     
-    # --- CLI DEBUG LOG ---
     print(f"[DEBUG] 🤖 bot_msg called at {current_time}")
 
-    # 1. DEBOUNCE LOCK (The Fix)
-    # Check if we ran this function for this user less than 1.0 second ago
+    # DEBOUNCE LOCK
     last_run = user_state.get('last_chat_time', 0)
     if current_time - last_run < 1.0:
         print(f"[DEBUG] 🛑 DEBOUNCE: Ignoring double trigger ({current_time - last_run:.4f}s)")
         yield hist
         return
 
-    # Update timestamp
     user_state['last_chat_time'] = current_time
 
-    # 2. Standard Validation
+    # Validation
     if not hist: 
         print("[DEBUG] ❌ History is empty")
-        yield hist; return
+        yield hist
+        return
 
     if hist[-1]["role"] != "user": 
         print(f"[DEBUG] ❌ Last message is '{hist[-1]['role']}', not 'user'. Skipping.")
-        yield hist; return
+        yield hist
+        return
 
-    # 3. Prepare Generation
-    last_user_msg = hist[-1]["content"]
-    hist.append({"role": "assistant", "content": ""})
-
-    raw_context = hist[:-2]
+    # Get last user message(s) - could be text, images, or both
+    last_user_messages = []
+    
+    # Collect all consecutive user messages (text + images)
+    for msg in reversed(hist):
+        if msg["role"] == "user":
+            last_user_messages.insert(0, msg)
+        else:
+            break
+    
+    # Build context (everything before the latest user message(s))
+    context_end_idx = len(hist) - len(last_user_messages)
+    raw_context = hist[:context_end_idx]
+    
+    # Clean context for API
     clean_context = []
     for m in raw_context:
         role = m["role"]
-        if role in ["bot", "model"]: role = "assistant"
-        clean_context.append({"role": role, "content": m["content"]})
+        if role in ["bot", "model"]: 
+            role = "assistant"
+        
+        content = m["content"]
+        # Convert Gradio's {"path": ...} format to API format if needed
+        if isinstance(content, dict) and "path" in content:
+            # For vision models, convert to base64
+            try:
+                import base64
+                with open(content["path"], "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                # Determine mime type
+                ext = os.path.splitext(content["path"])[1].lower()
+                mime_map = {
+                    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                    '.png': 'image/png', '.webp': 'image/webp',
+                    '.gif': 'image/gif'
+                }
+                mime_type = mime_map.get(ext, 'image/jpeg')
+                
+                content = {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
+                }
+            except Exception as e:
+                print(f"[DEBUG] ⚠️ Failed to process image: {e}")
+                content = "[Image could not be loaded]"
+        
+        clean_context.append({"role": role, "content": content})
+    
+    # Build final message from last user input(s)
+    final_user_content = []
+    for msg in last_user_messages:
+        content = msg["content"]
+        
+        if isinstance(content, dict) and "path" in content:
+            # Image
+            try:
+                import base64
+                with open(content["path"], "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                ext = os.path.splitext(content["path"])[1].lower()
+                mime_map = {
+                    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                    '.png': 'image/png', '.webp': 'image/webp',
+                    '.gif': 'image/gif'
+                }
+                mime_type = mime_map.get(ext, 'image/jpeg')
+                
+                final_user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
+                })
+            except Exception as e:
+                print(f"[DEBUG] ⚠️ Failed to process image: {e}")
+                final_user_content.append({"type": "text", "text": "[Image could not be loaded]"})
+        else:
+            # Text
+            final_user_content.append({"type": "text", "text": str(content)})
+    
+    # If only one text item, unwrap it
+    if len(final_user_content) == 1 and final_user_content[0].get("type") == "text":
+        final_user_content = final_user_content[0]["text"]
+    
+    # Add assistant placeholder
+    hist.append({"role": "assistant", "content": ""})
 
     try:
         print(f"[DEBUG] 🚀 Calling LLM: {prov} / {mod}...")
         
-        # Pass user_state to run_chat
-        generator = run_chat(last_user_msg, clean_context, prov, mod, temp, sys, key, r_effort, r_tokens, user_state)
+        # Call run_chat with the prepared messages
+        generator = run_chat(
+            final_user_content, 
+            clean_context, 
+            prov, mod, temp, sys, key, r_effort, r_tokens, user_state
+        )
         
         for chunk in generator:
             hist[-1]["content"] = chunk
@@ -6343,7 +6508,13 @@ with gr.Blocks(
                 )
                 
                 # 3. INPUT
-                c_msg = gr.Textbox(placeholder="Nachricht...", show_label=False, lines=3, max_lines=5)
+                # c_msg = gr.Textbox(placeholder="Nachricht...", show_label=False, lines=3, max_lines=5)
+                c_msg = gr.MultimodalTextbox(
+                    placeholder="💬 Nachricht (bzw. Einfügen)...", 
+                    show_label=False,
+                    file_types=["image"],
+                    file_count="multiple"
+                )
 
                 # 4. ACTION BUTTONS
                 with gr.Row(equal_height=True, elem_classes="compact-row"):
@@ -6611,11 +6782,11 @@ with gr.Blocks(
                 # # 1. Define the Generation Events (Save into variables)
                 # We need these variables to pass them to the Stop button
                 
-                # A. Submit via Enter Key
+                # A. Submit via (Shift+)Enter Key
                 submit_event = c_msg.submit(
                     user_msg, 
-                    [c_msg, c_bot], 
-                    [c_msg, c_bot], 
+                    [c_msg, c_bot],  # inputs: message, history
+                    [c_msg, c_bot],  # outputs: cleared input, updated history
                     queue=False
                 ).then(
                     bot_msg, 
@@ -6627,8 +6798,8 @@ with gr.Blocks(
                 # B. Submit via Send Button
                 click_event = c_btn.click(
                     user_msg, 
-                    [c_msg, c_bot], 
-                    [c_msg, c_bot], 
+                    [c_msg, c_bot],  # inputs
+                    [c_msg, c_bot],  # outputs
                     queue=False
                 ).then(
                     bot_msg, 
@@ -7206,7 +7377,7 @@ with gr.Blocks(
                 gr.Markdown("""
                 ## 📄 Dokumentübersetzung
                 
-                Übersetze Word-Dokumente mit **Format-Erhaltung**
+                Übersetze Word- und Powerpoiint-Dateien mit **Format-Erhaltung**
                 """)
                 
                 with gr.Row():
@@ -7215,8 +7386,8 @@ with gr.Blocks(
                         with gr.Tabs() as doc_input_tabs:
                             with gr.TabItem("📤 Upload"):
                                 doc_input_file = gr.File(
-                                    label="Word-Dokument hochladen (.docx)",
-                                    file_types=[".docx"],
+                                    label="Dokument hochladen (.docx oder .pptx)",
+                                    file_types=[".docx", ".pptx"],
                                     type="filepath"
                                 )
                             
@@ -7224,8 +7395,8 @@ with gr.Blocks(
                                 gr.Markdown("Wähle Dokument aus Cloud-Speicher:")
                                 doc_storage_browser = gr.FileExplorer(
                                     root_dir=STORAGE_MOUNT_POINT,
-                                    glob="**/*.{docx,docx.enc}",
-                                    label="Word-Dokumente durchsuchen",
+                                    glob="**/*.{docx,pptx,docx.enc,pptx.enc}",
+                                    label="Dokumente durchsuchen (.docx, .pptx)",
                                     height=200
                                 )
                                 with gr.Row():
@@ -7345,6 +7516,27 @@ with gr.Blocks(
                     except Exception as e:
                         logger.exception(f"Doc storage load error: {e}")
                         return None, f"🔥 Fehler: {str(e)}"
+                    
+                def detect_doc_type(filepath):
+                    """Detect if document is Word or PowerPoint"""
+                    if not filepath:
+                        return "unknown"
+                    
+                    ext = os.path.splitext(filepath)[1].lower()
+                    if ext == '.docx' or (ext == '.enc' and filepath.lower().endswith('.docx.enc')):
+                        return "word"
+                    elif ext == '.pptx' or (ext == '.enc' and filepath.lower().endswith('.pptx.enc')):
+                        return "powerpoint"
+                    return "unknown"
+
+                def get_format_emoji(filepath):
+                    """Get emoji for document type"""
+                    doc_type = detect_doc_type(filepath)
+                    if doc_type == "word":
+                        return "📄"
+                    elif doc_type == "powerpoint":
+                        return "📊"
+                    return "📎"
                 
                 # Wire up storage browser
                 doc_refresh_sb_btn.click(
@@ -7369,6 +7561,12 @@ with gr.Blocks(
                 def handle_translate(input_f, src_lang_name, tgt_lang_name, mode, nmt, nllb_sz, algn, llm, user_state):
                     src_code = languages.get(src_lang_name, "en")
                     tgt_code = languages.get(tgt_lang_name, "de")
+                    
+                    # Detect format for logging
+                    if input_f:
+                        doc_type = detect_doc_type(input_f)
+                        emoji = get_format_emoji(input_f)
+                        logger.info(f"{emoji} Translating {doc_type} document: {os.path.basename(input_f)}")
                     
                     for result in translate_document_sync(
                         input_f, src_code, tgt_code, mode, nmt, nllb_sz, algn, llm, user_state
