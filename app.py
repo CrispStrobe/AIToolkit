@@ -4981,195 +4981,126 @@ def update_t_ui_old(prov, force_all=False):
 # --- Chat functions ---
 def user_msg(msg, hist):
     """
-    Handle multimodal input (text + images from clipboard/upload).
-    Gradio 6 format: msg = {"text": str, "files": [paths]}
+    Handles cases where pasted text is interpreted as a text/plain file.
+    Bundles everything into a single history turn.
     """
     import time
-    print(f"\n[DEBUG] 👤 user_msg called at {time.time()}")
+    import os
+    print(f"\n{'='*60}")
+    print(f"[DEBUG] 👤 user_msg triggered at {time.time()}")
     
-    # Handle MultimodalTextbox format
-    if isinstance(msg, dict):
-        files = msg.get("files", [])
-        text = msg.get("text", "")
-        
-        # Check if completely empty
-        if not files and not text:
-            print("[DEBUG] ❌ Empty multimodal message ignored")
-            return None, hist
-        
-        # Add files (images) - Use Gradio 6 format!
-        for file_path in files:
-            hist.append({
-                "role": "user", 
-                "content": [{"file": {"path": file_path}}]  # ✅ Correct Gradio 6 format
-            })
-            print(f"[DEBUG] 🖼️ Added image: {file_path}")
-        
-        # Add text if present - Use Gradio 6 format!
-        if text and text.strip():
-            hist.append({
-                "role": "user",
-                "content": [{"text": text.strip(), "type": "text"}]  # ✅ Correct Gradio 6 format
-            })
-            print(f"[DEBUG] 💬 Added text: {text[:50]}...")
-        
-        return None, hist
+    if not msg:
+        print("[DEBUG] ⚠️ msg is None or empty")
+        return gr.MultimodalTextbox(value=None, interactive=False), hist
+
+    text_content = msg.get("text", "")
+    files = msg.get("files", [])
     
-    # Legacy fallback for plain text string
-    if isinstance(msg, str) and msg.strip():
-        return None, hist + [{"role": "user", "content": msg}]
+    combined_content = []
+
+    # 1. Process files and handle "Pasted Text as File" anomaly
+    for file_path in files:
+        # Check if this "file" is actually just pasted text (text/plain)
+        # We check the extension. If it's not an image, we try to read it as text.
+        ext = os.path.splitext(file_path)[1].lower()
+        is_image = ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+        
+        if is_image:
+            combined_content.append({"file": {"path": file_path}})
+            print(f"[DEBUG] 🖼️ Image detected: {file_path}")
+        else:
+            # It's a text file (likely pasted formatted text)
+            try:
+                print(f"[DEBUG] 📄 Non-image file detected ({ext}). Attempting to read as text...")
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    pasted_text = f.read()
+                    if pasted_text.strip():
+                        # Append this to our text buffer
+                        text_content += "\n" + pasted_text
+                        print(f"[DEBUG] ✅ Successfully extracted {len(pasted_text)} chars from pasted file.")
+            except Exception as e:
+                print(f"[DEBUG] ❌ Could not read non-image file as text: {e}")
+
+    # 2. Add the final aggregated text if it exists
+    if text_content and text_content.strip():
+        combined_content.append({"text": text_content.strip(), "type": "text"})
+        print(f"[DEBUG] 📝 Final text part size: {len(text_content)} chars")
+
+    if not combined_content:
+        print("[DEBUG] ❌ No valid content to add to history")
+        return gr.MultimodalTextbox(interactive=True), hist
+
+    # Append as ONE atomic turn
+    hist.append({"role": "user", "content": combined_content})
+    print(f"[DEBUG] ✅ Atomic history turn added. History len: {len(hist)}")
+    print(f"{'='*60}\n")
     
-    return None, hist
+    # Return cleared and DISABLED textbox
+    return gr.MultimodalTextbox(value=None, interactive=False), hist
 
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     """
-    Execute chat with support for text and images.
-    Converts Gradio 6 format to API format.
+    COMPLETE FIXED bot_msg:
+    Converts internal Gradio file structures to API-ready Base64 payloads.
     """
     import time
     import base64
     import os
     
     current_time = time.time()
-    print(f"[DEBUG] 🤖 bot_msg called at {current_time}")
+    print(f"\n{'='*60}")
+    print(f"[DEBUG] 🤖 bot_msg started at {current_time}")
 
-    # DEBOUNCE LOCK
+    # 1. Debounce
     last_run = user_state.get('last_chat_time', 0)
-    if current_time - last_run < 1.0:
-        print(f"[DEBUG] 🛑 DEBOUNCE: Ignoring double trigger ({current_time - last_run:.4f}s)")
+    if current_time - last_run < 0.8:
+        print(f"[DEBUG] 🛑 DEBOUNCE trigger: {current_time - last_run:.4f}s")
         yield hist
         return
-
     user_state['last_chat_time'] = current_time
 
-    # Validation
-    if not hist: 
-        print("[DEBUG] ❌ History is empty")
+    # 2. Validation
+    if not hist or hist[-1]["role"] != "user":
+        print(f"[DEBUG] ❌ Sequence Error: Last message role is {hist[-1]['role'] if hist else 'None'}")
         yield hist
         return
 
-    if hist[-1]["role"] != "user": 
-        print(f"[DEBUG] ❌ Last message is '{hist[-1]['role']}', not 'user'. Skipping.")
-        yield hist
-        return
+    # 3. Reconstruct payload for run_chat
+    latest_user_content = hist[-1]["content"]
+    final_user_parts = []
+    
+    print(f"[DEBUG] 🔨 Converting {len(latest_user_content) if isinstance(latest_user_content, list) else 1} parts for API...")
 
-    # Helper: Convert Gradio 6 format to API format
-    def convert_gradio_content_to_api(content):
-        """
-        Convert Gradio 6 content format to API format.
-        
-        Gradio 6 format:
-        - Image: [{"file": {"path": "..."}}]
-        - Text: [{"text": "...", "type": "text"}]
-        
-        API format:
-        - Image: {"type": "image_url", "image_url": {"url": "data:..."}}
-        - Text: {"type": "text", "text": "..."}
-        """
-        print(f"[DEBUG] 🔄 Converting content: {type(content)}")
-        
-        # Handle list format (Gradio 6)
-        if isinstance(content, list) and len(content) > 0:
-            item = content[0]
-            print(f"[DEBUG]    First item type: {type(item)}, keys: {item.keys() if isinstance(item, dict) else 'N/A'}")
-            
-            # Check if it's an image
-            if isinstance(item, dict) and "file" in item:
-                file_info = item["file"]
-                if isinstance(file_info, dict) and "path" in file_info:
-                    file_path = file_info["path"]
-                    print(f"[DEBUG]    📂 Found image path: {file_path}")
-                    
-                    try:
-                        if not os.path.exists(file_path):
-                            print(f"[DEBUG]    ❌ File does not exist!")
-                            return {"type": "text", "text": f"[Image not found]"}
-                        
-                        with open(file_path, "rb") as f:
-                            img_data = base64.b64encode(f.read()).decode('utf-8')
-                        
-                        ext = os.path.splitext(file_path)[1].lower()
-                        mime_map = {
-                            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-                            '.png': 'image/png', '.webp': 'image/webp',
-                            '.gif': 'image/gif'
-                        }
-                        mime_type = mime_map.get(ext, 'image/jpeg')
-                        
-                        result = {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime_type};base64,{img_data}"}
-                        }
-                        
-                        print(f"[DEBUG]    ✅ Converted to image_url (base64 len: {len(img_data)})")
-                        return result
-                        
-                    except Exception as e:
-                        print(f"[DEBUG]    🔥 Error converting image: {e}")
-                        return {"type": "text", "text": f"[Image error: {str(e)}]"}
-            
-            # Check if it's text
-            elif isinstance(item, dict) and "text" in item:
-                text_content = item["text"]
-                print(f"[DEBUG]    📝 Found text: {text_content[:50]}...")
-                return {"type": "text", "text": str(text_content)}
-        
-        # Fallback for non-list content (legacy)
-        if isinstance(content, str):
-            print(f"[DEBUG]    📝 Legacy string format")
-            return {"type": "text", "text": content}
-        
-        print(f"[DEBUG]    ⚠️ Unknown format, returning as text")
-        return {"type": "text", "text": str(content)}
+    if isinstance(latest_user_content, list):
+        for item in latest_user_content:
+            if "file" in item:
+                f_path = item["file"].get("path")
+                try:
+                    with open(f_path, "rb") as f:
+                        b64_data = base64.b64encode(f.read()).decode('utf-8')
+                    ext = os.path.splitext(f_path)[1].lower()
+                    mime = "image/jpeg" if ext in ['.jpg', '.jpeg'] else f"image/{ext[1:] or 'png'}"
+                    final_user_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64_data}"}
+                    })
+                    print(f"[DEBUG]    🖼️ Encoded Image: {f_path}")
+                except Exception as e:
+                    print(f"[DEBUG]    ❌ Encoding Error: {e}")
+            elif "text" in item:
+                final_user_parts.append({"type": "text", "text": item["text"]})
+                print(f"[DEBUG]    📝 Encoded Text: {item['text'][:30]}...")
+    else:
+        final_user_parts = str(latest_user_content)
 
-    # Collect all consecutive user messages from the end
-    last_user_messages = []
-    for msg in reversed(hist):
-        if msg["role"] == "user":
-            last_user_messages.insert(0, msg)
-        else:
-            break
-    
-    print(f"[DEBUG] 📥 Collected {len(last_user_messages)} consecutive user message(s)")
-    
-    # Build context (everything before the latest user message(s))
-    context_end_idx = len(hist) - len(last_user_messages)
-    raw_context = hist[:context_end_idx]
-    
-    # Build final user message content (convert all to API format)
-    final_user_content = []
-    
-    print(f"[DEBUG] 🔨 Building final_user_content...")
-    
-    for i, msg in enumerate(last_user_messages):
-        content = msg["content"]
-        print(f"[DEBUG]    Processing message {i+1}/{len(last_user_messages)}...")
-        
-        converted = convert_gradio_content_to_api(content)
-        final_user_content.append(converted)
-    
-    # If only one text item, unwrap it (API expects string for text-only)
-    if len(final_user_content) == 1 and final_user_content[0].get("type") == "text":
-        final_user_content = final_user_content[0]["text"]
-        print(f"[DEBUG] 📝 Single text message, unwrapped to string")
-    
-    print(f"[DEBUG] 📤 Final message format: {type(final_user_content)}")
-    if isinstance(final_user_content, list):
-        print(f"[DEBUG]    - Multimodal message with {len(final_user_content)} parts")
-        for i, part in enumerate(final_user_content):
-            part_type = part.get('type', 'unknown') if isinstance(part, dict) else type(part).__name__
-            print(f"[DEBUG]      Part {i+1}: {part_type}")
-    
-    # Add assistant placeholder
+    raw_context = hist[:-1]
     hist.append({"role": "assistant", "content": ""})
 
+    # 4. Execution
     try:
-        print(f"[DEBUG] 🚀 Calling LLM: {prov} / {mod}...")
-        
-        # Call run_chat with the prepared messages
+        print(f"[DEBUG] 🚀 Calling run_chat with model: {mod}")
         generator = run_chat(
-            final_user_content,
-            raw_context, 
+            final_user_parts, raw_context, 
             prov, mod, temp, sys, key, r_effort, r_tokens, user_state
         )
         
@@ -5177,12 +5108,14 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
             hist[-1]["content"] = chunk
             yield hist
             
+        print(f"[DEBUG] ✅ Generation complete.")
     except Exception as e:
-        print(f"[DEBUG] 🔥 ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
-        hist[-1]["content"] = f"🔥 Wrapper Fehler: {str(e)}"
+        hist[-1]["content"] = f"🔥 System-Fehler: {str(e)}"
         yield hist
+    finally:
+        print(f"{'='*60}\n")
 
 def save_chat(hist, prov, mod, user_state):
     """Save current chat to database"""
@@ -6522,7 +6455,8 @@ with gr.Blocks(
                 c_msg = gr.MultimodalTextbox(
                     placeholder="💬 Nachricht (bzw. Einfügen)...", 
                     show_label=False,
-                    file_types=["image"],
+                    # ADD .txt to allow pasted formatted text to bypass the internal validator
+                    file_types=["image", ".txt", ".rtf"], 
                     file_count="multiple"
                 )
 
@@ -6788,44 +6722,59 @@ with gr.Blocks(
                         outputs=[c_bot, attach_status]
                     )
 
-                # --- EVENT WIRING for 
-                # # 1. Define the Generation Events (Save into variables)
-                # We need these variables to pass them to the Stop button
-                
+                # ==========================================
+                # ⚡ EVENT WIRING (FIXED FOR GRADIO 6)
+                # ==========================================
+
+                def reenable_chat_input():
+                    """Helper to unlock the UI after generation"""
+                    print("[DEBUG] 🔓 Re-enabling chat input textbox")
+                    return gr.MultimodalTextbox(interactive=True)
+
                 # A. Submit via (Shift+)Enter Key
+                # We chain: Clear/Process Input -> Stream Bot Response -> Re-enable UI
                 submit_event = c_msg.submit(
-                    user_msg, 
-                    [c_msg, c_bot],  # inputs: message, history
-                    [c_msg, c_bot],  # outputs: cleared input, updated history
+                    fn=user_msg, 
+                    inputs=[c_msg, c_bot], 
+                    outputs=[c_msg, c_bot], 
                     queue=False
                 ).then(
-                    bot_msg, 
-                    # Inputs: History, Provider, Model, Temp, System, Key, Effort, Tokens, State
-                    [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
-                    c_bot
+                    fn=bot_msg, 
+                    inputs=[c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
+                    outputs=[c_bot]
+                ).then(
+                    fn=reenable_chat_input,
+                    inputs=None,
+                    outputs=[c_msg]
                 )
 
                 # B. Submit via Send Button
                 click_event = c_btn.click(
-                    user_msg, 
-                    [c_msg, c_bot],  # inputs
-                    [c_msg, c_bot],  # outputs
+                    fn=user_msg, 
+                    inputs=[c_msg, c_bot], 
+                    outputs=[c_msg, c_bot], 
                     queue=False
                 ).then(
-                    bot_msg, 
-                    [c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
-                    c_bot
+                    fn=bot_msg, 
+                    inputs=[c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
+                    outputs=[c_bot]
+                ).then(
+                    fn=reenable_chat_input,
+                    inputs=None,
+                    outputs=[c_msg]
                 )
-                
-                # 2. Configure Stop Button
-                # 'cancels' must list the exact events created above
-                # 'queue=False' is CRITICAL for the stop button to trigger immediately
+
+                # C. Configure Stop Button (Variable references kept intact)
                 c_stop_btn.click(
                     fn=None, 
                     inputs=None, 
                     outputs=None, 
                     cancels=[submit_event, click_event],
                     queue=False
+                ).then(
+                    fn=reenable_chat_input,
+                    inputs=None,
+                    outputs=[c_msg]
                 )
 
                 # 3. Other Buttons
