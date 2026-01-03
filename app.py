@@ -3082,7 +3082,7 @@ def logout_user():
 # TOKEN MANAGEMENT & CHUNKING
 # ==========================================
 
-def estimate_tokens(text: str) -> int:
+def estimate_tet_tokens(text: str) -> int:
     """
     Conservative token estimation.
     English is ~4 chars/token, but code/German is closer to 2.5-3.
@@ -3090,6 +3090,23 @@ def estimate_tokens(text: str) -> int:
     """
     if not text: return 0
     return len(str(text)) // 3
+
+def estimate_tokens(content) -> int:
+    """
+    Handles both legacy strings and new Gradio 6 multimodal lists.
+    """
+    if isinstance(content, str):
+        return len(content) // 3
+    
+    total = 0
+    if isinstance(content, list):
+        for part in content:
+            if part.get("type") == "text":
+                total += len(part.get("text", "")) // 3
+            elif part.get("type") == "image_url":
+                # AI models usually charge a fixed high cost for images (e.g., 800-1100 tokens)
+                total += 1000 
+    return total
 
 def get_model_context_limit(provider: str, model: str) -> int:
     """Get context window size for a specific model"""
@@ -3168,28 +3185,31 @@ def prune_messages(messages: list, model_limit: int, max_output_tokens: int = 10
 
     # 4. Fill remaining budget with history (Newest -> Oldest)
     remaining_indices = [i for i in range(len(messages)) if i not in kept_indices]
-    remaining_indices.reverse() # Start from newest history items
+    remaining_indices.reverse() 
 
-    dropped_count = 0
-    
     for i in remaining_indices:
-        role = messages[i]["role"]
-        # Snippet for log (first 30 chars)
-        content_preview = str(messages[i]["content"])[:30].replace('\n', ' ') + "..."
-        msg_tokens = estimate_tokens(messages[i]["content"])
+        msg = messages[i]
+        role = msg["role"]
+        content = msg["content"]
+        
+        # Determine log preview and tokens
+        if isinstance(content, list):
+            # Extract first text part for the console log
+            text_parts = [p["text"] for p in content if p.get("type") == "text"]
+            preview = (text_parts[0][:30] if text_parts else "[Image/Other]") + "..."
+        else:
+            preview = str(content)[:30].replace('\n', ' ') + "..."
+            
+        msg_tokens = estimate_tokens(content)
         
         if current_tokens + msg_tokens <= safe_input_limit:
             current_tokens += msg_tokens
             kept_indices.append(i)
-            print(f"[CTX]    + {msg_tokens:5d} tok | (Kept) {role}: {content_preview}")
+            print(f"[CTX]    + {msg_tokens:5d} tok | (Kept) {role}: {preview}")
         else:
-            # Once we hit the limit, we effectively drop everything older
-            print(f"[CTX]    - {msg_tokens:5d} tok | (DROP) {role}: {content_preview} [BUDGET FULL]")
-            dropped_count += 1
-            # We don't break immediately if you want to try fitting smaller older messages, 
-            # BUT usually for chat continuity, you stop once you hit a block.
-            # We break here to maintain conversational continuity.
-            break 
+            print(f"[CTX]    - {msg_tokens:5d} tok | (DROP) {role}: {preview} [BUDGET FULL]")
+            # Maintain conversational continuity by stopping at the first gap
+            break
             
     # 5. Reconstruct and Sort
     final_messages = [messages[i] for i in sorted(kept_indices)]
@@ -3635,19 +3655,13 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
         if system_prompt and system_prompt.strip():
             raw_messages.append({"role": "system", "content": str(system_prompt)})
         
-        # Chat History
-        #  (already cleaned by bot_msg)
-        # for msg in history:
-        #    # Properly extract text if content is a list/dict
-        #    content = extract_clean_content(msg.get("content"))
-        #    raw_messages.append({"role": msg["role"], "content": content})
+        # B. RESTORE HISTORY (Memory Fix)
+        # We iterate through the history turns provided by bot_msg.
+        # turn is already: {"role": "user/assistant", "content": "string or parts_list"}
+        for turn in history:
+            raw_messages.append(turn)
             
-        # Current Message
-        # Also extract content for the current message
-        # current_content = extract_clean_content(message)
-        
-        # raw_messages.append({"role": "user", "content": current_content})
-
+        # C. Current Message
         raw_messages.append({"role": "user", "content": message})
         
         print(f"[DEBUG] 📨 Built message list with {len(raw_messages)} messages")
@@ -3661,22 +3675,11 @@ def run_chat(message, history, provider, model, temp, system_prompt, key, r_effo
             if isinstance(content, list):
                 print(f"[DEBUG]   Msg {i} ({role}): MULTIMODAL list with {len(content)} parts")
                 for j, part in enumerate(content):
-                    if isinstance(part, dict):
-                        part_type = part.get("type", "no-type")
-                        if part_type == "image_url":
-                            url = part.get("image_url", {}).get("url", "")
-                            print(f"[DEBUG]     Part {j}: image_url (base64 len: {len(url)})")
-                        elif part_type == "text":
-                            text = part.get("text", "")
-                            print(f"[DEBUG]     Part {j}: text: {text[:50]}...")
-                        else:
-                            print(f"[DEBUG]     Part {j}: {part_type}")
-                    else:
-                        print(f"[DEBUG]     Part {j}: {type(part)} = {str(part)[:50]}")
-            elif isinstance(content, dict):
-                print(f"[DEBUG]   Msg {i} ({role}): DICT with keys: {list(content.keys())}")
+                    p_type = part.get("type", "no-type")
+                    p_val = part.get("text", "")[:30] if p_type == "text" else "base64 data"
+                    print(f"[DEBUG]     Part {j}: {p_type} | {p_val}...")
             else:
-                print(f"[DEBUG]   Msg {i} ({role}): {type(content)} = {str(content)[:50]}...")
+                print(f"[DEBUG]   Msg {i} ({role}): TEXT | {str(content)[:50]}...")
         # ===== END DEBUG BLOCK =====
 
         # Log the last user message to verify attachment is present, if any
@@ -4981,67 +4984,81 @@ def update_t_ui_old(prov, force_all=False):
 # --- Chat functions ---
 def user_msg(msg, hist):
     """
-    Handles cases where pasted text is interpreted as a text/plain file.
-    Bundles everything into a single history turn.
+    Bundles all parts into ONE turn, prevents history fragmentation.
     """
     import time
     import os
     print(f"\n{'='*60}")
     print(f"[DEBUG] 👤 user_msg triggered at {time.time()}")
     
+    # Early exit for empty inputs
     if not msg:
         print("[DEBUG] ⚠️ msg is None or empty")
-        return gr.MultimodalTextbox(value=None, interactive=False), hist
+        return gr.MultimodalTextbox(value=None, interactive=True), hist
 
-    text_content = msg.get("text", "")
+    typed_text = msg.get("text", "")
     files = msg.get("files", [])
     
+    # This will be our atomic bundle of content parts
     combined_content = []
+    # This will accumulate text from the box AND any text-files (pastes)
+    aggregated_text = typed_text if typed_text else ""
 
     # 1. Process files and handle "Pasted Text as File" anomaly
     for file_path in files:
-        # Check if this "file" is actually just pasted text (text/plain)
-        # We check the extension. If it's not an image, we try to read it as text.
+        if not os.path.exists(file_path):
+            print(f"[DEBUG] ❌ File not found: {file_path}")
+            continue
+
         ext = os.path.splitext(file_path)[1].lower()
-        is_image = ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+        is_image = ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']
         
         if is_image:
+            # Add images directly as file parts
             combined_content.append({"file": {"path": file_path}})
-            print(f"[DEBUG] 🖼️ Image detected: {file_path}")
+            print(f"[DEBUG] 🖼️ Image turn part added: {file_path}")
         else:
-            # It's a text file (likely pasted formatted text)
+            # Handle Pasted Text / Non-Image files
             try:
-                print(f"[DEBUG] 📄 Non-image file detected ({ext}). Attempting to read as text...")
+                print(f"[DEBUG] 📄 Non-image file detected ({ext}). Reading as text...")
+                # Use 'ignore' to handle messy formatting/encoding from various web sources
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    pasted_text = f.read()
-                    if pasted_text.strip():
-                        # Append this to our text buffer
-                        text_content += "\n" + pasted_text
-                        print(f"[DEBUG] ✅ Successfully extracted {len(pasted_text)} chars from pasted file.")
+                    file_text = f.read()
+                    if file_text.strip():
+                        # Add a newline separator if we already have text
+                        separator = "\n" if aggregated_text else ""
+                        aggregated_text += separator + file_text
+                        print(f"[DEBUG] ✅ Extracted {len(file_text)} chars from pasted file.")
             except Exception as e:
-                print(f"[DEBUG] ❌ Could not read non-image file as text: {e}")
+                print(f"[DEBUG] ❌ Could not read file {file_path} as text: {e}")
 
-    # 2. Add the final aggregated text if it exists
-    if text_content and text_content.strip():
-        combined_content.append({"text": text_content.strip(), "type": "text"})
-        print(f"[DEBUG] 📝 Final text part size: {len(text_content)} chars")
+    # 2. Add the final text part to the bundle (if any text exists)
+    if aggregated_text.strip():
+        combined_content.append({"text": aggregated_text.strip(), "type": "text"})
+        print(f"[DEBUG] 📝 Total text content size: {len(aggregated_text)} chars")
 
+    # 3. Final validation: Did we get anything usable?
     if not combined_content:
-        print("[DEBUG] ❌ No valid content to add to history")
+        print("[DEBUG] ❌ No valid content (text or images) to add to history")
+        # Return interactive so user can try again
         return gr.MultimodalTextbox(interactive=True), hist
 
-    # Append as ONE atomic turn
+    # 4. Atomic Update: Append as ONE history turn
+    # This is crucial so bot_msg treats it as a single request
     hist.append({"role": "user", "content": combined_content})
-    print(f"[DEBUG] ✅ Atomic history turn added. History len: {len(hist)}")
+    
+    print(f"[DEBUG] ✅ Turn successfully bundled. History len: {len(hist)}")
     print(f"{'='*60}\n")
     
-    # Return cleared and DISABLED textbox
-    return gr.MultimodalTextbox(value=None, interactive=False), hist
+    # 5. UI Control: Return cleared box and DISABLE it
+    # We use gr.update to be explicit
+    return gr.update(value=None, interactive=False), hist
 
 def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     """
     COMPLETE FIXED bot_msg:
-    Converts internal Gradio file structures to API-ready Base64 payloads.
+    Transforms the ENTIRE conversational history (including old images) 
+    into API-ready Base64 payloads to maintain LLM memory.
     """
     import time
     import base64
@@ -5051,7 +5068,7 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
     print(f"\n{'='*60}")
     print(f"[DEBUG] 🤖 bot_msg started at {current_time}")
 
-    # 1. Debounce
+    # 1. Debounce (Safety against double-triggers)
     last_run = user_state.get('last_chat_time', 0)
     if current_time - last_run < 0.8:
         print(f"[DEBUG] 🛑 DEBOUNCE trigger: {current_time - last_run:.4f}s")
@@ -5065,42 +5082,56 @@ def bot_msg(hist, prov, mod, temp, sys, key, r_effort, r_tokens, user_state):
         yield hist
         return
 
-    # 3. Reconstruct payload for run_chat
-    latest_user_content = hist[-1]["content"]
-    final_user_parts = []
-    
-    print(f"[DEBUG] 🔨 Converting {len(latest_user_content) if isinstance(latest_user_content, list) else 1} parts for API...")
-
-    if isinstance(latest_user_content, list):
-        for item in latest_user_content:
-            if "file" in item:
+    # 3. HELPER: Deep conversion of any turn (User or Assistant)
+    def prepare_api_payload(content):
+        """Converts internal Gradio list/dict structures to API Base64 parts"""
+        if not isinstance(content, list):
+            return str(content) # Standard text turns
+        
+        api_parts = []
+        for item in content:
+            if isinstance(item, dict) and "file" in item:
                 f_path = item["file"].get("path")
-                try:
-                    with open(f_path, "rb") as f:
-                        b64_data = base64.b64encode(f.read()).decode('utf-8')
-                    ext = os.path.splitext(f_path)[1].lower()
-                    mime = "image/jpeg" if ext in ['.jpg', '.jpeg'] else f"image/{ext[1:] or 'png'}"
-                    final_user_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{b64_data}"}
-                    })
-                    print(f"[DEBUG]    🖼️ Encoded Image: {f_path}")
-                except Exception as e:
-                    print(f"[DEBUG]    ❌ Encoding Error: {e}")
-            elif "text" in item:
-                final_user_parts.append({"type": "text", "text": item["text"]})
-                print(f"[DEBUG]    📝 Encoded Text: {item['text'][:30]}...")
-    else:
-        final_user_parts = str(latest_user_content)
+                if f_path and os.path.exists(f_path):
+                    try:
+                        with open(f_path, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode('utf-8')
+                        ext = os.path.splitext(f_path)[1].lower()
+                        mime = "image/jpeg" if ext in ['.jpg', '.jpeg'] else f"image/{ext[1:] or 'png'}"
+                        api_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{b64}"}
+                        })
+                    except Exception as e:
+                        print(f"[DEBUG] ❌ Encoding error for {f_path}: {e}")
+            elif isinstance(item, dict) and "text" in item:
+                api_parts.append({"type": "text", "text": item["text"]})
+            else:
+                api_parts.append({"type": "text", "text": str(item)})
+        return api_parts
 
-    raw_context = hist[:-1]
+    # 4. Reconstruct FULL API HISTORY
+    # This is the "Perfect Implementation" step: converting ALL turns, not just the last one.
+    api_history = []
+    print(f"[DEBUG] 🔨 Reconstructing {len(hist)} history turns for API...")
+    for turn in hist:
+        api_history.append({
+            "role": turn["role"],
+            "content": prepare_api_payload(turn["content"])
+        })
+
+    # Slice for run_chat signature
+    latest_user_parts = api_history[-1]["content"]
+    previous_history = api_history[:-1]
+
+    # Add assistant placeholder for UI streaming
     hist.append({"role": "assistant", "content": ""})
 
-    # 4. Execution
+    # 5. Execution
     try:
-        print(f"[DEBUG] 🚀 Calling run_chat with model: {mod}")
+        print(f"[DEBUG] 🚀 Calling run_chat with {len(previous_history)} items in context")
         generator = run_chat(
-            final_user_parts, raw_context, 
+            latest_user_parts, previous_history, 
             prov, mod, temp, sys, key, r_effort, r_tokens, user_state
         )
         
@@ -6727,44 +6758,34 @@ with gr.Blocks(
                 # ==========================================
 
                 def reenable_chat_input():
-                    """Helper to unlock the UI after generation"""
+                    """Explicitly unlocks the UI using gr.update for stability"""
                     print("[DEBUG] 🔓 Re-enabling chat input textbox")
-                    return gr.MultimodalTextbox(interactive=True)
+                    return gr.update(interactive=True)
 
-                # A. Submit via (Shift+)Enter Key
-                # We chain: Clear/Process Input -> Stream Bot Response -> Re-enable UI
-                submit_event = c_msg.submit(
-                    fn=user_msg, 
-                    inputs=[c_msg, c_bot], 
-                    outputs=[c_msg, c_bot], 
-                    queue=False
-                ).then(
-                    fn=bot_msg, 
-                    inputs=[c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
-                    outputs=[c_bot]
-                ).then(
-                    fn=reenable_chat_input,
-                    inputs=None,
-                    outputs=[c_msg]
-                )
+                # Shared logic for submission to avoid repetition and ensure consistency
+                def chat_submission_chain(trigger):
+                    return trigger(
+                        fn=user_msg, 
+                        inputs=[c_msg, c_bot], 
+                        outputs=[c_msg, c_bot], 
+                        queue=False # Instant UI lock & clear
+                    ).then(
+                        fn=bot_msg, 
+                        inputs=[c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
+                        outputs=[c_bot],
+                        queue=True # Actual AI work stays in queue
+                    ).then(
+                        fn=reenable_chat_input,
+                        inputs=None,
+                        outputs=[c_msg]
+                    )
 
-                # B. Submit via Send Button
-                click_event = c_btn.click(
-                    fn=user_msg, 
-                    inputs=[c_msg, c_bot], 
-                    outputs=[c_msg, c_bot], 
-                    queue=False
-                ).then(
-                    fn=bot_msg, 
-                    inputs=[c_bot, c_prov, c_model, c_temp, c_sys, c_key, c_reasoning_effort, c_reasoning_tokens, session_state], 
-                    outputs=[c_bot]
-                ).then(
-                    fn=reenable_chat_input,
-                    inputs=None,
-                    outputs=[c_msg]
-                )
+                # A & B: Assign events to variables for the Stop Button
+                submit_event = chat_submission_chain(c_msg.submit)
+                click_event = chat_submission_chain(c_btn.click)
 
-                # C. Configure Stop Button (Variable references kept intact)
+                # C. Configure Stop Button
+                # Note: We chain the re-enable here too so the box unlocks even on manual stop
                 c_stop_btn.click(
                     fn=None, 
                     inputs=None, 
